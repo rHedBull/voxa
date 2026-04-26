@@ -202,6 +202,7 @@ kbd {
 }
 .cam-btn:hover { color: var(--text); background: rgba(255,255,255,0.04); }
 .theme-light .cam-btn:hover { background: rgba(0,0,0,0.04); }
+.cam-btn.active { color: var(--accent); background: var(--accent-bg); }
 
 /* ── Tool rail ──────────────────────────────────────────────── */
 .vp-toolbar {

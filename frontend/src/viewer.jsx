@@ -2,6 +2,13 @@
 // Three.js viewport. Renders a point cloud, supports orbit/pan/zoom, draws
 // cuboid overlays for instances, supports per-instance highlight, and exposes
 // camera-state ref handles used by Compare mode for sync.
+//
+// Two camera control schemes:
+//   navMode='orbit' — attachOrbit, the default, orbit/pan/zoom around a target
+//   navMode='walk'  — attachWalk, FPS-style WASD on the XZ plane + Q/E for Y
+//                     and mouse-drag to look around. W always moves you in the
+//                     direction you're facing projected to horizontal, so
+//                     looking down doesn't translate downward.
 
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
@@ -105,6 +112,133 @@ function attachOrbit(camera, dom, target, onChange) {
   };
 }
 
+// FPS-style walkthrough controller.
+// Movement keys (WASD) translate the camera in the XZ plane regardless of
+// where it's looking — pitch only changes the look direction. Q/E are the
+// only way to change Y. Mouse drag rotates yaw + pitch.
+function attachWalk(camera, dom, sceneRadius, onChange) {
+  const state = {
+    yaw: 0, pitch: 0,
+    keys: { w: false, a: false, s: false, d: false, q: false, e: false, shift: false },
+    dragging: false, lx: 0, ly: 0,
+    silent: false,
+  };
+  // Seed yaw/pitch from the camera's current look direction so toggling
+  // doesn't snap the view.
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  state.yaw = Math.atan2(dir.x, dir.z);
+  state.pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
+
+  const apply = () => {
+    const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw);
+    const cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+    camera.lookAt(
+      camera.position.x + sy * cp,
+      camera.position.y + sp,
+      camera.position.z + cy * cp,
+    );
+    if (!state.silent) onChange && onChange(state);
+  };
+  apply();
+
+  const onDown = (e) => {
+    state.dragging = true;
+    state.lx = e.clientX; state.ly = e.clientY;
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    if (!state.dragging) return;
+    const dx = e.clientX - state.lx, dy = e.clientY - state.ly;
+    state.lx = e.clientX; state.ly = e.clientY;
+    state.yaw -= dx * 0.005;
+    state.pitch = Math.max(-Math.PI / 2 + 0.01,
+      Math.min(Math.PI / 2 - 0.01, state.pitch - dy * 0.005));
+    apply();
+  };
+  const onUp = () => { state.dragging = false; };
+  const onCtx = (e) => e.preventDefault();
+  const onWheel = (e) => {
+    e.preventDefault();
+    // Scroll in walk mode steps you forward/back in the horizontal plane.
+    const fwd = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
+    camera.position.addScaledVector(fwd, sceneRadius * 0.04 * -Math.sign(e.deltaY));
+    apply();
+  };
+
+  const KEY_MAP = { w: 'w', a: 'a', s: 's', d: 'd', q: 'q', e: 'e' };
+  const onKeyDown = (e) => {
+    if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'shift') state.keys.shift = true;
+    if (KEY_MAP[k] !== undefined) { state.keys[KEY_MAP[k]] = true; e.preventDefault(); }
+  };
+  const onKeyUp = (e) => {
+    const k = e.key.toLowerCase();
+    if (k === 'shift') state.keys.shift = false;
+    if (KEY_MAP[k] !== undefined) state.keys[KEY_MAP[k]] = false;
+  };
+
+  // Movement loop — rAF-driven so multiple keys held at once compose smoothly
+  // and the speed is frame-rate independent.
+  let raf, last = performance.now();
+  const tick = () => {
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+
+    const baseSpeed = sceneRadius * (state.keys.shift ? 1.6 : 0.6);
+    const v = baseSpeed * dt;
+    const fwd = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));   // XZ-only forward
+    const right = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+
+    let moved = false;
+    if (state.keys.w) { camera.position.addScaledVector(fwd,    v); moved = true; }
+    if (state.keys.s) { camera.position.addScaledVector(fwd,   -v); moved = true; }
+    if (state.keys.d) { camera.position.addScaledVector(right,  v); moved = true; }
+    if (state.keys.a) { camera.position.addScaledVector(right, -v); moved = true; }
+    if (state.keys.e) { camera.position.y += v;                     moved = true; }
+    if (state.keys.q) { camera.position.y -= v;                     moved = true; }
+    if (moved) apply();
+
+    raf = requestAnimationFrame(tick);
+  };
+  tick();
+
+  dom.addEventListener('mousedown', onDown);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  dom.addEventListener('wheel', onWheel, { passive: false });
+  dom.addEventListener('contextmenu', onCtx);
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+
+  return {
+    setFromState(s) {
+      state.silent = true;
+      camera.position.copy(s.position);
+      state.yaw = s.yaw; state.pitch = s.pitch;
+      apply();
+      state.silent = false;
+    },
+    getState() {
+      return { position: camera.position.clone(), yaw: state.yaw, pitch: state.pitch };
+    },
+    frame() { /* no-op in walk mode — user navigates manually */ },
+    preset() { /* no-op in walk mode — orbit presets don't apply */ },
+    dispose() {
+      cancelAnimationFrame(raf);
+      dom.removeEventListener('mousedown', onDown);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      dom.removeEventListener('wheel', onWheel);
+      dom.removeEventListener('contextmenu', onCtx);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    },
+  };
+}
+
 export const Viewer = forwardRef(function Viewer(props, ref) {
   const {
     cloud,                   // { positions, colors, bbox? } | null
@@ -121,11 +255,16 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     cuboidStyle = 'solid',
     cuboidOpacity = 1,
     colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'flat'
+    navMode = 'orbit',          // 'orbit' | 'walk'
     onCameraChange = null,
   } = props;
 
   const mountRef = useRef(null);
   const stateRef = useRef({});
+  // Keep onCameraChange callable from inside the long-lived controller
+  // closure without recreating the controller every render.
+  const onCameraChangeRef = useRef(onCameraChange);
+  onCameraChangeRef.current = onCameraChange;
 
   // ── Mount once ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -174,11 +313,6 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const cuboidGroup = new THREE.Group();
     scene.add(cuboidGroup);
 
-    const target = new THREE.Vector3(0, 0.2, 0);
-    const orbit = attachOrbit(camera, renderer.domElement, target, (s) => {
-      onCameraChange && onCameraChange(s);
-    });
-
     let raf;
     const tick = () => {
       renderer.render(scene, camera);
@@ -203,13 +337,14 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
 
     stateRef.current = {
       renderer, scene, camera, pointsGeom, pointsMat, points,
-      orbit, cuboidGroup, floor, grid, axes, mount,
+      controller: null,
+      cuboidGroup, floor, grid, axes, mount,
     };
 
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
-      orbit.dispose();
+      stateRef.current.controller?.dispose();
       pointsGeom.dispose();
       pointsMat.dispose();
       renderer.dispose();
@@ -217,6 +352,23 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     };
     // eslint-disable-next-line
   }, []);
+
+  // ── Camera controller (orbit ↔ walk) ────────────────────────────────────
+  // Disposed and re-created when navMode flips. Seeds the new controller from
+  // the prior camera state so toggling doesn't snap the view.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.camera) return;
+    s.controller?.dispose();
+    const onChange = (st) => onCameraChangeRef.current && onCameraChangeRef.current(st);
+    if (navMode === 'walk') {
+      const sceneRadius = s._lastRadius || 1;
+      s.controller = attachWalk(s.camera, s.renderer.domElement, sceneRadius, onChange);
+    } else {
+      const target = s._lastCenter ? s._lastCenter.clone() : new THREE.Vector3(0, 0.2, 0);
+      s.controller = attachOrbit(s.camera, s.renderer.domElement, target, onChange);
+    }
+  }, [navMode]);
 
   // ── Cloud upload (rebuilds buffers when scene changes) ──────────────────
   useEffect(() => {
@@ -238,7 +390,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       const dy = cloud.bbox.max[1] - cloud.bbox.min[1];
       const dz = cloud.bbox.max[2] - cloud.bbox.min[2];
       const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
-      s.orbit.frame(c, radius);
+      s.controller?.frame?.(c, radius);
       s._lastCenter = c;
       s._lastRadius = radius;
 
@@ -374,11 +526,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
   useImperativeHandle(ref, () => ({
     preset(name) {
       const s = stateRef.current;
-      s.orbit?.preset(name, s._lastCenter, s._lastRadius);
+      s.controller?.preset?.(name, s._lastCenter, s._lastRadius);
     },
-    frame(center, radius) { stateRef.current.orbit?.frame(center, radius); },
-    setCameraState(s) { stateRef.current.orbit?.setFromState(s); },
-    getCameraState() { return stateRef.current.orbit?.getState(); },
+    frame(center, radius) { stateRef.current.controller?.frame?.(center, radius); },
+    setCameraState(s) { stateRef.current.controller?.setFromState?.(s); },
+    getCameraState() { return stateRef.current.controller?.getState?.(); },
   }));
 
   return <div ref={mountRef} style={{ width: '100%', height: '100%', position: 'relative' }} />;

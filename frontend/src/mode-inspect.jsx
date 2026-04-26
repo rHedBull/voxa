@@ -2,9 +2,9 @@
 
 import { useState as useStateInspect, useMemo as useMemoInspect } from 'react';
 import { Viewer } from './viewer.jsx';
-import { ViewportToolbar, ToolButton, HUDChip, CameraPresets } from './viewport-atoms.jsx';
+import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
 
-export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
+export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMode, onNavModeChange }) {
   const [pointSize, setPointSize] = useStateInspect(0.012);
   const [colorMode, setColorMode] = useStateInspect('rgb');
   const [showFloor, setShowFloor] = useStateInspect(true);
@@ -31,6 +31,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
           background={theme.bg}
           floorColor={theme.floor}
           colorMode={colorMode}
+          navMode={navMode}
         />
 
         <div className="vp-hud-top">
@@ -40,14 +41,16 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
             {stats && <HUDChip label="Extent" value={`${stats.ext}×${stats.dep}×${stats.hgt}m`} mono />}
           </div>
           <div className="hud-group">
+            <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
           </div>
         </div>
 
         <ViewportToolbar side="left">
-          <ToolButton mini icon="◔" label="Orbit" active hotkey="1" />
-          <ToolButton mini icon="✥" label="Pan" hotkey="2" />
-          <ToolButton mini icon="⊕" label="Zoom" hotkey="3" />
+          <ToolButton mini icon="◔" label="Orbit" active={navMode === 'orbit'}
+            onClick={() => onNavModeChange('orbit')} />
+          <ToolButton mini icon="🚶" label="Walk" active={navMode === 'walk'}
+            onClick={() => onNavModeChange('walk')} />
           <div className="tool-sep" />
           <ToolButton mini icon="↺" label="Reset" hotkey="R"
             onClick={() => viewerRef.current?.preset('iso')} />
@@ -98,10 +101,21 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
 
         <div className="vp-hud-bottom">
           <div className="kbd-strip">
-            <span><kbd>Drag</kbd> orbit</span>
-            <span><kbd>Shift</kbd>+<kbd>Drag</kbd> pan</span>
-            <span><kbd>Scroll</kbd> zoom</span>
-            <span><kbd>R</kbd> reset view</span>
+            {navMode === 'walk' ? (
+              <>
+                <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+                <span><kbd>Q</kbd>/<kbd>E</kbd> down/up</span>
+                <span><kbd>Shift</kbd> sprint</span>
+                <span><kbd>Drag</kbd> look</span>
+              </>
+            ) : (
+              <>
+                <span><kbd>Drag</kbd> orbit</span>
+                <span><kbd>Shift</kbd>+<kbd>Drag</kbd> pan</span>
+                <span><kbd>Scroll</kbd> zoom</span>
+                <span><kbd>R</kbd> reset view</span>
+              </>
+            )}
           </div>
         </div>
       </div>

@@ -4,10 +4,10 @@ import { useState as useStateLabel, useMemo as useMemoLabel,
          useEffect as useEffectLabel, useCallback as useCallbackLabel } from 'react';
 import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
-import { ViewportToolbar, ToolButton, HUDChip, CameraPresets } from './viewport-atoms.jsx';
+import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -90,10 +90,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     updateSelected({ center: fitted.center, size: fitted.size });
   };
 
-  // Hotkeys: 0–9 assign class, ⌫ delete, A add, ⌘S save.
+  // Hotkeys: 0–9 assign class, ⌫ delete, A add, F frame, ⌘S save.
+  // In walk mode the viewer owns WASD/QE; bail on those keys here so we
+  // don't double-fire (e.g. 'A' is both walk-left and add-cuboid).
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
         setActiveClass(cls.id);
@@ -164,6 +167,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           showCuboids
           background={theme.bg}
           floorColor={theme.floor}
+          navMode={navMode}
         />
 
         <div className="vp-hud-top">
@@ -173,25 +177,37 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             <HUDChip label="Active class" value={activeClassDef?.label || '—'} accent />
           </div>
           <div className="hud-group">
+            <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
           </div>
         </div>
 
         <ViewportToolbar side="left">
-          <ToolButton mini icon="◫" label="Cuboid" active hotkey="A" onClick={addCuboid} />
-          <ToolButton mini icon="✦" label="Auto-fit" hotkey="A" onClick={autoFitSelected} />
+          <ToolButton mini icon="◫" label="Cuboid" active onClick={addCuboid} />
+          <ToolButton mini icon="✦" label="Auto-fit" onClick={autoFitSelected} />
           <div className="tool-sep" />
-          <ToolButton mini icon="⌫" label="Delete" hotkey="⌫" onClick={deleteSelected} />
+          <ToolButton mini icon="⌫" label="Delete" onClick={deleteSelected} />
           <ToolButton mini icon="↺" label="Reset cam" onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>
 
         <div className="vp-hud-bottom">
           <div className="kbd-strip">
-            <span><kbd>A</kbd> add cuboid</span>
-            {classes.length > 0 && <span><kbd>{classes[0].hotkey}</kbd>–<kbd>{classes[classes.length - 1].hotkey}</kbd> assign class</span>}
-            <span><kbd>F</kbd> frame selection</span>
-            <span><kbd>⌫</kbd> delete</span>
-            <span><kbd>⌘S</kbd> save</span>
+            {navMode === 'walk' ? (
+              <>
+                <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+                <span><kbd>Q</kbd>/<kbd>E</kbd> down/up</span>
+                <span><kbd>Drag</kbd> look</span>
+                <span style={{ opacity: 0.5 }}>(toggle off walk to use label hotkeys)</span>
+              </>
+            ) : (
+              <>
+                <span><kbd>A</kbd> add cuboid</span>
+                {classes.length > 0 && <span><kbd>{classes[0].hotkey}</kbd>–<kbd>{classes[classes.length - 1].hotkey}</kbd> assign class</span>}
+                <span><kbd>F</kbd> frame selection</span>
+                <span><kbd>⌫</kbd> delete</span>
+                <span><kbd>⌘S</kbd> save</span>
+              </>
+            )}
           </div>
         </div>
       </div>

@@ -46,6 +46,9 @@ export default function App() {
   const [predInstances, setPredInstances] = useStateApp([]);
   const [savedAt, setSavedAt] = useStateApp(null);
   const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
+  // Camera nav mode is shared across the three modes so toggling Inspect →
+  // Label preserves whether the user was orbiting or walking.
+  const [navMode, setNavMode] = useStateApp('orbit');
 
   // Initial config + scene list.
   useEffectApp(() => {
@@ -175,17 +178,20 @@ export default function App() {
       <div className="app-body">
         {t.mode === 'inspect' && (
           <InspectMode key="i" cloud={cloud} loading={loading} theme={theme}
-            viewerRef={viewerRef} sceneName={activeScene} />
+            viewerRef={viewerRef} sceneName={activeScene}
+            navMode={navMode} onNavModeChange={setNavMode} />
         )}
         {t.mode === 'label' && (
           <LabelMode key="l" cloud={cloud} theme={theme} viewerRef={viewerRef}
             classes={classes} instances={gtInstances} sceneName={activeScene}
             cloudBBox={cloud?.bbox}
+            navMode={navMode} onNavModeChange={setNavMode}
             onChange={setGtInstances} onSave={saveGt} />
         )}
         {t.mode === 'compare' && (
           <CompareMode key="c" cloud={cloud} theme={theme}
             sceneName={activeScene}
+            navMode={navMode} onNavModeChange={setNavMode}
             gtInstances={gtInstances} predInstances={predInstances} />
         )}
       </div>

@@ -4,7 +4,7 @@
 import { useState as useStateCmp, useRef as useRefCmp,
          useEffect as useEffectCmp } from 'react';
 import { Viewer } from './viewer.jsx';
-import { CameraPresets } from './viewport-atoms.jsx';
+import { CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
 import { VoxaAPI } from './api.js';
 
 function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef, stats }) {
@@ -33,7 +33,7 @@ function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef, stats 
   );
 }
 
-export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstances }) {
+export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstances, navMode, onNavModeChange }) {
   const leftRef = useRefCmp();
   const rightRef = useRefCmp();
   const [syncCameras, setSyncCameras] = useStateCmp(true);
@@ -91,6 +91,10 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
             </span>
           </div>
           <div className="cmp-toggle">
+            <label>Nav</label>
+            <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
+          </div>
+          <div className="cmp-toggle">
             <label>Sync cameras</label>
             <button className={'sw' + (syncCameras ? ' on' : '')}
               onClick={() => setSyncCameras(!syncCameras)}><i /></button>
@@ -106,7 +110,7 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
           viewerRef={leftRef}
           viewerProps={{
             cloud, instances: gtInstances, showCuboids: true, cuboidStyle: 'solid',
-            background: theme.bg, floorColor: theme.floor,
+            background: theme.bg, floorColor: theme.floor, navMode,
             onCameraChange: onLeftMove,
           }}
           stats={[
@@ -122,7 +126,7 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
           viewerRef={rightRef}
           viewerProps={{
             cloud, instances: predInstances, showCuboids: true, cuboidStyle: 'dashed',
-            background: theme.bg, floorColor: theme.floor,
+            background: theme.bg, floorColor: theme.floor, navMode,
             onCameraChange: onRightMove,
           }}
           stats={[

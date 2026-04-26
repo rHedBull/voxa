@@ -36,3 +36,16 @@ export function CameraPresets({ onPreset }) {
     </div>
   );
 }
+
+// Orbit ↔ Walk toggle. Same chrome as the camera-preset chips so it sits
+// naturally next to them in the HUD.
+export function NavModeToggle({ navMode, onChange }) {
+  return (
+    <div className="cam-presets" title={navMode === 'walk' ? 'Walk: WASD move, Q/E up/down, drag to look' : 'Orbit: drag to rotate, scroll to zoom'}>
+      <button className={'cam-btn' + (navMode === 'orbit' ? ' active' : '')}
+        onClick={() => onChange('orbit')}>orbit</button>
+      <button className={'cam-btn' + (navMode === 'walk' ? ' active' : '')}
+        onClick={() => onChange('walk')}>walk</button>
+    </div>
+  );
+}
