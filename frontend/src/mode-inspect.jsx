@@ -18,13 +18,6 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
     return { ext, dep, hgt };
   }, [cloud]);
 
-  // Color override for non-RGB modes uses the per-point color tint approach
-  // baked into the viewer.
-  const overrideColor = colorMode === 'height' ? '#5b8def'
-    : colorMode === 'intensity' ? '#a3a3a3'
-    : colorMode === 'flat' ? '#7c8088'
-    : null;
-
   return (
     <div className="mode-root inspect">
       <div className="vp-stack">
@@ -37,7 +30,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
           showFloor={showFloor}
           background={theme.bg}
           floorColor={theme.floor}
-          overrideColor={overrideColor}
+          colorMode={colorMode}
         />
 
         <div className="vp-hud-top">
@@ -90,7 +83,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
               </div>
               <div className="ctrl">
                 <label>Point size <span className="mono">{pointSize.toFixed(3)}</span></label>
-                <input type="range" min={0.002} max={0.05} step={0.001}
+                <input type="range" min={0.002} max={1.5} step={0.005}
                   value={pointSize} className="slider"
                   onChange={(e) => setPointSize(Number(e.target.value))} />
               </div>

@@ -120,7 +120,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     showCuboids = true,
     cuboidStyle = 'solid',
     cuboidOpacity = 1,
-    overrideColor = null,
+    colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'flat'
     onCameraChange = null,
   } = props;
 
@@ -241,6 +241,34 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       s.orbit.frame(c, radius);
       s._lastCenter = c;
       s._lastRadius = radius;
+
+      // Resize floor + grid to match the cloud's xz footprint instead of a
+      // fixed 4m square. The grid lives at the cloud's y-min so points sit
+      // *on* it, not floating above an arbitrary plane.
+      const horizExtent = Math.max(dx, dz);
+      const floorRadius = Math.max(0.3, horizExtent * 0.7);
+      const gridSize = floorRadius * 2;
+      // Aim for ~25-40 divisions regardless of scale.
+      const divisions = Math.max(10, Math.min(60, Math.round(gridSize / Math.max(0.1, horizExtent / 30))));
+
+      s.floor.geometry.dispose();
+      s.floor.geometry = new THREE.CircleGeometry(floorRadius, 64);
+      s.floor.position.set(c.x, cloud.bbox.min[1] - 0.002, c.z);
+
+      s.scene.remove(s.grid);
+      s.grid.geometry.dispose();
+      s.grid.material.dispose();
+      const newGrid = new THREE.GridHelper(gridSize, divisions, 0x222630, 0x1a1c22);
+      newGrid.position.set(c.x, cloud.bbox.min[1] - 0.001, c.z);
+      newGrid.material.opacity = 0.5;
+      newGrid.material.transparent = true;
+      newGrid.visible = s.grid.visible;
+      s.grid = newGrid;
+      s.scene.add(newGrid);
+
+      // Axes anchored at the bbox corner near the camera-facing front.
+      s.axes.position.set(cloud.bbox.min[0], cloud.bbox.min[1] + 0.005, cloud.bbox.min[2]);
+      s.axes.scale.setScalar(Math.max(0.1, horizExtent * 0.08));
     }
   }, [cloud]);
 
@@ -256,21 +284,47 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.axes.visible = showAxes;
 
     const colorAttr = s.pointsGeom.getAttribute('color');
+    const posAttr = s.pointsGeom.getAttribute('position');
     if (!colorAttr || !cloud) return;
-    if (overrideColor) {
-      const c = new THREE.Color(overrideColor);
-      const orig = cloud.colors;
+    const orig = cloud.colors;
+
+    if (colorMode === 'height' && cloud.bbox) {
+      // Per-point gradient by Y, normalized to the cloud's own Y range.
+      const yMin = cloud.bbox.min[1];
+      const yMax = cloud.bbox.max[1];
+      const yRange = Math.max(yMax - yMin, 1e-6);
+      const lo = new THREE.Color('#1d4ed8');   // deep blue (low)
+      const mid = new THREE.Color('#10b981');  // green (mid)
+      const hi = new THREE.Color('#f59e0b');   // amber (high)
+      const tmp = new THREE.Color();
+      for (let i = 0, p = 0; i < colorAttr.array.length; i += 3, p += 3) {
+        const t = (posAttr.array[p + 1] - yMin) / yRange;
+        if (t < 0.5) tmp.copy(lo).lerp(mid, t * 2);
+        else         tmp.copy(mid).lerp(hi, (t - 0.5) * 2);
+        colorAttr.array[i + 0] = tmp.r;
+        colorAttr.array[i + 1] = tmp.g;
+        colorAttr.array[i + 2] = tmp.b;
+      }
+    } else if (colorMode === 'intensity') {
+      // Pseudo-intensity: collapse RGB to grayscale luminance.
       for (let i = 0; i < orig.length; i += 3) {
         const lum = orig[i] * 0.299 + orig[i + 1] * 0.587 + orig[i + 2] * 0.114;
-        colorAttr.array[i + 0] = c.r * (0.5 + lum * 0.7);
-        colorAttr.array[i + 1] = c.g * (0.5 + lum * 0.7);
-        colorAttr.array[i + 2] = c.b * (0.5 + lum * 0.7);
+        colorAttr.array[i + 0] = lum;
+        colorAttr.array[i + 1] = lum;
+        colorAttr.array[i + 2] = lum;
+      }
+    } else if (colorMode === 'flat') {
+      const c = new THREE.Color('#7c8088');
+      for (let i = 0; i < orig.length; i += 3) {
+        colorAttr.array[i + 0] = c.r;
+        colorAttr.array[i + 1] = c.g;
+        colorAttr.array[i + 2] = c.b;
       }
     } else {
-      colorAttr.array.set(cloud.colors);
+      colorAttr.array.set(orig);
     }
     colorAttr.needsUpdate = true;
-  }, [pointSize, background, floorColor, showFloor, showAxes, overrideColor, cloud]);
+  }, [pointSize, background, floorColor, showFloor, showAxes, colorMode, cloud]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {
