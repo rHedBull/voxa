@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Voxa runtime data — scenes and annotations are user content, not code
+data/scenes/
+data/annotations/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp

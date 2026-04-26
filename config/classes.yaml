@@ -1,0 +1,29 @@
+# Voxa class definitions. Edit to match your domain.
+# color: hex string OR [r, g, b] floats 0-1.
+# key: keyboard shortcut for fast class assignment.
+
+classes:
+  pipe:
+    label: Pipe
+    color: "#22c55e"
+    key: "1"
+  tank:
+    label: Tank
+    color: "#ef4444"
+    key: "2"
+  equipment:
+    label: Equipment
+    color: "#5b8def"
+    key: "3"
+  structural:
+    label: Structural
+    color: "#f5a524"
+    key: "4"
+  fitting:
+    label: Fitting
+    color: "#d4a017"
+    key: "5"
+  unknown:
+    label: Unknown
+    color: "#6b7280"
+    key: "0"

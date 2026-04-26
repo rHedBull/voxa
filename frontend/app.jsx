@@ -1,0 +1,237 @@
+// app.jsx — Voxa shell. Owns the scene/cloud/annotations/config state and
+// dispatches to mode components.
+
+const { useState: useStateApp, useRef: useRefApp,
+        useEffect: useEffectApp, useCallback: useCallbackApp } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "dark",
+  "mode": "inspect"
+}/*EDITMODE-END*/;
+
+const MODE_META = {
+  inspect: {
+    label: 'Inspect',
+    sub: 'Lightweight scrubby viewer for fast scan review',
+    color: 'oklch(0.72 0.14 250)',
+  },
+  label: {
+    label: 'Label',
+    sub: 'Cuboid annotation with auto-fit assistance',
+    color: 'oklch(0.74 0.15 150)',
+  },
+  compare: {
+    label: 'Compare',
+    sub: 'Side-by-side ground truth vs prediction diff',
+    color: 'oklch(0.75 0.16 60)',
+  },
+};
+
+function App() {
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const viewerRef = useRefApp();
+
+  const [scenes, setScenes] = useStateApp([]);
+  const [activeScene, setActiveScene] = useStateApp(null);
+  const [cloud, setCloud] = useStateApp(null);
+  const [loading, setLoading] = useStateApp(false);
+  const [loadError, setLoadError] = useStateApp(null);
+  const [classes, setClasses] = useStateApp([]);
+  const [gtInstances, setGtInstances] = useStateApp([]);
+  const [predInstances, setPredInstances] = useStateApp([]);
+  const [savedAt, setSavedAt] = useStateApp(null);
+  const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
+
+  // Initial config + scene list.
+  useEffectApp(() => {
+    VoxaAPI.config().then((c) => setClasses(c.classes || []));
+    VoxaAPI.scenes().then((s) => {
+      setScenes(s);
+      if (s.length && !activeScene) setActiveScene(s[0].name);
+    });
+    // eslint-disable-next-line
+  }, []);
+
+  // Load cloud + annotations whenever the active scene changes.
+  useEffectApp(() => {
+    if (!activeScene) return;
+    let cancel = false;
+    setLoading(true);
+    setLoadError(null);
+    VoxaAPI.load(activeScene)
+      .then((c) => {
+        if (cancel) return;
+        setCloud(c);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancel) return;
+        setLoadError(String(e.message || e));
+        setLoading(false);
+      });
+    VoxaAPI.getAnnotation(activeScene, 'gt')
+      .then((d) => !cancel && setGtInstances(d.instances || []));
+    VoxaAPI.getAnnotation(activeScene, 'pred')
+      .then((d) => !cancel && setPredInstances(d.instances || []));
+    return () => { cancel = true; };
+  }, [activeScene]);
+
+  const theme = t.theme === 'dark'
+    ? { bg: '#0a0b0e', floor: '#15171c' }
+    : { bg: '#ebedf1', floor: '#d9dde3' };
+  const themeClass = t.theme === 'dark' ? 'theme-dark' : 'theme-light';
+
+  useEffectApp(() => { document.body.className = themeClass; }, [themeClass]);
+
+  const meta = MODE_META[t.mode] || MODE_META.inspect;
+
+  const saveGt = useCallbackApp(async (instances) => {
+    if (!activeScene) return;
+    setGtInstances(instances);
+    await VoxaAPI.putAnnotation(activeScene, 'gt', { instances });
+    setSavedAt(new Date().toLocaleTimeString());
+  }, [activeScene]);
+
+  // Cmd/Ctrl+S → save
+  useEffectApp(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        saveGt(gtInstances);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [gtInstances, saveGt]);
+
+  return (
+    <div className={'app-shell ' + themeClass}>
+      <header className="app-header">
+        <div className="app-brand">
+          <div className="logo">⊞</div>
+          <span>Voxa</span>
+          <span className="brand-sub">3D scan studio</span>
+        </div>
+
+        <div className="mode-switcher">
+          {Object.entries(MODE_META).map(([k, m]) => (
+            <button key={k}
+              className={t.mode === k ? 'active' : ''}
+              onClick={() => setTweak('mode', k)}>
+              <span className="mode-dot" style={{ background: m.color }} />
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="header-spacer" />
+
+        <div className="header-meta">
+          {loading
+            ? <><span className="dot" style={{ background: 'oklch(0.75 0.15 60)' }} /> Loading…</>
+            : loadError
+              ? <><span className="dot" style={{ background: 'oklch(0.65 0.18 25)' }} /> {loadError}</>
+              : cloud
+                ? <><span className="dot" /> {cloud.numSubsampled.toLocaleString()} pts loaded</>
+                : <><span className="dot" style={{ background: 'oklch(0.6 0.02 250)' }} /> No scene</>
+          }
+        </div>
+        <button className="header-btn" onClick={() => setScenePickerOpen((o) => !o)}>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>◧</span>
+          {activeScene || 'Pick scene'}
+        </button>
+        {savedAt && <span className="header-meta" style={{ fontSize: 11 }}>saved {savedAt}</span>}
+        <button className="header-btn primary" onClick={() => saveGt(gtInstances)} title="Save (⌘S)">
+          ⌘S Save
+        </button>
+      </header>
+
+      <div className="mode-banner">
+        <div className="stripe" style={{ background: meta.color }} />
+        <b>{meta.label} mode</b>
+        <span>·</span>
+        <span>{meta.sub}</span>
+      </div>
+
+      {scenePickerOpen && (
+        <ScenePicker
+          scenes={scenes}
+          activeScene={activeScene}
+          onPick={(name) => { setActiveScene(name); setScenePickerOpen(false); }}
+          onClose={() => setScenePickerOpen(false)}
+        />
+      )}
+
+      <div className="app-body">
+        {t.mode === 'inspect' && (
+          <InspectMode key="i" cloud={cloud} loading={loading} theme={theme}
+            viewerRef={viewerRef} sceneName={activeScene} />
+        )}
+        {t.mode === 'label' && (
+          <LabelMode key="l" cloud={cloud} theme={theme} viewerRef={viewerRef}
+            classes={classes} instances={gtInstances} sceneName={activeScene}
+            cloudBBox={cloud?.bbox}
+            onChange={setGtInstances} onSave={saveGt} />
+        )}
+        {t.mode === 'compare' && (
+          <CompareMode key="c" cloud={cloud} theme={theme}
+            sceneName={activeScene}
+            gtInstances={gtInstances} predInstances={predInstances} />
+        )}
+      </div>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection label="Mode" />
+        <TweakRadio label="Active mode" value={t.mode}
+          options={[
+            { value: 'inspect', label: 'Inspect' },
+            { value: 'label',   label: 'Label' },
+            { value: 'compare', label: 'Compare' },
+          ]}
+          onChange={(v) => setTweak('mode', v)} />
+        <TweakSection label="Appearance" />
+        <TweakRadio label="Theme" value={t.theme}
+          options={[
+            { value: 'dark',  label: 'Dark' },
+            { value: 'light', label: 'Light' },
+          ]}
+          onChange={(v) => setTweak('theme', v)} />
+      </TweaksPanel>
+    </div>
+  );
+}
+
+function ScenePicker({ scenes, activeScene, onPick, onClose }) {
+  return (
+    <div className="scene-picker" onClick={onClose}>
+      <div className="scene-picker-card" onClick={(e) => e.stopPropagation()}>
+        <div className="side-hd">
+          <span>Scenes</span>
+          <span className="badge-soft">{scenes.length}</span>
+        </div>
+        {scenes.length === 0 && (
+          <div className="sugg-empty">
+            No scenes found. Drop a folder under <span className="mono">data/scenes/&lt;name&gt;/source.ply</span>.
+          </div>
+        )}
+        {scenes.map((s) => (
+          <div key={s.name}
+               className={'inst-row' + (s.name === activeScene ? ' selected' : '')}
+               onClick={() => onPick(s.name)}>
+            <span className="inst-dot" style={{ background: s.has_source ? '#5b8def' : '#6b7280' }} />
+            <div className="inst-text">
+              <b>{s.name}</b>
+              <em>
+                {s.source_type ? `.${s.source_type}` : 'no source'}
+                {s.has_ground_truth ? ' · GT' : ''}
+                {s.has_predictions ? ' · pred' : ''}
+              </em>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
