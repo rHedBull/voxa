@@ -1,8 +1,11 @@
 // mode-compare.jsx — synced split view: GT (solid) vs prediction (dashed),
 // with a server-computed diff table.
 
-const { useState: useStateCmp, useRef: useRefCmp,
-        useEffect: useEffectCmp } = React;
+import { useState as useStateCmp, useRef as useRefCmp,
+         useEffect as useEffectCmp } from 'react';
+import { Viewer } from './viewer.jsx';
+import { CameraPresets } from './viewport-atoms.jsx';
+import { VoxaAPI } from './api.js';
 
 function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef, stats }) {
   return (
@@ -30,7 +33,7 @@ function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef, stats 
   );
 }
 
-function CompareMode({ cloud, theme, sceneName, gtInstances, predInstances }) {
+export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstances }) {
   const leftRef = useRefCmp();
   const rightRef = useRefCmp();
   const [syncCameras, setSyncCameras] = useStateCmp(true);
@@ -166,4 +169,3 @@ function CompareMode({ cloud, theme, sceneName, gtInstances, predInstances }) {
   );
 }
 
-window.CompareMode = CompareMode;

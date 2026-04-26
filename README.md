@@ -13,16 +13,27 @@ organized around three clearly separated modes.
 ## Quick start
 
 ```bash
-# 1. Drop a scan into the data dir
+# 1. Install JS deps (first run only)
+npm install
+
+# 2. Drop a scan into the data dir
 ./scripts/import_scene.sh water_pump ../3d-labeler/data/real/water_pump_8k/source.glb
 
-# 2. Launch (creates a .venv on first run, ~30s)
-./scripts/run.sh
+# 3. Launch — runs the FastAPI backend AND the Vite dev server side by side
+npm run dev
 
-# 3. Open http://127.0.0.1:8765
+# 4. Open http://127.0.0.1:5173    (Vite proxies /api/* to the backend)
 ```
 
-The first run creates `voxa/.venv` and installs `requirements.txt`.
+The first run also creates `voxa/.venv` and installs Python `requirements.txt`.
+For production-style serving (one process, no Vite), run `npm run build` then
+`./scripts/run.sh` and open `http://127.0.0.1:8765`.
+
+## Agentation
+
+Voxa ships with [Agentation](https://www.agentation.com) — the floating toolbar
+in the bottom-right lets you click any UI element, leave a note, and copy a
+structured markdown blob you can paste into your AI agent (e.g. Claude Code).
 
 ## Layout
 
@@ -32,24 +43,29 @@ voxa/
 │   ├── main.py
 │   ├── point_cloud.py    (PLY/GLB loader from 3d-labeler)
 │   └── requirements.txt
-├── frontend/         React + Three.js via CDN — no build step
+├── frontend/         Vite + React + Three.js
 │   ├── index.html
-│   ├── app.css       (Linear/Figma-ish dark/light theme)
-│   ├── app.jsx       (shell, scene picker, save protocol)
-│   ├── viewer.jsx    (Three.js viewport, orbit, cuboid overlay)
-│   ├── api.jsx       (thin client for /api/*)
-│   ├── mode-inspect.jsx
-│   ├── mode-label.jsx
-│   ├── mode-compare.jsx
-│   └── tweaks-panel.jsx  (theme + mode tweaks panel)
+│   └── src/
+│       ├── main.jsx        (entry — mounts <App> + <Agentation>)
+│       ├── App.jsx         (shell, scene picker, save protocol)
+│       ├── viewer.jsx      (Three.js viewport, orbit, cuboid overlay)
+│       ├── viewport-atoms.jsx  (HUDChip, ToolButton, CameraPresets)
+│       ├── api.js          (thin client for /api/*)
+│       ├── mode-inspect.jsx
+│       ├── mode-label.jsx
+│       ├── mode-compare.jsx
+│       ├── tweaks-panel.jsx
+│       └── app.css         (Linear/Figma-ish dark/light theme)
 ├── config/
 │   └── classes.yaml      (label classes — id, color, hotkey)
 ├── data/
 │   ├── scenes/<name>/source.{ply,glb}   (input)
 │   └── annotations/<name>/{ground_truth,predictions}.json
-└── scripts/
-    ├── run.sh            (start server)
-    └── import_scene.sh   (copy a PLY/GLB into data/scenes/)
+├── scripts/
+│   ├── run.sh            (backend only — used by `npm run dev:backend`)
+│   └── import_scene.sh   (copy a PLY/GLB into data/scenes/)
+├── package.json          (npm scripts: dev, build)
+└── vite.config.js
 ```
 
 ## Data format

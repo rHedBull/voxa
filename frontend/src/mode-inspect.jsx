@@ -1,45 +1,10 @@
 // mode-inspect.jsx — full-bleed scrubby viewer for fast scan review.
 
-const { useState: useStateInspect, useMemo: useMemoInspect } = React;
+import { useState as useStateInspect, useMemo as useMemoInspect } from 'react';
+import { Viewer } from './viewer.jsx';
+import { ViewportToolbar, ToolButton, HUDChip, CameraPresets } from './viewport-atoms.jsx';
 
-function ViewportToolbar({ children, side = 'left' }) {
-  return <div className="vp-toolbar" data-side={side}>{children}</div>;
-}
-
-function ToolButton({ icon, label, active, badge, onClick, hotkey, mini }) {
-  return (
-    <button type="button"
-      className={'tool-btn' + (active ? ' active' : '') + (mini ? ' mini' : '')}
-      onClick={onClick}
-      title={label + (hotkey ? `  (${hotkey})` : '')}>
-      <span className="tool-ico" aria-hidden>{icon}</span>
-      {!mini && <span className="tool-lbl">{label}</span>}
-      {hotkey && !mini && <span className="tool-hk">{hotkey}</span>}
-      {badge != null && <span className="tool-badge">{badge}</span>}
-    </button>
-  );
-}
-
-function HUDChip({ label, value, mono, accent }) {
-  return (
-    <div className={'hud-chip' + (accent ? ' accent' : '')}>
-      <span className="hud-lbl">{label}</span>
-      <span className={'hud-val' + (mono ? ' mono' : '')}>{value}</span>
-    </div>
-  );
-}
-
-function CameraPresets({ onPreset }) {
-  return (
-    <div className="cam-presets">
-      {['iso', 'top', 'front', 'side'].map((p) => (
-        <button key={p} className="cam-btn" onClick={() => onPreset(p)}>{p}</button>
-      ))}
-    </div>
-  );
-}
-
-function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
+export function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
   const [pointSize, setPointSize] = useStateInspect(0.012);
   const [colorMode, setColorMode] = useStateInspect('rgb');
   const [showFloor, setShowFloor] = useStateInspect(true);
@@ -150,5 +115,3 @@ function InspectMode({ cloud, loading, theme, viewerRef, sceneName }) {
     </div>
   );
 }
-
-window.InspectMode = InspectMode;

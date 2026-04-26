@@ -24,4 +24,11 @@ echo "  Voxa  →  http://$HOST:$PORT"
 echo "  data  →  $VOXA_DATA_DIR"
 echo "──────────────────────────────────────────────────────────"
 
-exec "$ROOT/.venv/bin/uvicorn" main:app --host "$HOST" --port "$PORT" --reload
+# --reload uses inotify, which can blow past the system watcher limit if many
+# other projects are also watched. Opt in via VOXA_RELOAD=1 if you want it.
+RELOAD_FLAG=""
+if [[ "${VOXA_RELOAD:-0}" == "1" ]]; then
+  RELOAD_FLAG="--reload"
+fi
+
+exec "$ROOT/.venv/bin/uvicorn" main:app --host "$HOST" --port "$PORT" $RELOAD_FLAG

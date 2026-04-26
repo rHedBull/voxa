@@ -3,7 +3,8 @@
 // cuboid overlays for instances, supports per-instance highlight, and exposes
 // camera-state ref handles used by Compare mode for sync.
 
-const { useEffect, useRef, useImperativeHandle, forwardRef } = React;
+import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
+import * as THREE from 'three';
 
 function attachOrbit(camera, dom, target, onChange) {
   const state = {
@@ -104,7 +105,7 @@ function attachOrbit(camera, dom, target, onChange) {
   };
 }
 
-const Viewer = forwardRef(function Viewer(props, ref) {
+export const Viewer = forwardRef(function Viewer(props, ref) {
   const {
     cloud,                   // { positions, colors, bbox? } | null
     instances = [],
@@ -328,5 +329,3 @@ const Viewer = forwardRef(function Viewer(props, ref) {
 
   return <div ref={mountRef} style={{ width: '100%', height: '100%', position: 'relative' }} />;
 });
-
-window.Viewer = Viewer;

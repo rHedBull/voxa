@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 *.egg-info/
 
+# Node / Vite
+node_modules/
+dist/
+
 # Voxa runtime data — scenes and annotations are user content, not code
 data/scenes/
 data/annotations/

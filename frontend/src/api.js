@@ -1,6 +1,6 @@
-// api.jsx — thin client for the FastAPI backend.
+// api.js — thin client for the FastAPI backend.
 
-const API = {
+export const VoxaAPI = {
   async health() {
     const r = await fetch('/api/health');
     return r.json();
@@ -71,9 +71,6 @@ function b64ToFloat32(b64) {
   return new Float32Array(buf);
 }
 
-function newId(prefix = 'inst') {
+export function newId(prefix = 'inst') {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
-
-window.VoxaAPI = API;
-window.VoxaUtil = { newId };

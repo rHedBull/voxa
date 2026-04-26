@@ -29,7 +29,7 @@ DATA_DIR = Path(os.environ.get("VOXA_DATA_DIR", ROOT / "data"))
 SCENES_DIR = DATA_DIR / "scenes"
 ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
-FRONTEND_DIR = ROOT / "frontend"
+FRONTEND_DIST = ROOT / "dist"
 MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "300000"))
 
 app = FastAPI(title="Voxa 3D scan studio")
@@ -430,6 +430,8 @@ def auto_fit(req: AutoFitRequest):
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────
-# Mounted last so /api/* takes precedence.
-if FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+# Mounted last so /api/* takes precedence. In dev, Vite serves the frontend
+# directly and proxies /api/* to this backend; in production, run `npm run
+# build` and the built bundle ends up in `dist/`.
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")

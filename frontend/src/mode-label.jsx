@@ -1,9 +1,13 @@
 // mode-label.jsx — class palette (left), instance list (right), cuboid editing.
 
-const { useState: useStateLabel, useMemo: useMemoLabel,
-        useEffect: useEffectLabel, useCallback: useCallbackLabel } = React;
+import { useState as useStateLabel, useMemo as useMemoLabel,
+         useEffect as useEffectLabel, useCallback as useCallbackLabel } from 'react';
+import * as THREE from 'three';
+import { Viewer } from './viewer.jsx';
+import { ViewportToolbar, ToolButton, HUDChip, CameraPresets } from './viewport-atoms.jsx';
+import { VoxaAPI, newId } from './api.js';
 
-function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -50,7 +54,7 @@ function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSa
     );
     const s = Math.max(0.05, ext * 0.1);
     const inst = {
-      id: VoxaUtil.newId(),
+      id: newId(),
       cls: activeClassDef.id,
       label: `${activeClassDef.label} ${(counts[activeClassDef.id] || 0) + 1}`,
       color: activeClassDef.color,
@@ -283,4 +287,3 @@ function NumGrid({ label3, values, onChange }) {
   );
 }
 
-window.LabelMode = LabelMode;

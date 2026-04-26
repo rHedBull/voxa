@@ -1,8 +1,13 @@
-// app.jsx — Voxa shell. Owns the scene/cloud/annotations/config state and
+// App.jsx — Voxa shell. Owns the scene/cloud/annotations/config state and
 // dispatches to mode components.
 
-const { useState: useStateApp, useRef: useRefApp,
-        useEffect: useEffectApp, useCallback: useCallbackApp } = React;
+import { useState as useStateApp, useRef as useRefApp,
+         useEffect as useEffectApp, useCallback as useCallbackApp } from 'react';
+import { VoxaAPI } from './api.js';
+import { InspectMode } from './mode-inspect.jsx';
+import { LabelMode } from './mode-label.jsx';
+import { CompareMode } from './mode-compare.jsx';
+import { useTweaks, TweaksPanel, TweakSection, TweakRadio } from './tweaks-panel.jsx';
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "dark",
@@ -27,7 +32,7 @@ const MODE_META = {
   },
 };
 
-function App() {
+export default function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const viewerRef = useRefApp();
 
@@ -239,4 +244,3 @@ function ScenePicker({ scenes, activeScene, onPick, onClose }) {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
