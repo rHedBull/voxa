@@ -125,6 +125,7 @@ kbd {
   background: var(--accent); border-color: transparent; color: white;
 }
 .header-btn:hover { filter: brightness(1.08); }
+.header-btn.icon-only { width: 28px; padding: 0; justify-content: center; font-size: 14px; line-height: 1; }
 
 .mode-banner {
   display: flex; align-items: center; gap: 12px;

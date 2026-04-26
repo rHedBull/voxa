@@ -140,6 +140,11 @@ function App() {
           <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>◧</span>
           {activeScene || 'Pick scene'}
         </button>
+        <button className="header-btn icon-only"
+          onClick={() => setTweak('theme', t.theme === 'dark' ? 'light' : 'dark')}
+          title={t.theme === 'dark' ? 'Switch to bright mode' : 'Switch to dark mode'}>
+          {t.theme === 'dark' ? '☀' : '☾'}
+        </button>
         {savedAt && <span className="header-meta" style={{ fontSize: 11 }}>saved {savedAt}</span>}
         <button className="header-btn primary" onClick={() => saveGt(gtInstances)} title="Save (⌘S)">
           ⌘S Save
