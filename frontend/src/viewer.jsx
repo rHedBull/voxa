@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 // Resolve a class palette (list of {id, color, label}) into a dense RGB lookup
 // indexed by class id. Out-of-range ids fall through to the unlabeled grey.
@@ -277,6 +278,9 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     cuboidOpacity = 1,
     colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'class' | 'instance' | 'flat'
     navMode = 'orbit',          // 'orbit' | 'walk'
+    meshUrl = null,             // GLB streaming URL, applied with Z-up → Y-up rotation
+    showMesh = false,           // when false, mesh stays unloaded (saves a 100MB+ fetch)
+    onMeshLoadProgress = null,  // ({ loaded, total }) — wire-progress callback
     onCameraChange = null,
   } = props;
 
@@ -334,6 +338,14 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const cuboidGroup = new THREE.Group();
     scene.add(cuboidGroup);
 
+    // Mesh container. Z-up → Y-up applied at the group level so children
+    // imported from GLTF can keep their original transforms. The group also
+    // carries the recenter offset for the active scene.
+    const meshGroup = new THREE.Group();
+    meshGroup.rotation.x = -Math.PI / 2;
+    meshGroup.visible = false;
+    scene.add(meshGroup);
+
     let raf;
     const tick = () => {
       renderer.render(scene, camera);
@@ -359,7 +371,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     stateRef.current = {
       renderer, scene, camera, pointsGeom, pointsMat, points,
       controller: null,
-      cuboidGroup, floor, grid, axes, mount,
+      cuboidGroup, meshGroup, meshUrlLoaded: null, meshLoadAbort: null,
+      floor, grid, axes, mount,
     };
 
     return () => {
@@ -400,6 +413,17 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.pointsGeom.setAttribute('color',
       new THREE.BufferAttribute(cloud.colors.slice(), 3));
     s.pointsGeom.computeBoundingSphere();
+
+    // Apply the recenter offset to the mesh group so a co-located mesh
+    // overlays the cloud. The group's rotation already brings GLB Z-up
+    // into Y-up; the offset is in the post-rotation Y-up frame, applied
+    // at the world level via group.position.
+    if (cloud.recenterOffset) {
+      const o = cloud.recenterOffset;
+      s.meshGroup.position.set(-o[0], -o[1], -o[2]);
+    } else {
+      s.meshGroup.position.set(0, 0, 0);
+    }
 
     if (cloud.bbox) {
       const c = new THREE.Vector3(
@@ -546,6 +570,56 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     }
     colorAttr.needsUpdate = true;
   }, [colorMode, cloud]);
+
+  // ── Mesh load/show ──────────────────────────────────────────────────────
+  // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —
+  // these files are huge (100MB+ for munich_water_pump). Once loaded for a
+  // given URL we keep it around so toggling visibility off/on is free; when
+  // the URL changes (different scene) we dispose and reload only on demand.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.meshGroup) return;
+
+    // Drop any stale mesh when the scene's mesh URL changes.
+    if (s.meshUrlLoaded && s.meshUrlLoaded !== meshUrl) {
+      while (s.meshGroup.children.length) {
+        const c = s.meshGroup.children.pop();
+        c.traverse?.((n) => {
+          n.geometry?.dispose?.();
+          if (n.material) {
+            (Array.isArray(n.material) ? n.material : [n.material])
+              .forEach((m) => { m.map?.dispose?.(); m.dispose?.(); });
+          }
+        });
+      }
+      s.meshUrlLoaded = null;
+    }
+
+    s.meshGroup.visible = !!(showMesh && (meshUrl || s.meshUrlLoaded));
+
+    // Don't fetch unless asked. This keeps default scene loads fast.
+    if (!showMesh || !meshUrl || s.meshUrlLoaded === meshUrl) return;
+
+    let cancelled = false;
+    const loader = new GLTFLoader();
+    loader.load(
+      meshUrl,
+      (gltf) => {
+        if (cancelled) return;
+        s.meshGroup.add(gltf.scene);
+        s.meshUrlLoaded = meshUrl;
+        s.meshGroup.visible = true;
+      },
+      (xhr) => {
+        if (cancelled || !onMeshLoadProgress) return;
+        onMeshLoadProgress({ loaded: xhr.loaded, total: xhr.total || 0 });
+      },
+      (err) => {
+        if (!cancelled) console.error('GLB load failed:', err);
+      },
+    );
+    return () => { cancelled = true; };
+  }, [meshUrl, showMesh, onMeshLoadProgress]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {

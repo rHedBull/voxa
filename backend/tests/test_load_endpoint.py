@@ -109,6 +109,47 @@ def test_recenter_zero_for_already_centered_scene(lidar_client):
     assert body["recenter_offset"] == [0.0, 0.0, 0.0]
 
 
+def test_mesh_endpoint_404_when_no_glb(lidar_client):
+    r = lidar_client.get("/api/mesh/annotated/demo")
+    assert r.status_code == 404
+
+
+def test_mesh_endpoint_serves_glb_when_present(lidar_client, tmp_path, monkeypatch):
+    """When source/mesh.glb exists, /api/mesh streams it with the GLB
+    content-type, and /api/load surfaces the URL in mesh_url."""
+    import main
+    from plyfile import PlyData, PlyElement
+
+    lidar = tmp_path / "lidar-mesh"
+    scan = lidar / "annotated" / "withmesh"
+    (scan / "source").mkdir(parents=True, exist_ok=True)
+    # Tiny valid PLY.
+    arr = np.zeros(4, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+                             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
+        str(scan / "source" / "scan.ply"))
+    (scan / "labels").mkdir(parents=True, exist_ok=True)
+    (scan / "meta.json").write_text('{"scan_name": "withmesh", "n_points": 4}')
+    # Pretend mesh — content body doesn't matter for these assertions.
+    (scan / "source" / "mesh.glb").write_bytes(b"glTF\x02\x00\x00\x00")
+
+    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+
+    body = lidar_client.post("/api/load",
+                             json={"name": "annotated/withmesh", "max_points": 10}).json()
+    assert body["mesh_url"] == "/api/mesh/annotated/withmesh"
+
+    r = lidar_client.get(body["mesh_url"])
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("model/gltf-binary")
+    assert r.content == b"glTF\x02\x00\x00\x00"
+
+    # /api/scenes should also flag has_mesh.
+    info = next(s for s in lidar_client.get("/api/scenes").json()
+                if s["id"] == "annotated/withmesh")
+    assert info["has_mesh"] is True
+
+
 def test_annotated_scene_z_up_to_y_up_swap(lidar_client, tmp_path, monkeypatch):
     """Annotated tier sources are LAS-style Z-up; loader must rotate them to
     Three.js Y-up. Verifies a known cloud where the Z-axis is the tallest

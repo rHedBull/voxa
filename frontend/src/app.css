@@ -323,6 +323,7 @@ kbd {
   box-shadow: 0 1px 2px rgba(0,0,0,0.2); transition: transform .14s;
 }
 .sw.on i { transform: translateX(12px); }
+.sw.disabled, .sw[disabled] { opacity: 0.4; cursor: not-allowed; }
 
 .meas-row {
   display: grid; grid-template-columns: auto 1fr auto; gap: 8px;

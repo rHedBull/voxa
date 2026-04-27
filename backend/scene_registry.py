@@ -41,6 +41,10 @@ class SceneSource:
     def scene_id(self) -> str:
         return f"{self.tier}/{self.name}"
 
+    @property
+    def has_mesh(self) -> bool:
+        return bool(self.extras.get("mesh_path"))
+
 
 def _voxa_legacy_root(data_dir: Path) -> Path:
     return data_dir / "scenes"
@@ -86,6 +90,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
         gt_seg = labels_dir / "gt_segment_ids.npy"
         seg_meta = labels_dir / "gt_segment_metadata.json"
         meta_path = sd / "meta.json"
+        mesh_path = sd / "source" / "mesh.glb"
         has_labels = gt_class.exists() and gt_seg.exists()
         n_points = None
         if meta_path.exists():
@@ -106,6 +111,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
                 "segment_metadata_path": str(seg_meta) if seg_meta.exists() else None,
                 "meta_path": str(meta_path) if meta_path.exists() else None,
                 "scan_dir": str(sd),
+                "mesh_path": str(mesh_path) if mesh_path.exists() else None,
             },
         ))
     return out

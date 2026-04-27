@@ -10,6 +10,15 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
   const [pointSize, setPointSize] = useStateInspect(0.012);
   const [colorMode, setColorMode] = useStateInspect('rgb');
   const [showFloor, setShowFloor] = useStateInspect(true);
+  const [showMesh, setShowMesh] = useStateInspect(false);
+  const [meshProgress, setMeshProgress] = useStateInspect(null);
+
+  // Reset mesh toggle when switching to a scene without a mesh, so the
+  // user doesn't carry a stale "on" state into a scene that can't honor it.
+  useEffectInspect(() => {
+    if (cloud && !cloud.meshUrl && showMesh) setShowMesh(false);
+    if (!cloud) setMeshProgress(null);
+  }, [cloud, showMesh]);
 
   // Derived stats from the loaded cloud.
   const stats = useMemoInspect(() => {
@@ -50,6 +59,9 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
           floorColor={theme.floor}
           colorMode={colorMode}
           navMode={navMode}
+          meshUrl={cloud?.meshUrl || null}
+          showMesh={showMesh}
+          onMeshLoadProgress={setMeshProgress}
         />
 
         <div className="vp-hud-top">
@@ -126,6 +138,20 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
                 <label>Floor & grid</label>
                 <button className={'sw' + (showFloor ? ' on' : '')}
                   onClick={() => setShowFloor(!showFloor)}><i /></button>
+              </div>
+              <div className="ctrl row">
+                <label>
+                  Mesh{cloud?.meshUrl ? '' : ' (none)'}
+                  {meshProgress && meshProgress.total > 0 && meshProgress.loaded < meshProgress.total && (
+                    <span className="mono dim">
+                      {' '}{((meshProgress.loaded / meshProgress.total) * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </label>
+                <button className={'sw' + (showMesh ? ' on' : '') + (cloud?.meshUrl ? '' : ' disabled')}
+                  disabled={!cloud?.meshUrl}
+                  title={cloud?.meshUrl ? '' : 'No mesh.glb for this scene'}
+                  onClick={() => cloud?.meshUrl && setShowMesh(!showMesh)}><i /></button>
               </div>
             </div>
           </div>

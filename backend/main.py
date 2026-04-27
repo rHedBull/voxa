@@ -26,6 +26,7 @@ import numpy as np
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -82,6 +83,7 @@ class SceneInfo(BaseModel):
     source_format: Optional[str]   # 'ply' | 'glb' | 'laz'
     has_labels: bool
     has_intensity: bool
+    has_mesh: bool                 # canonical mesh.glb available (annotated only)
     has_ground_truth: bool         # cuboid GT (legacy)
     has_predictions: bool          # cuboid pred (legacy)
     n_points: Optional[int] = None
@@ -108,6 +110,7 @@ class LoadResponse(BaseModel):
     n_instances: Optional[int] = None
     n_labeled_points: Optional[int] = None
     recenter_offset: list[float] = [0.0, 0.0, 0.0]
+    mesh_url: Optional[str] = None    # /api/mesh/<id> when a GLB exists
 
 
 class Cuboid(BaseModel):
@@ -333,6 +336,7 @@ def list_scenes():
             source_format=s.source_format,
             has_labels=s.has_labels,
             has_intensity=s.has_intensity,
+            has_mesh=s.has_mesh,
             has_ground_truth=gt,
             has_predictions=pr,
             n_points=s.n_points,
@@ -439,7 +443,21 @@ def load_scene(req: LoadRequest):
         n_instances=n_instances,
         n_labeled_points=n_labeled,
         recenter_offset=offset,
+        mesh_url=(f"/api/mesh/{src.scene_id}" if src.has_mesh else None),
     )
+
+
+@app.get("/api/mesh/{tier}/{name}")
+def get_mesh(tier: str, name: str):
+    """Stream the canonical mesh.glb for a scene. The frontend applies the
+    same Z-up → Y-up rotation the loader applies to points so mesh and
+    cloud overlay correctly. 404 when no mesh is available."""
+    src = _resolve(f"{tier}/{name}")
+    mesh_path = src.extras.get("mesh_path")
+    if not mesh_path:
+        raise HTTPException(404, f"No mesh for scene: {tier}/{name}")
+    return FileResponse(mesh_path, media_type="model/gltf-binary",
+                        filename=f"{name}.glb")
 
 
 @app.get("/api/annotations/{scene}/{kind}", response_model=AnnotationDoc)
