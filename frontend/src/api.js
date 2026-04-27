@@ -13,11 +13,14 @@ export const VoxaAPI = {
     const r = await fetch('/api/scenes');
     return r.json();
   },
-  async load(name, maxPoints = 300000) {
+  async load(name, maxPoints = null) {
+    // When maxPoints is null, omit it from the body so the backend's
+    // VOXA_MAX_POINTS env (default 300_000) controls the cap.
+    const body = maxPoints == null ? { name } : { name, max_points: maxPoints };
     const r = await fetch('/api/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, max_points: maxPoints }),
+      body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`load failed: ${r.status} ${await r.text()}`);
     const j = await r.json();

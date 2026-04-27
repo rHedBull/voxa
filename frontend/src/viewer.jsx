@@ -445,7 +445,9 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     }
   }, [cloud]);
 
-  // ── Reactive updates ────────────────────────────────────────────────────
+  // ── Cheap appearance updates ────────────────────────────────────────────
+  // Kept off the recolor effect so dragging the point-size slider doesn't
+  // trigger the per-point color loop on multi-million-point clouds.
   useEffect(() => {
     const s = stateRef.current;
     if (!s.pointsMat) return;
@@ -455,7 +457,12 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.floor.visible = showFloor;
     s.grid.visible = showFloor;
     s.axes.visible = showAxes;
+  }, [pointSize, background, floorColor, showFloor, showAxes]);
 
+  // ── Per-point color recompute ───────────────────────────────────────────
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.pointsGeom) return;
     const colorAttr = s.pointsGeom.getAttribute('color');
     const posAttr = s.pointsGeom.getAttribute('position');
     if (!colorAttr || !cloud) return;
@@ -538,7 +545,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       colorAttr.array.set(orig);
     }
     colorAttr.needsUpdate = true;
-  }, [pointSize, background, floorColor, showFloor, showAxes, colorMode, cloud]);
+  }, [colorMode, cloud]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {
