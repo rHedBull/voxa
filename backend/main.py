@@ -340,6 +340,33 @@ def list_scenes():
     return out
 
 
+def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
+    """Rotate a Z-up point cloud (LAS / surveying convention) into the
+    Three.js Y-up frame so the floor sits below the cloud as expected.
+
+    Right-handed Z-up (X right, Y depth, Z up) → right-handed Y-up
+    (X right, Y up, Z back). Mapping: (x, y, z) → (x, z, -y).
+    Per-point label / instance arrays carry over unchanged.
+    """
+    pts = pc.points
+    new_pts = np.empty_like(pts)
+    new_pts[:, 0] = pts[:, 0]
+    new_pts[:, 1] = pts[:, 2]
+    new_pts[:, 2] = -pts[:, 1]
+    return PointCloud(
+        points=new_pts,
+        colors=pc.colors,
+        labels=pc.labels,
+        instance_ids=pc.instance_ids,
+        face_indices=pc.face_indices,
+    )
+
+
+# Tiers whose source data follows the surveying Z-up convention. Legacy
+# scenes were authored Y-up and stay as-is.
+_Z_UP_TIERS = {"annotated", "decimated", "raw"}
+
+
 def _load_scene_source(src: SceneSource, max_points: int):
     """Dispatch to the right loader. Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled_points)."""
     if src.tier == "annotated":
@@ -366,6 +393,12 @@ def load_scene(req: LoadRequest):
     pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled = (
         _load_scene_source(src, req.max_points)
     )
+
+    # LAS / lidar archive scans are Z-up; rotate into Three.js Y-up before
+    # any further processing so bbox / recenter / subsample all operate in
+    # the display frame.
+    if src.tier in _Z_UP_TIERS:
+        pc = _z_up_to_y_up(pc)
 
     # Recenter for float32 stability (LAS UTM, etc).
     pc, offset = _recenter(pc)

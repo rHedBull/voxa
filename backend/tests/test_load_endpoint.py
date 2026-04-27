@@ -107,3 +107,39 @@ def test_recenter_zero_for_already_centered_scene(lidar_client):
     # Tiny synthesized cloud is centered around origin; recenter offset
     # is the all-zero "no recenter needed" sentinel.
     assert body["recenter_offset"] == [0.0, 0.0, 0.0]
+
+
+def test_annotated_scene_z_up_to_y_up_swap(lidar_client, tmp_path, monkeypatch):
+    """Annotated tier sources are LAS-style Z-up; loader must rotate them to
+    Three.js Y-up. Verifies a known cloud where the Z-axis is the tallest
+    extent ends up with the Y-axis as the tallest extent after load."""
+    import main
+    from plyfile import PlyData, PlyElement
+
+    lidar = tmp_path / "lidar2"
+    scan_dir = lidar / "annotated" / "tall"
+    n = 10
+    pts = np.zeros((n, 3), dtype=np.float32)
+    pts[:, 0] = np.linspace(-1, 1, n)        # X: 2m wide
+    pts[:, 1] = np.linspace(-2, 2, n)        # Y (source depth): 4m
+    pts[:, 2] = np.linspace(-10, 10, n)      # Z (source height): 20m — tallest
+    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+    arr = np.zeros(n, dtype=dtype)
+    arr['x'], arr['y'], arr['z'] = pts[:, 0], pts[:, 1], pts[:, 2]
+    arr['red'] = arr['green'] = arr['blue'] = 200
+    (scan_dir / "source").mkdir(parents=True, exist_ok=True)
+    PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
+        str(scan_dir / "source" / "scan.ply"))
+    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
+    (scan_dir / "meta.json").write_text('{"scan_name": "tall", "n_points": 10}')
+
+    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    body = lidar_client.post("/api/load", json={"name": "annotated/tall", "max_points": 100}).json()
+
+    extents = [body["bbox_max"][i] - body["bbox_min"][i] for i in range(3)]
+    # Pre-swap, Z (index 2) was tallest (20m). Post-swap, Y (index 1) must
+    # be tallest. Source-Y (4m depth) ends up on Z (still 4m, sign flipped).
+    assert extents[1] == pytest.approx(20.0, abs=1e-3), f"got extents={extents}"
+    assert extents[0] == pytest.approx(2.0, abs=1e-3)
+    assert extents[2] == pytest.approx(4.0, abs=1e-3)
