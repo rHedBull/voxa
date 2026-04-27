@@ -281,6 +281,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     meshUrl = null,             // GLB streaming URL
     meshIsZUp = false,          // rotate GLB by -π/2 around X when its source frame is Z-up
     showMesh = false,           // when false, mesh stays unloaded (saves a 100MB+ fetch)
+    meshBrightness = 1.0,       // multiplier on every loaded mesh material's color (0..2)
     onMeshLoadProgress = null,  // ({ loaded, total }) — wire-progress callback
     onCameraChange = null,
   } = props;
@@ -299,6 +300,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
+    // Linear tone mapping lets per-material color > 1 actually brighten
+    // pixels instead of clamping. Used by the mesh-brightness slider.
+    renderer.toneMapping = THREE.LinearToneMapping;
+    renderer.toneMappingExposure = 1.0;
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -345,6 +350,14 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const meshGroup = new THREE.Group();
     meshGroup.visible = false;
     scene.add(meshGroup);
+
+    // Lights so PBR/standard glTF materials don't render pure black. Cheap
+    // and benign for the textured munich GLB; required for vertex-colored
+    // BPA meshes whose default PBR material has no emissive.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 1.0));
+    const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    sunLight.position.set(2, 4, 2);
+    scene.add(sunLight);
 
     let raf;
     const tick = () => {
@@ -610,6 +623,20 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       meshUrl,
       (gltf) => {
         if (cancelled) return;
+        // Swap PBR materials to fullbright Basic so vertex colors and
+        // baked textures render at capture brightness — these meshes ARE
+        // the data, we don't want lighting to multiply/darken them.
+        gltf.scene.traverse((node) => {
+          if (!node.isMesh || !node.material) return;
+          const old = node.material;
+          const m = new THREE.MeshBasicMaterial({
+            vertexColors: true,
+            map: old.map || null,
+            side: THREE.DoubleSide,
+          });
+          node.material = m;
+          old.dispose?.();
+        });
         s.meshGroup.add(gltf.scene);
         s.meshUrlLoaded = meshUrl;
         s.meshGroup.visible = true;
@@ -627,6 +654,19 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     );
     return () => { cancelled = true; };
   }, [meshUrl, meshIsZUp, showMesh, onMeshLoadProgress]);
+
+  // Mesh brightness: multiply every loaded mesh material's base color.
+  // Linear tone mapping on the renderer lets values >1 actually brighten.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.meshGroup) return;
+    const b = Math.max(0, meshBrightness);
+    s.meshGroup.traverse((node) => {
+      if (!node.isMesh || !node.material) return;
+      (Array.isArray(node.material) ? node.material : [node.material])
+        .forEach((m) => { m.color?.setRGB(b, b, b); });
+    });
+  }, [meshBrightness, meshUrl, showMesh]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {

@@ -458,9 +458,23 @@ def load_scene(req: LoadRequest):
         n_instances=n_instances,
         n_labeled_points=n_labeled,
         recenter_offset=offset,
-        mesh_url=(f"/api/mesh/{src.scene_id}" if src.has_mesh else None),
+        mesh_url=_mesh_url_for(src),
         mesh_is_z_up=is_z_up if src.has_mesh else False,
     )
+
+
+def _mesh_url_for(src: SceneSource) -> Optional[str]:
+    """Cache-bust the mesh URL with the GLB's mtime, so a rebuilt mesh.glb
+    is treated as a fresh resource by both HTTP caches and Three.js's
+    GLTFLoader cache (which keys on URL)."""
+    if not src.has_mesh:
+        return None
+    mesh_path = src.extras.get("mesh_path")
+    try:
+        mtime = int(os.path.getmtime(mesh_path)) if mesh_path else 0
+    except OSError:
+        mtime = 0
+    return f"/api/mesh/{src.scene_id}?v={mtime}"
 
 
 @app.get("/api/mesh/{tier}/{name}")

@@ -95,6 +95,9 @@ pythonpath = ["."]
 markers = [
     "integration: marks integration tests against real LAZ files (deselect with -m 'not integration')",
 ]
+
+[tool.pyright]
+extraPaths = ["."]
 ```
 
 - [ ] **Step 4: Write empty stubs for `discovery.py`, `pipeline.py`, `build_meshes.py`**
@@ -307,7 +310,7 @@ from pathlib import Path
 
 import pytest
 
-from discovery import SceneTask, find_eligible_scenes
+from discovery import find_eligible_scenes
 
 
 def test_finds_laz_sourced_scene_without_mesh(fake_archive: Path) -> None:
