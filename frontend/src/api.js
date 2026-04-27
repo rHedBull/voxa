@@ -40,6 +40,7 @@ export const VoxaAPI = {
       nLabeledPoints: j.n_labeled_points ?? null,
       recenterOffset: j.recenter_offset || [0, 0, 0],
       meshUrl: j.mesh_url || null,
+      meshIsZUp: !!j.mesh_is_z_up,
     };
   },
   async getAnnotation(scene, kind) {

@@ -93,10 +93,18 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
         mesh_path = sd / "source" / "mesh.glb"
         has_labels = gt_class.exists() and gt_seg.exists()
         n_points = None
+        # is_z_up: PLYs sampled from a glTF mesh inherit the GLB's Y-up
+        # frame, while PLYs sampled from a LAZ inherit the Z-up surveying
+        # frame. Default: assume Z-up unless the meta.json explicitly says
+        # otherwise (covers the unmaintained-meta case).
+        is_z_up = True
         if meta_path.exists():
             try:
                 with meta_path.open() as f:
-                    n_points = int(json.load(f).get("n_points") or 0) or None
+                    meta = json.load(f)
+                n_points = int(meta.get("n_points") or 0) or None
+                if meta.get("source_mesh") and not meta.get("source_laz"):
+                    is_z_up = False
             except (OSError, ValueError, json.JSONDecodeError):
                 n_points = None
         out.append(SceneSource(
@@ -112,6 +120,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
                 "meta_path": str(meta_path) if meta_path.exists() else None,
                 "scan_dir": str(sd),
                 "mesh_path": str(mesh_path) if mesh_path.exists() else None,
+                "is_z_up": is_z_up,
             },
         ))
     return out

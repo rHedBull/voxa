@@ -150,20 +150,13 @@ def test_mesh_endpoint_serves_glb_when_present(lidar_client, tmp_path, monkeypat
     assert info["has_mesh"] is True
 
 
-def test_annotated_scene_z_up_to_y_up_swap(lidar_client, tmp_path, monkeypatch):
-    """Annotated tier sources are LAS-style Z-up; loader must rotate them to
-    Three.js Y-up. Verifies a known cloud where the Z-axis is the tallest
-    extent ends up with the Y-axis as the tallest extent after load."""
-    import main
+def _write_tall_ply(scan_dir: Path, n: int = 10):
+    """A 2m × 4m × 20m cloud, with the longest axis on Z (source-frame height)."""
     from plyfile import PlyData, PlyElement
-
-    lidar = tmp_path / "lidar2"
-    scan_dir = lidar / "annotated" / "tall"
-    n = 10
     pts = np.zeros((n, 3), dtype=np.float32)
-    pts[:, 0] = np.linspace(-1, 1, n)        # X: 2m wide
-    pts[:, 1] = np.linspace(-2, 2, n)        # Y (source depth): 4m
-    pts[:, 2] = np.linspace(-10, 10, n)      # Z (source height): 20m — tallest
+    pts[:, 0] = np.linspace(-1, 1, n)        # X: 2m
+    pts[:, 1] = np.linspace(-2, 2, n)        # Y: 4m
+    pts[:, 2] = np.linspace(-10, 10, n)      # Z: 20m — tallest
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
              ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     arr = np.zeros(n, dtype=dtype)
@@ -173,14 +166,42 @@ def test_annotated_scene_z_up_to_y_up_swap(lidar_client, tmp_path, monkeypatch):
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
         str(scan_dir / "source" / "scan.ply"))
     (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
-    (scan_dir / "meta.json").write_text('{"scan_name": "tall", "n_points": 10}')
+
+
+def test_annotated_z_up_swap_when_source_is_laz(lidar_client, tmp_path, monkeypatch):
+    """meta.json points at source_laz → loader rotates Z-up → Y-up."""
+    import main
+    lidar = tmp_path / "lidar-zup"
+    scan_dir = lidar / "annotated" / "tall_laz"
+    _write_tall_ply(scan_dir)
+    (scan_dir / "meta.json").write_text(
+        '{"scan_name": "tall_laz", "n_points": 10, "source_laz": "x.laz"}')
 
     monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
-    body = lidar_client.post("/api/load", json={"name": "annotated/tall", "max_points": 100}).json()
-
+    body = lidar_client.post("/api/load",
+                             json={"name": "annotated/tall_laz", "max_points": 100}).json()
     extents = [body["bbox_max"][i] - body["bbox_min"][i] for i in range(3)]
-    # Pre-swap, Z (index 2) was tallest (20m). Post-swap, Y (index 1) must
-    # be tallest. Source-Y (4m depth) ends up on Z (still 4m, sign flipped).
+    # 20m source-Z → Y after swap.
     assert extents[1] == pytest.approx(20.0, abs=1e-3), f"got extents={extents}"
     assert extents[0] == pytest.approx(2.0, abs=1e-3)
     assert extents[2] == pytest.approx(4.0, abs=1e-3)
+    assert body["mesh_is_z_up"] is False  # no mesh on this scene
+
+
+def test_annotated_no_swap_when_source_is_glb(lidar_client, tmp_path, monkeypatch):
+    """meta.json points at source_mesh (glTF Y-up) → loader leaves the cloud as-is."""
+    import main
+    lidar = tmp_path / "lidar-yup"
+    scan_dir = lidar / "annotated" / "tall_glb"
+    _write_tall_ply(scan_dir)
+    (scan_dir / "meta.json").write_text(
+        '{"scan_name": "tall_glb", "n_points": 10, "source_mesh": "source/mesh.glb"}')
+
+    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    body = lidar_client.post("/api/load",
+                             json={"name": "annotated/tall_glb", "max_points": 100}).json()
+    extents = [body["bbox_max"][i] - body["bbox_min"][i] for i in range(3)]
+    # No swap → Z stays Z (the 20m tall axis), Y stays Y (4m), X stays X (2m).
+    assert extents[2] == pytest.approx(20.0, abs=1e-3), f"got extents={extents}"
+    assert extents[1] == pytest.approx(4.0, abs=1e-3)
+    assert extents[0] == pytest.approx(2.0, abs=1e-3)

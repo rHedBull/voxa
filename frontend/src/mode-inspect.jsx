@@ -60,6 +60,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
           colorMode={colorMode}
           navMode={navMode}
           meshUrl={cloud?.meshUrl || null}
+          meshIsZUp={!!cloud?.meshIsZUp}
           showMesh={showMesh}
           onMeshLoadProgress={setMeshProgress}
         />

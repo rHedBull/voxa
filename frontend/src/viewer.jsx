@@ -278,7 +278,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     cuboidOpacity = 1,
     colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'class' | 'instance' | 'flat'
     navMode = 'orbit',          // 'orbit' | 'walk'
-    meshUrl = null,             // GLB streaming URL, applied with Z-up → Y-up rotation
+    meshUrl = null,             // GLB streaming URL
+    meshIsZUp = false,          // rotate GLB by -π/2 around X when its source frame is Z-up
     showMesh = false,           // when false, mesh stays unloaded (saves a 100MB+ fetch)
     onMeshLoadProgress = null,  // ({ loaded, total }) — wire-progress callback
     onCameraChange = null,
@@ -338,11 +339,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const cuboidGroup = new THREE.Group();
     scene.add(cuboidGroup);
 
-    // Mesh container. Z-up → Y-up applied at the group level so children
-    // imported from GLTF can keep their original transforms. The group also
-    // carries the recenter offset for the active scene.
+    // Mesh container. The optional Z-up → Y-up rotation is applied when the
+    // backend reports the mesh source is Z-up; the group also carries the
+    // recenter offset so mesh and cloud overlay correctly.
     const meshGroup = new THREE.Group();
-    meshGroup.rotation.x = -Math.PI / 2;
     meshGroup.visible = false;
     scene.add(meshGroup);
 
@@ -595,7 +595,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       s.meshUrlLoaded = null;
     }
 
+    s.meshGroup.rotation.x = meshIsZUp ? -Math.PI / 2 : 0;
     s.meshGroup.visible = !!(showMesh && (meshUrl || s.meshUrlLoaded));
+    // Mesh-or-points: when the mesh is being shown AND has finished loading,
+    // hide the cloud so the user sees one or the other.
+    s.points.visible = !(showMesh && s.meshUrlLoaded === meshUrl && !!meshUrl);
 
     // Don't fetch unless asked. This keeps default scene loads fast.
     if (!showMesh || !meshUrl || s.meshUrlLoaded === meshUrl) return;
@@ -609,6 +613,9 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         s.meshGroup.add(gltf.scene);
         s.meshUrlLoaded = meshUrl;
         s.meshGroup.visible = true;
+        // Once the mesh has loaded and we're in showMesh mode, hide the
+        // cloud so the user sees just the mesh.
+        if (showMesh) s.points.visible = false;
       },
       (xhr) => {
         if (cancelled || !onMeshLoadProgress) return;
@@ -619,7 +626,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       },
     );
     return () => { cancelled = true; };
-  }, [meshUrl, showMesh, onMeshLoadProgress]);
+  }, [meshUrl, meshIsZUp, showMesh, onMeshLoadProgress]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {

@@ -111,6 +111,7 @@ class LoadResponse(BaseModel):
     n_labeled_points: Optional[int] = None
     recenter_offset: list[float] = [0.0, 0.0, 0.0]
     mesh_url: Optional[str] = None    # /api/mesh/<id> when a GLB exists
+    mesh_is_z_up: bool = False        # frontend rotates the GLB only if true
 
 
 class Cuboid(BaseModel):
@@ -366,9 +367,21 @@ def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
     )
 
 
-# Tiers whose source data follows the surveying Z-up convention. Legacy
-# scenes were authored Y-up and stay as-is.
-_Z_UP_TIERS = {"annotated", "decimated", "raw"}
+def _scene_is_z_up(src: SceneSource) -> bool:
+    """Decide whether the scene's source frame is Z-up (surveying / LAS).
+
+    - legacy: author-defined, treated as Y-up.
+    - decimated, raw: pulled from LAZ, always Z-up.
+    - annotated: depends on what the PLY was sampled from.
+      `meta.json::source_mesh` (a glTF) → Y-up.
+      `meta.json::source_laz` → Z-up.
+      Default Z-up if the meta is missing or ambiguous.
+    """
+    if src.tier == "legacy":
+        return False
+    if src.tier in ("decimated", "raw"):
+        return True
+    return bool(src.extras.get("is_z_up", True))
 
 
 def _load_scene_source(src: SceneSource, max_points: int):
@@ -400,8 +413,10 @@ def load_scene(req: LoadRequest):
 
     # LAS / lidar archive scans are Z-up; rotate into Three.js Y-up before
     # any further processing so bbox / recenter / subsample all operate in
-    # the display frame.
-    if src.tier in _Z_UP_TIERS:
+    # the display frame. The decision is per-scene (annotated/<scan>/meta.json
+    # tells us whether the PLY was sampled from a Y-up GLB or a Z-up LAZ).
+    is_z_up = _scene_is_z_up(src)
+    if is_z_up:
         pc = _z_up_to_y_up(pc)
 
     # Recenter for float32 stability (LAS UTM, etc).
@@ -444,6 +459,7 @@ def load_scene(req: LoadRequest):
         n_labeled_points=n_labeled,
         recenter_offset=offset,
         mesh_url=(f"/api/mesh/{src.scene_id}" if src.has_mesh else None),
+        mesh_is_z_up=is_z_up if src.has_mesh else False,
     )
 
 
