@@ -1,9 +1,16 @@
 """Voxa — unified 3D scan studio backend.
 
 Endpoints serve the React/Three.js frontend with point clouds, cuboid
-annotations, and GT-vs-prediction diffs. Scenes live under data/scenes/<name>/
-with source.{ply,glb}, optional ground_truth.json (instance cuboids), and
-optional predictions.json.
+annotations, and GT-vs-prediction diffs. Scenes come from multiple roots:
+
+  legacy     voxa/data/scenes/<name>/source.{ply,glb}
+  annotated  $VOXA_LIDAR_ROOT/annotated/<name>/source/scan.ply (+ labels/, meta.json)
+  decimated  $VOXA_LIDAR_ROOT/ply_viewer/<name>.ply
+  raw        $VOXA_LIDAR_ROOT/laz/<name>.laz
+
+Scene IDs in /api/load and /api/annotations are tier-prefixed
+('annotated/munich_water_pump'); a bare legacy name still resolves for
+backward compatibility.
 """
 
 from __future__ import annotations
@@ -22,7 +29,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from lidar_io import LabelArrays, load_annotated, load_laz
 from point_cloud import PointCloud, load_glb, load_ply
+from scene_registry import (
+    SceneSource,
+    discover,
+    load_lidar_root_from_env,
+    resolve as resolve_scene,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("VOXA_DATA_DIR", ROOT / "data"))
@@ -31,6 +45,7 @@ ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
 FRONTEND_DIST = ROOT / "dist"
 MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "300000"))
+LIDAR_ROOT = load_lidar_root_from_env()
 
 app = FastAPI(title="Voxa 3D scan studio")
 
@@ -48,35 +63,51 @@ app.add_middleware(
 # most workflows are scene-at-a-time anyway.
 _state: dict[str, Any] = {
     "scene": None,
-    "pc": None,           # PointCloud
-    "mesh": None,         # trimesh.Trimesh or None
+    "pc": None,             # PointCloud (recentered)
+    "mesh": None,           # trimesh.Trimesh or None
     "subsample_idx": None,  # indices into the original cloud (or None)
+    "intensity": None,      # full-resolution intensity array (or None)
+    "labels": None,         # LabelArrays (or None)
+    "recenter_offset": [0.0, 0.0, 0.0],
 }
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────
 
 class SceneInfo(BaseModel):
+    id: str                      # tier-prefixed
+    tier: str                    # 'legacy' | 'annotated' | 'decimated' | 'raw'
     name: str
     has_source: bool
-    source_type: Optional[str]
-    has_ground_truth: bool
-    has_predictions: bool
+    source_format: Optional[str]   # 'ply' | 'glb' | 'laz'
+    has_labels: bool
+    has_intensity: bool
+    has_ground_truth: bool         # cuboid GT (legacy)
+    has_predictions: bool          # cuboid pred (legacy)
+    n_points: Optional[int] = None
 
 
 class LoadRequest(BaseModel):
-    name: str
+    name: str                              # tier-prefixed id or bare legacy name
     max_points: int = MAX_POINTS_DEFAULT
 
 
 class LoadResponse(BaseModel):
-    scene: str
+    scene: str                             # tier-prefixed canonical id
     num_points: int
     num_subsampled: int
     bbox_min: list[float]
     bbox_max: list[float]
-    positions: str   # base64 Float32Array (xyz)
-    colors: str      # base64 Float32Array (rgb 0..1)
+    positions: str                         # b64 Float32 (xyz, recentered)
+    colors: str                            # b64 Float32 (rgb 0..1)
+    intensity: Optional[str] = None        # b64 Float32 (0..1)
+    class_ids: Optional[str] = None        # b64 Int8 (-1 = unlabeled)
+    instance_ids: Optional[str] = None     # b64 Int32 (-1 = unlabeled)
+    class_palette: Optional[list["ClassDef"]] = None
+    n_classes: Optional[int] = None
+    n_instances: Optional[int] = None
+    n_labeled_points: Optional[int] = None
+    recenter_offset: list[float] = [0.0, 0.0, 0.0]
 
 
 class Cuboid(BaseModel):
@@ -103,7 +134,7 @@ class SaveAnnotationRequest(AnnotationDoc):
 
 
 class ClassDef(BaseModel):
-    id: str
+    id: str | int
     label: str
     color: str
     hotkey: str = ""
@@ -142,30 +173,39 @@ class CompareResponse(BaseModel):
     pred: list[Cuboid]
 
 
+LoadResponse.model_rebuild()
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _annotation_path(scene: str, kind: str) -> Path:
     if kind not in ("gt", "pred"):
         raise HTTPException(400, f"Invalid kind: {kind}")
     fname = "ground_truth.json" if kind == "gt" else "predictions.json"
-    return ANNOT_DIR / scene / fname
+    # Annotation files key off the scene name (without tier) so that legacy
+    # bare-name lookups continue to work. Tier collisions in this dir are
+    # acceptable for now — Compare mode is cuboid-only and only legacy scenes
+    # produce cuboid GT/pred today.
+    safe = scene.replace("/", "__")
+    return ANNOT_DIR / safe / fname
 
 
-def _scene_source(scene: str) -> tuple[Path, str]:
-    sd = SCENES_DIR / scene
-    if not sd.is_dir():
-        raise HTTPException(404, f"Scene not found: {scene}")
-    for ext in ("ply", "glb"):
-        p = sd / f"source.{ext}"
-        if p.exists():
-            return p, ext
-    raise HTTPException(404, f"No source.{{ply,glb}} in scene {scene}")
+def _resolve(scene_id: str) -> SceneSource:
+    try:
+        return resolve_scene(scene_id, DATA_DIR, LIDAR_ROOT)
+    except KeyError:
+        raise HTTPException(404, f"Scene not found: {scene_id}")
 
 
-def _safe_subsample(pc: PointCloud, max_points: int) -> tuple[PointCloud, np.ndarray | None]:
+def _safe_subsample(
+    pc: PointCloud,
+    max_points: int,
+    intensity: Optional[np.ndarray] = None,
+    labels: Optional[LabelArrays] = None,
+) -> tuple[PointCloud, np.ndarray | None, Optional[np.ndarray], Optional[LabelArrays]]:
     n = len(pc)
     if n <= max_points:
-        return pc, None
+        return pc, None, intensity, labels
     rng = np.random.default_rng(7)
     idx = rng.choice(n, size=max_points, replace=False)
     idx.sort()
@@ -175,7 +215,14 @@ def _safe_subsample(pc: PointCloud, max_points: int) -> tuple[PointCloud, np.nda
         labels=pc.labels[idx] if pc.labels is not None else None,
         instance_ids=pc.instance_ids[idx] if pc.instance_ids is not None else None,
     )
-    return sub, idx
+    sub_intensity = intensity[idx] if intensity is not None else None
+    sub_labels: Optional[LabelArrays] = None
+    if labels is not None:
+        sub_labels = LabelArrays(
+            class_ids=labels.class_ids[idx],
+            instance_ids=labels.instance_ids[idx],
+        )
+    return sub, idx, sub_intensity, sub_labels
 
 
 def _normalize_colors(pc: PointCloud) -> np.ndarray:
@@ -186,8 +233,32 @@ def _normalize_colors(pc: PointCloud) -> np.ndarray:
     return c
 
 
-def _b64f(arr: np.ndarray) -> str:
+def _b64(arr: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(arr).tobytes()).decode()
+
+
+def _recenter(pc: PointCloud) -> tuple[PointCloud, list[float]]:
+    """Subtract the bbox centroid so float32 stays precise in Three.js.
+
+    LAS UTM coordinates can reach 7 digits, which is at the edge of float32
+    precision and shows up as visible jitter. Returns the recentered cloud
+    plus the offset that was subtracted so any future export can restore
+    world coords."""
+    if len(pc) == 0:
+        return pc, [0.0, 0.0, 0.0]
+    center = pc.points.mean(axis=0)
+    # Only recenter if the magnitude is large enough to matter; small scenes
+    # near the origin shouldn't have their coords mutated for nothing.
+    if float(np.max(np.abs(center))) < 1e3:
+        return pc, [0.0, 0.0, 0.0]
+    new_points = (pc.points - center).astype(np.float32)
+    return PointCloud(
+        points=new_points,
+        colors=pc.colors,
+        labels=pc.labels,
+        instance_ids=pc.instance_ids,
+        face_indices=pc.face_indices,
+    ), center.astype(np.float32).tolist()
 
 
 def _iou_aabb(a: Cuboid, b: Cuboid) -> float:
@@ -210,7 +281,11 @@ def _iou_aabb(a: Cuboid, b: Cuboid) -> float:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "data_dir": str(DATA_DIR)}
+    return {
+        "status": "ok",
+        "data_dir": str(DATA_DIR),
+        "lidar_root": str(LIDAR_ROOT) if LIDAR_ROOT else None,
+    }
 
 
 @app.get("/api/config", response_model=ConfigResponse)
@@ -245,51 +320,92 @@ def get_config():
 
 @app.get("/api/scenes", response_model=list[SceneInfo])
 def list_scenes():
-    if not SCENES_DIR.exists():
-        return []
     out: list[SceneInfo] = []
-    for sd in sorted(SCENES_DIR.iterdir()):
-        if not sd.is_dir():
-            continue
-        glb = sd / "source.glb"
-        ply = sd / "source.ply"
-        src_type = "glb" if glb.exists() else ("ply" if ply.exists() else None)
-        gt = (ANNOT_DIR / sd.name / "ground_truth.json").exists()
-        pr = (ANNOT_DIR / sd.name / "predictions.json").exists()
+    for s in discover(DATA_DIR, LIDAR_ROOT):
+        annot_key = s.name if s.tier == "legacy" else s.scene_id.replace("/", "__")
+        gt = (ANNOT_DIR / annot_key / "ground_truth.json").exists()
+        pr = (ANNOT_DIR / annot_key / "predictions.json").exists()
         out.append(SceneInfo(
-            name=sd.name,
-            has_source=src_type is not None,
-            source_type=src_type,
+            id=s.scene_id,
+            tier=s.tier,
+            name=s.name,
+            has_source=True,
+            source_format=s.source_format,
+            has_labels=s.has_labels,
+            has_intensity=s.has_intensity,
             has_ground_truth=gt,
             has_predictions=pr,
+            n_points=s.n_points,
         ))
     return out
 
 
+def _load_scene_source(src: SceneSource, max_points: int):
+    """Dispatch to the right loader. Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled_points)."""
+    if src.tier == "annotated":
+        a = load_annotated(src, LIDAR_ROOT)
+        n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
+        palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
+        return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances, n_labeled)
+
+    if src.tier == "raw":
+        pc, intensity = load_laz(src.source_path, max_points=max(max_points, 50_000))
+        return (pc, None, intensity, None, None, None, None, None)
+
+    # legacy + decimated → reuse the existing loaders
+    if src.source_format == "glb":
+        pc, mesh = load_glb(src.source_path, num_samples=max(max_points, 50_000))
+        return (pc, mesh, None, None, None, None, None, None)
+    pc, _ = load_ply(src.source_path)
+    return (pc, None, None, None, None, None, None, None)
+
+
 @app.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
-    src, ext = _scene_source(req.name)
-    if ext == "glb":
-        pc, mesh = load_glb(src, num_samples=max(req.max_points, 50000))
-    else:
-        pc, mesh = load_ply(src)
+    src = _resolve(req.name)
+    pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled = (
+        _load_scene_source(src, req.max_points)
+    )
 
-    sub, idx = _safe_subsample(pc, req.max_points)
-    _state.update(scene=req.name, pc=pc, mesh=mesh, subsample_idx=idx)
+    # Recenter for float32 stability (LAS UTM, etc).
+    pc, offset = _recenter(pc)
+
+    sub, idx, sub_intensity, sub_labels = _safe_subsample(pc, req.max_points, intensity, labels)
+    _state.update(
+        scene=src.scene_id,
+        pc=pc,
+        mesh=mesh,
+        subsample_idx=idx,
+        intensity=intensity,
+        labels=labels,
+        recenter_offset=offset,
+    )
 
     positions = sub.points.astype(np.float32)
     colors = _normalize_colors(sub)
     bbox_min = positions.min(axis=0).tolist()
     bbox_max = positions.max(axis=0).tolist()
 
+    intensity_b64 = _b64(sub_intensity.astype(np.float32)) if sub_intensity is not None else None
+    class_ids_b64 = _b64(sub_labels.class_ids.astype(np.int8)) if sub_labels is not None else None
+    instance_ids_b64 = _b64(sub_labels.instance_ids.astype(np.int32)) if sub_labels is not None else None
+
     return LoadResponse(
-        scene=req.name,
+        scene=src.scene_id,
         num_points=len(pc),
         num_subsampled=len(sub),
         bbox_min=bbox_min,
         bbox_max=bbox_max,
-        positions=_b64f(positions),
-        colors=_b64f(colors.astype(np.float32)),
+        positions=_b64(positions),
+        colors=_b64(colors.astype(np.float32)),
+        intensity=intensity_b64,
+        class_ids=class_ids_b64,
+        instance_ids=instance_ids_b64,
+        class_palette=palette,
+        n_classes=n_classes,
+        n_instances=n_instances,
+        n_labeled_points=n_labeled,
+        recenter_offset=offset,
     )
 
 

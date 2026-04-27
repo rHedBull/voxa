@@ -1,6 +1,8 @@
 // mode-inspect.jsx — full-bleed scrubby viewer for fast scan review.
 
-import { useState as useStateInspect, useMemo as useMemoInspect } from 'react';
+import { useEffect as useEffectInspect,
+         useState as useStateInspect,
+         useMemo as useMemoInspect } from 'react';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
 
@@ -17,6 +19,22 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
     const hgt = (cloud.bbox.max[1] - cloud.bbox.min[1]).toFixed(2);
     return { ext, dep, hgt };
   }, [cloud]);
+
+  const channels = useMemoInspect(() => ({
+    rgb: !!cloud,
+    height: !!cloud,
+    intensity: !!cloud && !!cloud.intensity,
+    class: !!cloud && !!cloud.classIds && !!cloud.classPalette,
+    instance: !!cloud && !!cloud.instanceIds,
+    flat: !!cloud,
+  }), [cloud]);
+
+  // Auto-fall-back if the previously-selected color mode is no longer
+  // available on this scene (e.g. we switched from a labeled scene to a
+  // raw-LAZ one and the user had Class active).
+  useEffectInspect(() => {
+    if (cloud && !channels[colorMode]) setColorMode('rgb');
+  }, [cloud, channels, colorMode]);
 
   return (
     <div className="mode-root inspect">
@@ -47,11 +65,6 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
         </div>
 
         <ViewportToolbar side="left">
-          <ToolButton mini icon="◔" label="Orbit" active={navMode === 'orbit'}
-            onClick={() => onNavModeChange('orbit')} />
-          <ToolButton mini icon="🚶" label="Walk" active={navMode === 'walk'}
-            onClick={() => onNavModeChange('walk')} />
-          <div className="tool-sep" />
           <ToolButton mini icon="↺" label="Reset" hotkey="R"
             onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>
@@ -67,6 +80,13 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
                 <div className="kv"><span>x-min/max</span><b className="mono">{cloud.bbox.min[0].toFixed(2)}/{cloud.bbox.max[0].toFixed(2)}</b></div>
                 <div className="kv"><span>y-min/max</span><b className="mono">{cloud.bbox.min[1].toFixed(2)}/{cloud.bbox.max[1].toFixed(2)}</b></div>
                 <div className="kv"><span>z-min/max</span><b className="mono">{cloud.bbox.min[2].toFixed(2)}/{cloud.bbox.max[2].toFixed(2)}</b></div>
+                {cloud.nInstances != null && (
+                  <div className="kv"><span>segments</span>
+                    <b className="mono">
+                      {cloud.nInstances} · {(cloud.nLabeledPoints || 0).toLocaleString()} / {cloud.numPoints.toLocaleString()} labeled
+                    </b>
+                  </div>
+                )}
               </>}
               {loading && <div className="kv"><span>status</span><b>loading…</b></div>}
             </div>
@@ -77,11 +97,23 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
               <div className="ctrl">
                 <label>Color by</label>
                 <div className="pill-group">
-                  {[['rgb','RGB'],['height','Height'],['intensity','Intensity'],['flat','Flat']].map(([k, l]) => (
-                    <button key={k}
-                      className={'pill' + (colorMode === k ? ' active' : '')}
-                      onClick={() => setColorMode(k)}>{l}</button>
-                  ))}
+                  {[
+                    ['rgb','RGB'],
+                    ['height','Height'],
+                    ['intensity','Intensity'],
+                    ['class','Class'],
+                    ['instance','Instance'],
+                    ['flat','Flat'],
+                  ].map(([k, l]) => {
+                    const enabled = !!channels[k];
+                    return (
+                      <button key={k}
+                        className={'pill' + (colorMode === k ? ' active' : '') + (enabled ? '' : ' disabled')}
+                        disabled={!enabled}
+                        title={enabled ? '' : `not available — scene has no ${k} channel`}
+                        onClick={() => enabled && setColorMode(k)}>{l}</button>
+                    );
+                  })}
                 </div>
               </div>
               <div className="ctrl">

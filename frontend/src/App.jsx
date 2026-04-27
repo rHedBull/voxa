@@ -55,7 +55,7 @@ export default function App() {
     VoxaAPI.config().then((c) => setClasses(c.classes || []));
     VoxaAPI.scenes().then((s) => {
       setScenes(s);
-      if (s.length && !activeScene) setActiveScene(s[0].name);
+      if (s.length && !activeScene) setActiveScene(s[0].id || s[0].name);
     });
     // eslint-disable-next-line
   }, []);
@@ -217,7 +217,33 @@ export default function App() {
   );
 }
 
+const TIER_LABEL = {
+  legacy:    'Legacy (voxa/data/scenes)',
+  annotated: 'Annotated (lidar/annotated)',
+  decimated: 'Decimated (lidar/ply_viewer)',
+  raw:       'Raw LAZ (lidar/laz)',
+};
+const TIER_DOT = {
+  legacy:    '#6b7280',
+  annotated: '#10b981',
+  decimated: '#5b8def',
+  raw:       '#f5a524',
+};
+
 function ScenePicker({ scenes, activeScene, onPick, onClose }) {
+  // Group by tier (preserve the order returned by the backend).
+  const groups = [];
+  const seen = new Map();
+  for (const s of scenes) {
+    const tier = s.tier || 'legacy';
+    if (!seen.has(tier)) {
+      const g = { tier, items: [] };
+      seen.set(tier, g);
+      groups.push(g);
+    }
+    seen.get(tier).items.push(s);
+  }
+
   return (
     <div className="scene-picker" onClick={onClose}>
       <div className="scene-picker-card" onClick={(e) => e.stopPropagation()}>
@@ -227,22 +253,41 @@ function ScenePicker({ scenes, activeScene, onPick, onClose }) {
         </div>
         {scenes.length === 0 && (
           <div className="sugg-empty">
-            No scenes found. Drop a folder under <span className="mono">data/scenes/&lt;name&gt;/source.ply</span>.
+            No scenes found. Drop a folder under <span className="mono">data/scenes/&lt;name&gt;/source.ply</span>,
+            or set <span className="mono">VOXA_LIDAR_ROOT</span> to your lidar archive.
           </div>
         )}
-        {scenes.map((s) => (
-          <div key={s.name}
-               className={'inst-row' + (s.name === activeScene ? ' selected' : '')}
-               onClick={() => onPick(s.name)}>
-            <span className="inst-dot" style={{ background: s.has_source ? '#5b8def' : '#6b7280' }} />
-            <div className="inst-text">
-              <b>{s.name}</b>
-              <em>
-                {s.source_type ? `.${s.source_type}` : 'no source'}
-                {s.has_ground_truth ? ' · GT' : ''}
-                {s.has_predictions ? ' · pred' : ''}
-              </em>
-            </div>
+        {groups.map((g) => (
+          <div key={g.tier} className="scene-group">
+            {groups.length > 1 && (
+              <div className="scene-group-hd">
+                <span className="inst-dot" style={{ background: TIER_DOT[g.tier] || '#6b7280' }} />
+                <span>{TIER_LABEL[g.tier] || g.tier}</span>
+                <span className="badge-soft">{g.items.length}</span>
+              </div>
+            )}
+            {g.items.map((s) => {
+              const id = s.id || s.name;
+              const fmt = s.source_format || s.source_type;
+              return (
+                <div key={id}
+                     className={'inst-row' + (id === activeScene ? ' selected' : '')}
+                     onClick={() => onPick(id)}>
+                  <span className="inst-dot" style={{ background: TIER_DOT[g.tier] || '#5b8def' }} />
+                  <div className="inst-text">
+                    <b>{s.name}</b>
+                    <em>
+                      {fmt ? `.${fmt}` : 'no source'}
+                      {s.n_points ? ` · ${(s.n_points / 1000).toFixed(0)}k pts` : ''}
+                      {s.has_labels ? ' · labels' : ''}
+                      {s.has_intensity ? ' · intensity' : ''}
+                      {s.has_ground_truth ? ' · GT' : ''}
+                      {s.has_predictions ? ' · pred' : ''}
+                    </em>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ))}
       </div>

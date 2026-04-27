@@ -28,6 +28,14 @@ export const VoxaAPI = {
       bbox: { min: j.bbox_min, max: j.bbox_max },
       positions: b64ToFloat32(j.positions),
       colors: b64ToFloat32(j.colors),
+      intensity: j.intensity ? b64ToFloat32(j.intensity) : null,
+      classIds: j.class_ids ? b64ToInt8(j.class_ids) : null,
+      instanceIds: j.instance_ids ? b64ToInt32(j.instance_ids) : null,
+      classPalette: j.class_palette || null,
+      nClasses: j.n_classes ?? null,
+      nInstances: j.n_instances ?? null,
+      nLabeledPoints: j.n_labeled_points ?? null,
+      recenterOffset: j.recenter_offset || [0, 0, 0],
     };
   },
   async getAnnotation(scene, kind) {
@@ -63,13 +71,17 @@ export const VoxaAPI = {
   },
 };
 
-export function b64ToFloat32(b64) {
+function b64ToBuf(b64) {
   const bin = atob(b64);
   const buf = new ArrayBuffer(bin.length);
   const view = new Uint8Array(buf);
   for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
-  return new Float32Array(buf);
+  return buf;
 }
+
+export function b64ToFloat32(b64) { return new Float32Array(b64ToBuf(b64)); }
+export function b64ToInt8(b64)    { return new Int8Array(b64ToBuf(b64)); }
+export function b64ToInt32(b64)   { return new Int32Array(b64ToBuf(b64)); }
 
 export function newId(prefix = 'inst') {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;

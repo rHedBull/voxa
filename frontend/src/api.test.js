@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { b64ToFloat32, newId } from './api.js';
+import { b64ToFloat32, b64ToInt8, b64ToInt32, newId } from './api.js';
 
 describe('newId', () => {
   it('uses the supplied prefix', () => {
@@ -40,5 +40,28 @@ describe('b64ToFloat32', () => {
     const decoded = b64ToFloat32('');
     expect(decoded).toBeInstanceOf(Float32Array);
     expect(decoded.length).toBe(0);
+  });
+});
+
+describe('b64ToInt8 / b64ToInt32', () => {
+  const encodeBytes = (typedArray) => {
+    const u8 = new Uint8Array(typedArray.buffer);
+    let s = '';
+    for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return btoa(s);
+  };
+
+  it('roundtrips Int8 (including -1 sentinel for unlabeled)', () => {
+    const src = new Int8Array([-1, 0, 0, 1, 2, -1, 4, 127, -128]);
+    const decoded = b64ToInt8(encodeBytes(src));
+    expect(decoded).toBeInstanceOf(Int8Array);
+    expect(Array.from(decoded)).toEqual(Array.from(src));
+  });
+
+  it('roundtrips Int32 instance ids', () => {
+    const src = new Int32Array([-1, 0, 1, 12345, 2147483647, -2147483648]);
+    const decoded = b64ToInt32(encodeBytes(src));
+    expect(decoded).toBeInstanceOf(Int32Array);
+    expect(Array.from(decoded)).toEqual(Array.from(src));
   });
 });
