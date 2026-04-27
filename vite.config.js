@@ -26,4 +26,8 @@ export default defineConfig({
     outDir: '../dist',
     emptyOutDir: true,
   },
+  test: {
+    include: ['src/**/*.test.{js,jsx}'],
+    environment: 'node',
+  },
 });

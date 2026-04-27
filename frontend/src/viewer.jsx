@@ -12,6 +12,21 @@
 
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+// Resolve a class palette (list of {id, color, label}) into a dense RGB lookup
+// indexed by class id. Out-of-range ids fall through to the unlabeled grey.
+function buildPaletteRGB(palette) {
+  const out = [];
+  const tmp = new THREE.Color();
+  for (const entry of palette) {
+    const id = entry.id | 0;
+    if (id < 0) continue;
+    tmp.set(entry.color);
+    out[id] = [tmp.r, tmp.g, tmp.b];
+  }
+  return out;
+}
 
 function attachOrbit(camera, dom, target, onChange) {
   const state = {
@@ -142,10 +157,13 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
   };
   apply();
 
+  // Drag with any mouse button (left, middle, right) rotates look. Right
+  // button needs the contextmenu listener to keep the OS menu from popping.
   const onDown = (e) => {
     state.dragging = true;
     state.lx = e.clientX; state.ly = e.clientY;
     e.preventDefault();
+    e.stopPropagation();
   };
   const onMove = (e) => {
     if (!state.dragging) return;
@@ -189,8 +207,12 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
 
     const baseSpeed = sceneRadius * (state.keys.shift ? 1.6 : 0.6);
     const v = baseSpeed * dt;
-    const fwd = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));   // XZ-only forward
-    const right = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+    // Three.js is right-handed, Y up. For a person facing direction
+    // F=(sin(yaw),0,cos(yaw)) their right side (90° clockwise viewed from
+    // above) is R=(-cos(yaw),0,sin(yaw)). The inverted form was making D
+    // strafe left and A strafe right.
+    const fwd = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
+    const right = new THREE.Vector3(-Math.cos(state.yaw), 0, Math.sin(state.yaw));
 
     let moved = false;
     if (state.keys.w) { camera.position.addScaledVector(fwd,    v); moved = true; }
@@ -254,8 +276,12 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     showCuboids = true,
     cuboidStyle = 'solid',
     cuboidOpacity = 1,
-    colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'flat'
+    colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'class' | 'instance' | 'flat'
     navMode = 'orbit',          // 'orbit' | 'walk'
+    meshUrl = null,             // GLB streaming URL
+    meshIsZUp = false,          // rotate GLB by -π/2 around X when its source frame is Z-up
+    showMesh = false,           // when false, mesh stays unloaded (saves a 100MB+ fetch)
+    onMeshLoadProgress = null,  // ({ loaded, total }) — wire-progress callback
     onCameraChange = null,
   } = props;
 
@@ -313,6 +339,13 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const cuboidGroup = new THREE.Group();
     scene.add(cuboidGroup);
 
+    // Mesh container. The optional Z-up → Y-up rotation is applied when the
+    // backend reports the mesh source is Z-up; the group also carries the
+    // recenter offset so mesh and cloud overlay correctly.
+    const meshGroup = new THREE.Group();
+    meshGroup.visible = false;
+    scene.add(meshGroup);
+
     let raf;
     const tick = () => {
       renderer.render(scene, camera);
@@ -338,7 +371,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     stateRef.current = {
       renderer, scene, camera, pointsGeom, pointsMat, points,
       controller: null,
-      cuboidGroup, floor, grid, axes, mount,
+      cuboidGroup, meshGroup, meshUrlLoaded: null, meshLoadAbort: null,
+      floor, grid, axes, mount,
     };
 
     return () => {
@@ -379,6 +413,17 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.pointsGeom.setAttribute('color',
       new THREE.BufferAttribute(cloud.colors.slice(), 3));
     s.pointsGeom.computeBoundingSphere();
+
+    // Apply the recenter offset to the mesh group so a co-located mesh
+    // overlays the cloud. The group's rotation already brings GLB Z-up
+    // into Y-up; the offset is in the post-rotation Y-up frame, applied
+    // at the world level via group.position.
+    if (cloud.recenterOffset) {
+      const o = cloud.recenterOffset;
+      s.meshGroup.position.set(-o[0], -o[1], -o[2]);
+    } else {
+      s.meshGroup.position.set(0, 0, 0);
+    }
 
     if (cloud.bbox) {
       const c = new THREE.Vector3(
@@ -424,7 +469,9 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     }
   }, [cloud]);
 
-  // ── Reactive updates ────────────────────────────────────────────────────
+  // ── Cheap appearance updates ────────────────────────────────────────────
+  // Kept off the recolor effect so dragging the point-size slider doesn't
+  // trigger the per-point color loop on multi-million-point clouds.
   useEffect(() => {
     const s = stateRef.current;
     if (!s.pointsMat) return;
@@ -434,7 +481,12 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.floor.visible = showFloor;
     s.grid.visible = showFloor;
     s.axes.visible = showAxes;
+  }, [pointSize, background, floorColor, showFloor, showAxes]);
 
+  // ── Per-point color recompute ───────────────────────────────────────────
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.pointsGeom) return;
     const colorAttr = s.pointsGeom.getAttribute('color');
     const posAttr = s.pointsGeom.getAttribute('position');
     if (!colorAttr || !cloud) return;
@@ -458,12 +510,53 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         colorAttr.array[i + 2] = tmp.b;
       }
     } else if (colorMode === 'intensity') {
-      // Pseudo-intensity: collapse RGB to grayscale luminance.
-      for (let i = 0; i < orig.length; i += 3) {
-        const lum = orig[i] * 0.299 + orig[i + 1] * 0.587 + orig[i + 2] * 0.114;
-        colorAttr.array[i + 0] = lum;
-        colorAttr.array[i + 1] = lum;
-        colorAttr.array[i + 2] = lum;
+      // Real per-point intensity when the loader provided it (LAS/LAZ),
+      // otherwise pseudo-intensity from RGB luminance.
+      if (cloud.intensity && cloud.intensity.length * 3 === colorAttr.array.length) {
+        for (let i = 0, p = 0; i < colorAttr.array.length; i += 3, p++) {
+          const t = cloud.intensity[p];
+          colorAttr.array[i + 0] = t;
+          colorAttr.array[i + 1] = t;
+          colorAttr.array[i + 2] = t;
+        }
+      } else {
+        for (let i = 0; i < orig.length; i += 3) {
+          const lum = orig[i] * 0.299 + orig[i + 1] * 0.587 + orig[i + 2] * 0.114;
+          colorAttr.array[i + 0] = lum;
+          colorAttr.array[i + 1] = lum;
+          colorAttr.array[i + 2] = lum;
+        }
+      }
+    } else if (colorMode === 'class' && cloud.classIds && cloud.classPalette) {
+      // Per-point class color from the palette. Unlabeled (-1) → muted grey.
+      const paletteRgb = buildPaletteRGB(cloud.classPalette);
+      const grey = [0.42, 0.44, 0.48];
+      const ids = cloud.classIds;
+      for (let i = 0, p = 0; i < colorAttr.array.length; i += 3, p++) {
+        const cid = ids[p];
+        const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
+        colorAttr.array[i + 0] = rgb[0];
+        colorAttr.array[i + 1] = rgb[1];
+        colorAttr.array[i + 2] = rgb[2];
+      }
+    } else if (colorMode === 'instance' && cloud.instanceIds) {
+      // Hash-based hue per instance id. Stable across reloads of the same cloud.
+      const ids = cloud.instanceIds;
+      const tmp = new THREE.Color();
+      for (let i = 0, p = 0; i < colorAttr.array.length; i += 3, p++) {
+        const iid = ids[p];
+        if (iid < 0) {
+          colorAttr.array[i + 0] = 0.42;
+          colorAttr.array[i + 1] = 0.44;
+          colorAttr.array[i + 2] = 0.48;
+        } else {
+          // Golden-ratio hue spacing — visually well-separated even for adjacent ids.
+          const hue = ((iid * 0.6180339887) % 1 + 1) % 1;
+          tmp.setHSL(hue, 0.62, 0.58);
+          colorAttr.array[i + 0] = tmp.r;
+          colorAttr.array[i + 1] = tmp.g;
+          colorAttr.array[i + 2] = tmp.b;
+        }
       }
     } else if (colorMode === 'flat') {
       const c = new THREE.Color('#7c8088');
@@ -476,7 +569,64 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       colorAttr.array.set(orig);
     }
     colorAttr.needsUpdate = true;
-  }, [pointSize, background, floorColor, showFloor, showAxes, colorMode, cloud]);
+  }, [colorMode, cloud]);
+
+  // ── Mesh load/show ──────────────────────────────────────────────────────
+  // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —
+  // these files are huge (100MB+ for munich_water_pump). Once loaded for a
+  // given URL we keep it around so toggling visibility off/on is free; when
+  // the URL changes (different scene) we dispose and reload only on demand.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.meshGroup) return;
+
+    // Drop any stale mesh when the scene's mesh URL changes.
+    if (s.meshUrlLoaded && s.meshUrlLoaded !== meshUrl) {
+      while (s.meshGroup.children.length) {
+        const c = s.meshGroup.children.pop();
+        c.traverse?.((n) => {
+          n.geometry?.dispose?.();
+          if (n.material) {
+            (Array.isArray(n.material) ? n.material : [n.material])
+              .forEach((m) => { m.map?.dispose?.(); m.dispose?.(); });
+          }
+        });
+      }
+      s.meshUrlLoaded = null;
+    }
+
+    s.meshGroup.rotation.x = meshIsZUp ? -Math.PI / 2 : 0;
+    s.meshGroup.visible = !!(showMesh && (meshUrl || s.meshUrlLoaded));
+    // Mesh-or-points: when the mesh is being shown AND has finished loading,
+    // hide the cloud so the user sees one or the other.
+    s.points.visible = !(showMesh && s.meshUrlLoaded === meshUrl && !!meshUrl);
+
+    // Don't fetch unless asked. This keeps default scene loads fast.
+    if (!showMesh || !meshUrl || s.meshUrlLoaded === meshUrl) return;
+
+    let cancelled = false;
+    const loader = new GLTFLoader();
+    loader.load(
+      meshUrl,
+      (gltf) => {
+        if (cancelled) return;
+        s.meshGroup.add(gltf.scene);
+        s.meshUrlLoaded = meshUrl;
+        s.meshGroup.visible = true;
+        // Once the mesh has loaded and we're in showMesh mode, hide the
+        // cloud so the user sees just the mesh.
+        if (showMesh) s.points.visible = false;
+      },
+      (xhr) => {
+        if (cancelled || !onMeshLoadProgress) return;
+        onMeshLoadProgress({ loaded: xhr.loaded, total: xhr.total || 0 });
+      },
+      (err) => {
+        if (!cancelled) console.error('GLB load failed:', err);
+      },
+    );
+    return () => { cancelled = true; };
+  }, [meshUrl, meshIsZUp, showMesh, onMeshLoadProgress]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {
