@@ -5,6 +5,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# Test coverage artifacts (pytest-cov + vitest)
+.coverage
+coverage/
+
 # Node / Vite
 node_modules/
 dist/
