@@ -270,15 +270,22 @@ If pytest isn't installed in the active venv:
 pip install pytest
 ```
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 9: Optional git checkpoint**
+
+`engine/data/lidar/` is **not** a git repo (it's a data archive). Two options:
 
 ```bash
-cd /home/hendrik/coding/engine/data/lidar
-git add scripts/
-git commit -m "Scaffold lidar/scripts/build_meshes pipeline package"
+# Option A: leave the scripts untracked. Nothing to do — proceed to Task 2.
+
+# Option B: initialize a git repo for just the scripts.
+cd /home/hendrik/coding/engine/data/lidar/scripts
+git init
+echo -e "__pycache__/\n*.pyc\n.pytest_cache/\n" > .gitignore
+git add .
+git commit -m "Scaffold build_meshes pipeline package"
 ```
 
-(Note: `engine/data/lidar/` is its own git repo — independent of Voxa. Confirm with `git rev-parse --show-toplevel` before committing.)
+Pick whichever you prefer. The rest of the plan assumes Option A and never invokes git inside `engine/data/lidar/` again. If you pick Option B, you can repeat `git add . && git commit` at the end of each task on your own.
 
 ---
 
@@ -481,12 +488,14 @@ python -m pytest tests/test_discovery.py -v
 
 Expected: 8 passed.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: (optional) commit if you initialized a repo in Task 1**
 
 ```bash
-git add scripts/discovery.py scripts/tests/test_discovery.py
+git add discovery.py tests/test_discovery.py
 git commit -m "Discovery: walk annotated/ and return scenes eligible for mesh build"
 ```
+
+Skip if Task 1 left the scripts untracked.
 
 ---
 
@@ -758,10 +767,10 @@ Expected: 5 passed.
 
 (Open3D ships its own threading; if `test_synthetic_sphere_produces_mesh` is unstable on your machine, increase `n=20_000` in `_sphere_points` — denser sampling makes BPA more reliable.)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: (optional) commit if you initialized a repo in Task 1**
 
 ```bash
-git add scripts/pipeline.py scripts/tests/test_pipeline.py
+git add pipeline.py tests/test_pipeline.py
 git commit -m "Pipeline: BPA mesh reconstruction with per-vertex color"
 ```
 
@@ -862,15 +871,21 @@ Expected: ImportError on `read_laz_points` / `build_mesh_for_scene`.
 
 - [ ] **Step 3: Add `read_laz_points`, `_decimate_if_oversized`, and `build_mesh_for_scene` to `pipeline.py`**
 
-```python
-# Append to pipeline.py
+First, hoist these new top-level imports into the existing import block at the top of `pipeline.py` (so the linter doesn't flag E402):
 
+```python
+# At the top of pipeline.py, alongside the existing imports:
+import io
 import json
 import time
 from pathlib import Path
 
 import laspy
+```
 
+Then append the new code at the bottom of `pipeline.py`:
+
+```python
 # ── LAZ reader ──────────────────────────────────────────────────────────
 
 LAZ_RGB_FORMATS = {2, 3, 5, 7, 8, 10}
@@ -922,8 +937,6 @@ def _decimate_if_oversized(mesh: trimesh.Trimesh, max_bytes: int) -> trimesh.Tri
 
     Returns the original mesh if it already fits.
     """
-    import io
-
     buf = io.BytesIO()
     mesh.export(buf, file_type="glb")
     if buf.tell() <= max_bytes:
@@ -1011,10 +1024,10 @@ python -m pytest tests/test_pipeline.py -v
 
 Expected: 9 passed.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: (optional) commit if you initialized a repo in Task 1**
 
 ```bash
-git add scripts/pipeline.py scripts/tests/test_pipeline.py
+git add pipeline.py tests/test_pipeline.py
 git commit -m "Pipeline: LAZ reader, scene driver, decimation gate"
 ```
 
@@ -1210,10 +1223,10 @@ python -m pytest tests/test_cli.py::test_full_run_on_synthetic -v
 
 First command expected: 3 passed. Second: 1 passed (a few minutes).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: (optional) commit if you initialized a repo in Task 1**
 
 ```bash
-git add scripts/build_meshes.py scripts/tests/test_cli.py
+git add build_meshes.py tests/test_cli.py
 git commit -m "CLI: argparse driver, batch-resilient summary log"
 ```
 
@@ -1278,18 +1291,13 @@ Several minutes per scene; SMART-AIS is the longest. The batch is resilient — 
 
 Cycle through each annotated scene with the mesh toggle on. Note any obvious reconstruction defects in the sidecar (which scene, what's wrong) for follow-up tuning with `--voxel`.
 
-- [ ] **Step 7: Commit the results**
+- [ ] **Step 7: Record the run**
 
-The mesh GLBs themselves are gitignored (large binary). What gets committed is the sidecar metadata for reproducibility:
+`engine/data/lidar/` is not a git repo (see Task 1, Step 9). The sidecar `mesh.meta.json` files written by the pipeline already capture everything reproducible — params, point counts, color source, wall-clock — so there's nothing to commit. Just confirm the sidecars are present:
 
 ```bash
-cd /home/hendrik/coding/engine/data/lidar
-# If sidecars are gitignored too, skip; otherwise:
-git add annotated/*/source/mesh.meta.json
-git commit -m "Build: mesh.glb for the five LAZ-sourced annotated scenes"
+ls /home/hendrik/coding/engine/data/lidar/annotated/*/source/mesh.meta.json
 ```
-
-(Check the archive's `.gitignore` first — `mesh.glb` is almost certainly ignored, sidecar might or might not be.)
 
 ---
 
