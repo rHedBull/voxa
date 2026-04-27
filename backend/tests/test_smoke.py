@@ -44,20 +44,34 @@ def test_load_unknown_scene_404(client):
     assert r.status_code == 404
 
 
-def test_annotation_roundtrip(client):
+def test_annotation_roundtrip_preserves_all_fields(client):
+    """Every Cuboid field plus AnnotationDoc.meta must survive a save+load.
+    Silent field drop = lost annotation work, so we assert the full payload."""
     scene = "rt-scene"
-    doc = {"scene": scene, "kind": "gt", "instances": [_cuboid("inst-1")], "meta": {}}
+    inst = {
+        "id": "inst-1",
+        "cls": "pipe",
+        "label": "Pipe 3",
+        "color": "#22c55e",
+        "center": [0.12, 0.40, -0.05],
+        "size": [0.20, 0.05, 0.05],
+        "rotation": [0.1, 0.2, 0.3],
+        "conf": 0.87,
+        "source": "auto",
+    }
+    doc = {"scene": scene, "kind": "gt", "instances": [inst], "meta": {"note": "hello"}}
 
     put = client.put(f"/api/annotations/{scene}/gt", json=doc)
     assert put.status_code == 200
     assert put.json()["count"] == 1
 
-    got = client.get(f"/api/annotations/{scene}/gt")
-    assert got.status_code == 200
-    body = got.json()
+    body = client.get(f"/api/annotations/{scene}/gt").json()
     assert body["scene"] == scene
+    assert body["meta"] == {"note": "hello"}
     assert len(body["instances"]) == 1
-    assert body["instances"][0]["id"] == "inst-1"
+    got = body["instances"][0]
+    for k, v in inst.items():
+        assert got[k] == v, f"field {k!r} not preserved: {got[k]!r} != {v!r}"
 
 
 def test_get_annotation_missing_returns_empty(client):

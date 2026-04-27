@@ -63,7 +63,7 @@ export const VoxaAPI = {
   },
 };
 
-function b64ToFloat32(b64) {
+export function b64ToFloat32(b64) {
   const bin = atob(b64);
   const buf = new ArrayBuffer(bin.length);
   const view = new Uint8Array(buf);
