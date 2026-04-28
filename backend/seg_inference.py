@@ -107,20 +107,44 @@ def _read_ransac_artifacts(scan_dir: Path) -> Optional[dict]:
         return None
 
 
+_LABEL_KEYWORD_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
+    # (keywords-to-match, target-voxa-class-name). Order matters: more
+    # specific keywords first. Voxa's class names ("Pipe", "Tank", etc.)
+    # are matched case-insensitively against `class_map` keys.
+    (("pipe",), "pipe"),
+    (("tank", "vessel", "drum", "silo"), "tank"),
+    (("flat_surface", "wall", "floor", "ceiling", "beam", "structural", "plane"), "structural"),
+    (("fitting", "elbow", "joint", "flange"), "fitting"),
+    (("equipment", "pump", "valve", "motor", "instrument"), "equipment"),
+)
+
+
 def _ransac_class_for_segment(label: str, class_map: dict[str, int]) -> int:
     """Map a RANSAC segment's free-form `label` field to a class id from
-    `lidar/classes.json`. Falls back to -1 (unlabeled) on no match.
+    `lidar/classes.json`. Tries: exact case-insensitive match against
+    class names first, then a keyword heuristic for descriptive RANSAC
+    labels like "flat_surface" or "large_pipe". Returns -1 on no match.
 
-    Examples of `label` values seen in research data: "pipe", "tank",
-    "equipment", "structural", "unknown". Match is case-insensitive
-    against the class names in `class_map`.
+    Voxa's class names (per `config/classes.yaml`): Pipe, Tank, Equipment,
+    Structural, Fitting, Unknown. RANSAC's label vocabulary is broader
+    and more descriptive — e.g. ipl segment emits "flat_surface",
+    "large_pipe", "short_pipe", "small_pipe", "tank", "fitting".
     """
     if not label:
         return -1
-    key = label.lower()
+    key = label.lower().strip()
+
+    # Exact case-insensitive match first.
     for name, cid in class_map.items():
         if name.lower() == key:
             return int(cid)
+
+    # Keyword heuristic: substring containment, in priority order.
+    for keywords, target in _LABEL_KEYWORD_MAP:
+        if any(kw in key for kw in keywords):
+            for name, cid in class_map.items():
+                if name.lower() == target:
+                    return int(cid)
     return -1
 
 

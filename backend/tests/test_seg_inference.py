@@ -51,6 +51,25 @@ def test_ransac_class_for_segment_returns_minus_one_on_unknown():
     assert _ransac_class_for_segment(None, cm) == -1   # type: ignore[arg-type]
 
 
+def test_ransac_class_for_segment_matches_descriptive_ransac_labels():
+    """ipl segment emits 'flat_surface', 'large_pipe', etc. — broader than
+    voxa's class names. The keyword heuristic should still classify them."""
+    cm = {"pipe": 0, "tank": 1, "equipment": 2, "structural": 3, "fitting": 4}
+    assert _ransac_class_for_segment("large_pipe", cm) == 0
+    assert _ransac_class_for_segment("short_pipe", cm) == 0
+    assert _ransac_class_for_segment("small_pipe", cm) == 0
+    assert _ransac_class_for_segment("flat_surface", cm) == 3
+    assert _ransac_class_for_segment("vessel", cm) == 1
+
+
+def test_ransac_class_for_segment_exact_match_takes_priority():
+    """A label that's an exact class name should win over the keyword
+    heuristic — e.g. "pipe" matches "pipe" exactly, not via the keyword."""
+    cm = {"pipe": 0, "tank": 1}
+    assert _ransac_class_for_segment("pipe", cm) == 0
+    assert _ransac_class_for_segment("PIPE", cm) == 0
+
+
 # ── Artifact discovery ──────────────────────────────────────────────────────
 
 def test_read_ransac_artifacts_returns_none_when_missing(tmp_path):

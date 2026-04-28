@@ -128,20 +128,25 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedSce
 
         if (class_ids is not None and instance_ids is not None
                 and len(class_ids) == len(pc) == len(instance_ids)):
-            # Squash class IDs into int8 — voxa classes count is small.
             ci = class_ids.astype(np.int32)
             ii = instance_ids.astype(np.int32)
-            if int(ci.max(initial=-1)) > 126:
-                # Out of int8 range — keep int16 in memory but still ship as int8 truncated.
-                # Practically classes.json caps below 127, so this branch is defensive.
-                ci8 = np.clip(ci, -1, 126).astype(np.int8)
-            else:
-                ci8 = ci.astype(np.int8)
-            labels = LabelArrays(class_ids=ci8, instance_ids=ii)
-            valid_classes = ci[ci >= 0]
-            valid_inst = ii[ii >= 0]
-            n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
-            n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
+            # Treat an all-(-1) "labels" file as a placeholder, not authored
+            # GT — the SCHEMA reserves the slot for scenes that haven't been
+            # labeled yet (e.g. annotated/smart_ois). Falling through to the
+            # prelabel/inference tier here is what the loop expects.
+            placeholder = bool((ii < 0).all())
+            if not placeholder:
+                # Squash class IDs into int8 — voxa classes count is small.
+                if int(ci.max(initial=-1)) > 126:
+                    # Out of int8 range — defensive; classes.json caps below 127.
+                    ci8 = np.clip(ci, -1, 126).astype(np.int8)
+                else:
+                    ci8 = ci.astype(np.int8)
+                labels = LabelArrays(class_ids=ci8, instance_ids=ii)
+                valid_classes = ci[ci >= 0]
+                valid_inst = ii[ii >= 0]
+                n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
+                n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
 
     from segment_io import load_prelabel  # noqa: PLC0415
 
