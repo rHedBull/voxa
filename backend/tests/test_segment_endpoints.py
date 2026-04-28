@@ -35,3 +35,26 @@ def test_brush_query_409_when_no_session(client_with_loaded_annotated_scene, mon
     body = {"center": [0.0, 0.0, 0.0], "radius": 1.0}
     r = client.post("/api/segment/brush-query", json=body)
     assert r.status_code == 409
+
+
+# ── Task 10: apply ───────────────────────────────────────────────────────────
+
+def test_apply_set_class_changes_state(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    body = {
+        "op": "set_class",
+        "indices": _b64_int32([1, 2]),
+        "payload": {"class_id": 2},
+    }
+    r = client.post("/api/segment/apply", json=body)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["op"] == "set_class"
+    assert j["n_affected"] == 2
+
+
+def test_apply_merge_routes_to_session(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    body = {"op": "merge", "payload": {"source_inst": 2, "target_inst": 0}}
+    r = client.post("/api/segment/apply", json=body)
+    assert r.status_code == 200
