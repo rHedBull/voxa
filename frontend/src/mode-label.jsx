@@ -14,7 +14,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
   const [activeTool, setActiveTool] = useStateLabel('cuboid');
-  const [colorMode, setColorMode] = useStateLabel('class');
+  const [colorMode] = useStateLabel('class');
 
   // Keep activeClass valid as the class list streams in.
   useEffectLabel(() => {
