@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 
 import numpy as np
-import pytest
 
 
 def _b64_to_int32(b64: str) -> np.ndarray:
@@ -58,6 +57,21 @@ def test_apply_merge_routes_to_session(client_with_loaded_annotated_scene):
     body = {"op": "merge", "payload": {"source_inst": 2, "target_inst": 0}}
     r = client.post("/api/segment/apply", json=body)
     assert r.status_code == 200
+
+
+def test_apply_400_when_indices_missing_for_set_class(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    body = {"op": "set_class", "payload": {"class_id": 2}}  # no indices
+    r = client.post("/api/segment/apply", json=body)
+    assert r.status_code == 400
+    assert "indices" in r.json()["detail"]
+
+
+def test_apply_400_on_unknown_op(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    body = {"op": "explode", "payload": {}}
+    r = client.post("/api/segment/apply", json=body)
+    assert r.status_code == 400
 
 
 # ── Task 11: undo / redo ─────────────────────────────────────────────────────

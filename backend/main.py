@@ -728,26 +728,35 @@ def brush_query(req: BrushQueryRequest):
     return BrushQueryResponse(indices=_b64(idx.astype(np.int32)), n=int(idx.size))
 
 
+def _decode_indices_or_400(req: "ApplyRequest") -> np.ndarray:
+    if req.indices is None:
+        raise HTTPException(400, f"op '{req.op}' requires 'indices' (b64 Int32)")
+    return np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
+
+
 @app.post("/api/segment/apply")
 def segment_apply(req: ApplyRequest):
     seg = _require_seg()
-    if req.op == "set_class":
-        idx = np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
-        out = seg.apply_set_class(idx, class_id=int(req.payload["class_id"]))
-    elif req.op == "merge":
-        out = seg.apply_merge(
-            source_inst=int(req.payload["source_inst"]),
-            target_inst=int(req.payload["target_inst"]),
-        )
-    elif req.op == "reassign":
-        idx = np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
-        out = seg.apply_reassign(
-            idx,
-            target_inst=req.payload.get("target_inst"),
-            target_class=req.payload.get("target_class"),
-        )
-    else:
-        raise HTTPException(400, f"unknown op: {req.op}")
+    try:
+        if req.op == "set_class":
+            idx = _decode_indices_or_400(req)
+            out = seg.apply_set_class(idx, class_id=int(req.payload["class_id"]))
+        elif req.op == "merge":
+            out = seg.apply_merge(
+                source_inst=int(req.payload["source_inst"]),
+                target_inst=int(req.payload["target_inst"]),
+            )
+        elif req.op == "reassign":
+            idx = _decode_indices_or_400(req)
+            out = seg.apply_reassign(
+                idx,
+                target_inst=req.payload.get("target_inst"),
+                target_class=req.payload.get("target_class"),
+            )
+        else:
+            raise HTTPException(400, f"unknown op: {req.op}")
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, f"apply failed: {e}")
     return _serialize_apply(out)
 
 
