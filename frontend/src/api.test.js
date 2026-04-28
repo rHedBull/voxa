@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { b64ToFloat32, b64ToInt8, b64ToInt32, newId, decodeLoadResponse } from './api.js';
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import { b64ToFloat32, b64ToInt8, b64ToInt32, newId, decodeLoadResponse, VoxaAPI } from './api.js';
 
 // Encode helpers matching the backend's little-endian binary layout.
 function encodeFloat32(floats) {
@@ -142,5 +142,25 @@ describe('decodeLoadResponse', () => {
     expect(out.colors).toBeInstanceOf(Float32Array);
     expect(out.scene).toBe('test_scene');
     expect(out.numPoints).toBe(3);
+  });
+});
+
+describe('VoxaAPI.segApply wire shape', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('nests payload under body.payload, not at top level', async () => {
+    let captured = null;
+    const fakeFetch = vi.fn(async (url, opts) => {
+      captured = { url, body: JSON.parse(opts.body) };
+      return { ok: true, json: async () => ({ op: 'set_class', n_affected: 0, dirty: true }) };
+    });
+    vi.stubGlobal('fetch', fakeFetch);
+
+    await VoxaAPI.segApply('set_class', { payload: { class_id: 2 } });
+
+    expect(captured.url).toBe('/api/segment/apply');
+    expect(captured.body.op).toBe('set_class');
+    expect(captured.body.payload).toEqual({ class_id: 2 });
+    expect(captured.body.class_id).toBeUndefined();
   });
 });

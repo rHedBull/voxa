@@ -98,7 +98,11 @@ export const VoxaAPI = {
     return { indices: b64ToInt32(j.indices), n: j.n };
   },
   async segApply(op, { indices = null, payload = {} } = {}) {
-    const body = { op, ...(indices != null ? { indices: _int32ToB64(indices) } : {}), ...payload };
+    const body = {
+      op,
+      payload,
+      ...(indices != null ? { indices: _int32ToB64(indices) } : {}),
+    };
     const r = await fetch('/api/segment/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
