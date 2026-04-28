@@ -93,6 +93,7 @@ class SceneInfo(BaseModel):
 class LoadRequest(BaseModel):
     name: str                              # tier-prefixed id or bare legacy name
     max_points: int = MAX_POINTS_DEFAULT
+    want_full_labels: bool = False
 
 
 class LoadResponse(BaseModel):
@@ -113,6 +114,12 @@ class LoadResponse(BaseModel):
     recenter_offset: list[float] = [0.0, 0.0, 0.0]
     mesh_url: Optional[str] = None    # /api/mesh/<id> when a GLB exists
     mesh_is_z_up: bool = False        # frontend rotates the GLB only if true
+    full_class_ids: Optional[str] = None     # b64 Int8, full-res
+    full_instance_ids: Optional[str] = None  # b64 Int32, full-res
+    full_positions: Optional[str] = None     # b64 Float32 (xyz, recentered), full-res
+    full_n: Optional[int] = None
+    is_from_prelabel: bool = False
+    segment_summary: Optional[dict] = None   # { "<inst>": {class_id, n_points} }
 
 
 class Cuboid(BaseModel):
@@ -458,6 +465,27 @@ def load_scene(req: LoadRequest):
     class_ids_b64 = _b64(sub_labels.class_ids.astype(np.int8)) if sub_labels is not None else None
     instance_ids_b64 = _b64(sub_labels.instance_ids.astype(np.int32)) if sub_labels is not None else None
 
+    full_payload: dict[str, Any] = {}
+    if req.want_full_labels and labels is not None:
+        full_payload["full_class_ids"] = _b64(labels.class_ids.astype(np.int8))
+        full_payload["full_instance_ids"] = _b64(labels.instance_ids.astype(np.int32))
+        full_payload["full_positions"] = _b64(pc.points.astype(np.float32))
+        full_payload["full_n"] = int(len(pc))
+        ii = labels.instance_ids
+        ci = labels.class_ids
+        m = ii >= 0
+        if m.any():
+            uids, idx0, counts = np.unique(ii[m], return_index=True, return_counts=True)
+            summary = {
+                str(int(uid)): {"class_id": int(ci[m][idx0[k]]), "n_points": int(counts[k])}
+                for k, uid in enumerate(uids)
+            }
+        else:
+            summary = {}
+        full_payload["segment_summary"] = summary
+    seg_for_meta = _state.get("seg")
+    full_payload["is_from_prelabel"] = bool(seg_for_meta.is_from_prelabel) if seg_for_meta is not None else False
+
     return LoadResponse(
         scene=src.scene_id,
         num_points=len(pc),
@@ -476,6 +504,7 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
         mesh_url=_mesh_url_for(src),
         mesh_is_z_up=is_z_up if src.has_mesh else False,
+        **full_payload,
     )
 
 

@@ -221,3 +221,23 @@ def test_load_annotated_creates_segment_session(client_with_annotated_scene):
     import main
     assert main._state["seg"] is not None
     assert main._state["seg"].class_ids.shape == main._state["seg"].instance_ids.shape
+
+
+def test_load_with_want_full_labels_returns_full_arrays(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "want_full_labels": True})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["full_class_ids"] is not None
+    assert j["full_instance_ids"] is not None
+    assert j["full_positions"] is not None
+    assert j["full_n"] is not None
+    assert isinstance(j["segment_summary"], dict)
+
+
+def test_load_without_flag_omits_full_arrays(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id})
+    j = r.json()
+    assert j.get("full_class_ids") is None
+    assert j.get("full_positions") is None
