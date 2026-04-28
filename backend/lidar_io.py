@@ -147,11 +147,29 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedSce
 
     is_from_prelabel = False
 
+    scan_dir = Path(src.source_path).parent.parent
+
     if labels is None:
-        scan_dir = Path(src.source_path).parent.parent
         pre = load_prelabel(scan_dir, n_points=len(pc))
         if pre is not None:
             ci8, ii = pre
+            labels = LabelArrays(class_ids=ci8, instance_ids=ii)
+            valid_classes = ci8[ci8 >= 0]
+            valid_inst = ii[ii >= 0]
+            n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
+            n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
+            is_from_prelabel = True
+
+    if labels is None:
+        # No GT, no cached prelabel — try the trained merge model. This
+        # writes the result to prelabel/ as a side effect so subsequent
+        # loads short-circuit to the load_prelabel branch above.
+        from seg_inference import predict_for_scene  # noqa: PLC0415
+        class_map = _read_classes_json(lidar_root)
+        name_to_id = {name: cid for cid, name in class_map.items()}
+        inferred = predict_for_scene(scan_dir, n_points=len(pc), class_map=name_to_id)
+        if inferred is not None:
+            ci8, ii = inferred
             labels = LabelArrays(class_ids=ci8, instance_ids=ii)
             valid_classes = ci8[ci8 >= 0]
             valid_inst = ii[ii >= 0]
