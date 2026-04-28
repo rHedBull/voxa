@@ -14,6 +14,15 @@ import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
+// Converts a pointer event + bounding rect to normalized device coords [-1,1].
+// Exported for unit testing.
+export function evtToNdc(evt, rect) {
+  return {
+    x:  ((evt.clientX - rect.left) / rect.width)  * 2 - 1,
+    y: -((evt.clientY - rect.top)  / rect.height) * 2 + 1,
+  };
+}
+
 // Resolve a class palette (list of {id, color, label}) into a dense RGB lookup
 // indexed by class id. Out-of-range ids fall through to the unlabeled grey.
 function buildPaletteRGB(palette) {
@@ -381,17 +390,62 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     setTimeout(onResize, 50);
     setTimeout(onResize, 200);
 
+    // Pointer-pick subscriber list: { cb } entries added by onPointerPick/onPointerMove.
+    const pickSubs = [];
+    const moveSubs = [];
+
+    const raycaster = new THREE.Raycaster();
+
+    const onPointerDown = (e) => {
+      if (pickSubs.length === 0) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndc = evtToNdc(e, rect);
+      raycaster.setFromCamera(ndc, camera);
+      const m = stateRef.current?.points;
+      if (!m) return;
+      raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
+      const hits = raycaster.intersectObject(m);
+      if (!hits.length) return;
+      const subRow = hits[0].index;
+      const subsampleIdx = m.userData.subsampleIdx;
+      // subsampleIdx maps subsampled row → full-res index.
+      // Falls back to subRow when subsampleIdx is not yet available (Task 20).
+      const fullIndex = subsampleIdx ? subsampleIdx[subRow] : subRow;
+      pickSubs.forEach(({ cb }) => cb(fullIndex, e));
+    };
+
+    const onPointerMove = (e) => {
+      if (moveSubs.length === 0) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndc = evtToNdc(e, rect);
+      raycaster.setFromCamera(ndc, camera);
+      const m = stateRef.current?.points;
+      if (!m) return;
+      raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
+      const hits = raycaster.intersectObject(m);
+      const subRow = hits.length ? hits[0].index : null;
+      const subsampleIdx = m.userData.subsampleIdx;
+      const fullIndex = subRow != null ? (subsampleIdx ? subsampleIdx[subRow] : subRow) : null;
+      moveSubs.forEach(({ cb }) => cb(fullIndex, e));
+    };
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+
     stateRef.current = {
       renderer, scene, camera, pointsGeom, pointsMat, points,
       controller: null,
       cuboidGroup, meshGroup, meshUrlLoaded: null, meshLoadAbort: null,
       floor, grid, axes, mount,
+      pickSubs, moveSubs,
     };
 
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
       stateRef.current.controller?.dispose();
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointermove', onPointerMove);
       pointsGeom.dispose();
       pointsMat.dispose();
       renderer.dispose();
@@ -721,6 +775,51 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     frame(center, radius) { stateRef.current.controller?.frame?.(center, radius); },
     setCameraState(s) { stateRef.current.controller?.setFromState?.(s); },
     getCameraState() { return stateRef.current.controller?.getState?.(); },
+    domElement() {
+      return stateRef.current.renderer?.domElement ?? null;
+    },
+    cameraForward() {
+      const s = stateRef.current;
+      if (!s.camera) return [0, 0, -1];
+      const dir = new THREE.Vector3();
+      s.camera.getWorldDirection(dir);
+      return [dir.x, dir.y, dir.z];
+    },
+    firstHitUnderCursor(evt) {
+      const s = stateRef.current;
+      if (!s.camera || !s.points) return null;
+      const rect = s.renderer.domElement.getBoundingClientRect();
+      const ndc = evtToNdc(evt, rect);
+      const raycaster = new THREE.Raycaster();
+      raycaster.params.Points = { threshold: (s.pointsMat.size || 0.012) * 2.0 };
+      raycaster.setFromCamera(ndc, s.camera);
+      const hits = raycaster.intersectObject(s.points);
+      if (!hits.length) return null;
+      const subRow = hits[0].index;
+      const subsampleIdx = s.points.userData.subsampleIdx;
+      const fullIndex = subsampleIdx ? subsampleIdx[subRow] : subRow;
+      return { fullIndex, world: hits[0].point.clone() };
+    },
+    onPointerPick(cb) {
+      const s = stateRef.current;
+      if (!s) return () => {};
+      const entry = { cb };
+      s.pickSubs.push(entry);
+      return () => {
+        const i = s.pickSubs.indexOf(entry);
+        if (i !== -1) s.pickSubs.splice(i, 1);
+      };
+    },
+    onPointerMove(cb) {
+      const s = stateRef.current;
+      if (!s) return () => {};
+      const entry = { cb };
+      s.moveSubs.push(entry);
+      return () => {
+        const i = s.moveSubs.indexOf(entry);
+        if (i !== -1) s.moveSubs.splice(i, 1);
+      };
+    },
   }));
 
   return <div ref={mountRef} style={{ width: '100%', height: '100%', position: 'relative' }} />;
