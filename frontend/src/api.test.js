@@ -1,5 +1,48 @@
 import { describe, expect, it } from 'vitest';
-import { b64ToFloat32, b64ToInt8, b64ToInt32, newId } from './api.js';
+import { b64ToFloat32, b64ToInt8, b64ToInt32, newId, decodeLoadResponse } from './api.js';
+
+// Encode helpers matching the backend's little-endian binary layout.
+function encodeFloat32(floats) {
+  const u8 = new Uint8Array(new Float32Array(floats).buffer);
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+function encodeInt8(vals) {
+  const u8 = new Uint8Array(new Int8Array(vals).buffer);
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+function encodeInt32(vals) {
+  const u8 = new Uint8Array(new Int32Array(vals).buffer);
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+
+function makeFakeLoadResponse({ withFull = false } = {}) {
+  const base = {
+    scene: 'test_scene',
+    num_points: 3,
+    num_subsampled: 3,
+    bbox_min: [0, 0, 0],
+    bbox_max: [1, 1, 1],
+    positions: encodeFloat32([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    colors: encodeFloat32([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    recenter_offset: [0, 0, 0],
+  };
+  if (!withFull) return base;
+  return {
+    ...base,
+    full_class_ids: encodeInt8([-1, 0, 1]),
+    full_instance_ids: encodeInt32([-1, 0, 1]),
+    full_positions: encodeFloat32([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    full_n: 3,
+    is_from_prelabel: true,
+    segment_summary: { n_instances: 2 },
+  };
+}
 
 describe('newId', () => {
   it('uses the supplied prefix', () => {
@@ -18,7 +61,6 @@ describe('newId', () => {
 });
 
 describe('b64ToFloat32', () => {
-  // Helper: encode a Float32Array → base64 the same way the backend does.
   const encode = (floats) => {
     const u8 = new Uint8Array(new Float32Array(floats).buffer);
     let s = '';
@@ -63,5 +105,42 @@ describe('b64ToInt8 / b64ToInt32', () => {
     const decoded = b64ToInt32(encodeBytes(src));
     expect(decoded).toBeInstanceOf(Int32Array);
     expect(Array.from(decoded)).toEqual(Array.from(src));
+  });
+});
+
+describe('decodeLoadResponse', () => {
+  it('decodes full_* fields when present', () => {
+    const j = makeFakeLoadResponse({ withFull: true });
+    const out = decodeLoadResponse(j);
+    expect(out.fullClassIds).toBeInstanceOf(Int8Array);
+    expect(out.fullClassIds.length).toBe(3);
+    expect(out.fullInstanceIds).toBeInstanceOf(Int32Array);
+    expect(out.fullInstanceIds.length).toBe(3);
+    expect(out.fullPositions).toBeInstanceOf(Float32Array);
+    expect(out.fullPositions.length).toBe(9);
+    expect(out.fullN).toBe(3);
+    expect(out.isFromPrelabel).toBe(true);
+    expect(out.segmentSummary).toEqual({ n_instances: 2 });
+  });
+
+  it('returns null fullClassIds / fullInstanceIds / fullPositions when absent', () => {
+    const j = makeFakeLoadResponse({ withFull: false });
+    const out = decodeLoadResponse(j);
+    expect(out.fullClassIds).toBeNull();
+    expect(out.fullInstanceIds).toBeNull();
+    expect(out.fullPositions).toBeNull();
+    expect(out.fullN).toBeNull();
+    expect(out.isFromPrelabel).toBe(false);
+    expect(out.segmentSummary).toBeNull();
+  });
+
+  it('always decodes base positions and colors', () => {
+    const j = makeFakeLoadResponse({ withFull: false });
+    const out = decodeLoadResponse(j);
+    expect(out.positions).toBeInstanceOf(Float32Array);
+    expect(out.positions.length).toBe(9);
+    expect(out.colors).toBeInstanceOf(Float32Array);
+    expect(out.scene).toBe('test_scene');
+    expect(out.numPoints).toBe(3);
   });
 });

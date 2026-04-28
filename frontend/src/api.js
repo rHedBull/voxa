@@ -1,5 +1,32 @@
 // api.js — thin client for the FastAPI backend.
 
+export function decodeLoadResponse(j) {
+  return {
+    scene: j.scene,
+    numPoints: j.num_points,
+    numSubsampled: j.num_subsampled,
+    bbox: { min: j.bbox_min, max: j.bbox_max },
+    positions: b64ToFloat32(j.positions),
+    colors: b64ToFloat32(j.colors),
+    intensity: j.intensity ? b64ToFloat32(j.intensity) : null,
+    classIds: j.class_ids ? b64ToInt8(j.class_ids) : null,
+    instanceIds: j.instance_ids ? b64ToInt32(j.instance_ids) : null,
+    classPalette: j.class_palette || null,
+    nClasses: j.n_classes ?? null,
+    nInstances: j.n_instances ?? null,
+    nLabeledPoints: j.n_labeled_points ?? null,
+    recenterOffset: j.recenter_offset || [0, 0, 0],
+    meshUrl: j.mesh_url || null,
+    meshIsZUp: !!j.mesh_is_z_up,
+    fullClassIds: j.full_class_ids ? b64ToInt8(j.full_class_ids) : null,
+    fullInstanceIds: j.full_instance_ids ? b64ToInt32(j.full_instance_ids) : null,
+    fullPositions: j.full_positions ? b64ToFloat32(j.full_positions) : null,
+    fullN: j.full_n ?? null,
+    isFromPrelabel: !!j.is_from_prelabel,
+    segmentSummary: j.segment_summary || null,
+  };
+}
+
 export const VoxaAPI = {
   async health() {
     const r = await fetch('/api/health');
@@ -13,35 +40,19 @@ export const VoxaAPI = {
     const r = await fetch('/api/scenes');
     return r.json();
   },
-  async load(name, maxPoints = null) {
-    // When maxPoints is null, omit it from the body so the backend's
-    // VOXA_MAX_POINTS env (default 300_000) controls the cap.
-    const body = maxPoints == null ? { name } : { name, max_points: maxPoints };
+  async load(name, { maxPoints = null, wantFullLabels = false } = {}) {
+    const body = {
+      name,
+      ...(maxPoints != null ? { max_points: maxPoints } : {}),
+      ...(wantFullLabels ? { want_full_labels: true } : {}),
+    };
     const r = await fetch('/api/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`load failed: ${r.status} ${await r.text()}`);
-    const j = await r.json();
-    return {
-      scene: j.scene,
-      numPoints: j.num_points,
-      numSubsampled: j.num_subsampled,
-      bbox: { min: j.bbox_min, max: j.bbox_max },
-      positions: b64ToFloat32(j.positions),
-      colors: b64ToFloat32(j.colors),
-      intensity: j.intensity ? b64ToFloat32(j.intensity) : null,
-      classIds: j.class_ids ? b64ToInt8(j.class_ids) : null,
-      instanceIds: j.instance_ids ? b64ToInt32(j.instance_ids) : null,
-      classPalette: j.class_palette || null,
-      nClasses: j.n_classes ?? null,
-      nInstances: j.n_instances ?? null,
-      nLabeledPoints: j.n_labeled_points ?? null,
-      recenterOffset: j.recenter_offset || [0, 0, 0],
-      meshUrl: j.mesh_url || null,
-      meshIsZUp: !!j.mesh_is_z_up,
-    };
+    return decodeLoadResponse(await r.json());
   },
   async getAnnotation(scene, kind) {
     const r = await fetch(`/api/annotations/${encodeURIComponent(scene)}/${kind}`);
@@ -74,7 +85,67 @@ export const VoxaAPI = {
     });
     return r.json();
   },
+  async segBrushQuery({ center, radius, cameraRay = null, depthCull = null }) {
+    const body = { center, radius, ...(cameraRay != null ? { camera_ray: cameraRay } : {}),
+                   ...(depthCull != null ? { depth_cull: depthCull } : {}) };
+    const r = await fetch('/api/segment/brush-query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`segBrushQuery failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return { indices: b64ToInt32(j.indices), n: j.n };
+  },
+  async segApply(op, { indices = null, payload = {} } = {}) {
+    const body = { op, ...(indices != null ? { indices: _int32ToB64(indices) } : {}), ...payload };
+    const r = await fetch('/api/segment/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`segApply failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return _decodeApplyResponse(j);
+  },
+  async segUndo() {
+    const r = await fetch('/api/segment/undo', { method: 'POST' });
+    if (r.status === 204) return null;
+    if (!r.ok) throw new Error(`segUndo failed: ${r.status} ${await r.text()}`);
+    return _decodeApplyResponse(await r.json());
+  },
+  async segRedo() {
+    const r = await fetch('/api/segment/redo', { method: 'POST' });
+    if (r.status === 204) return null;
+    if (!r.ok) throw new Error(`segRedo failed: ${r.status} ${await r.text()}`);
+    return _decodeApplyResponse(await r.json());
+  },
+  async segSave() {
+    const r = await fetch('/api/segment/save', { method: 'POST' });
+    if (!r.ok) throw new Error(`segSave failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
 };
+
+function _decodeApplyResponse(j) {
+  return {
+    op: j.op,
+    nAffected: j.n_affected,
+    dirty: j.dirty,
+    newInstanceId: j.new_instance_id ?? null,
+    indices: j.indices ? b64ToInt32(j.indices) : null,
+    afterClass: j.after_class ? b64ToInt8(j.after_class) : null,
+    afterInstance: j.after_instance ? b64ToInt32(j.after_instance) : null,
+    direction: j.direction ?? null,
+  };
+}
+
+function _int32ToB64(arr) {
+  const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
 
 function b64ToBuf(b64) {
   const bin = atob(b64);
