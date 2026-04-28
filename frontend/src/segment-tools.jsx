@@ -3,7 +3,6 @@
 import { useEffect, useRef, useMemo } from 'react';
 import * as THREE from 'three';
 import { VoxaAPI } from './api.js';
-import { applyDelta } from './segment-state.js';
 
 // ── Tool strip ──────────────────────────────────────────────────────────────
 // Three-button row: Cuboid / Pick / Brush.
