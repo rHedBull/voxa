@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 import numpy as np
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -669,6 +669,104 @@ def auto_fit(req: AutoFitRequest):
         center=list(fitted_center),
         size=list(fitted_size),
     )
+
+
+# ── Segment endpoints ────────────────────────────────────────────────────────
+
+class BrushQueryRequest(BaseModel):
+    center: list[float]
+    radius: float
+    camera_ray: Optional[list[float]] = None
+    depth_cull: Optional[float] = None
+
+
+class BrushQueryResponse(BaseModel):
+    indices: str        # b64 Int32
+    n: int
+
+
+class ApplyRequest(BaseModel):
+    op: str
+    indices: Optional[str] = None     # b64 Int32; required for set_class & reassign
+    payload: dict
+
+
+def _require_seg():
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "No segment session loaded — load an annotated scene first")
+    return seg
+
+
+def _serialize_apply(out: dict) -> dict:
+    body = {"op": out["op"], "n_affected": out["n_affected"], "dirty": True}
+    if "new_instance_id" in out:
+        body["new_instance_id"] = int(out["new_instance_id"])
+    if "indices" in out:
+        body["indices"] = _b64(out["indices"].astype(np.int32))
+        body["after_class"] = _b64(out["after_class"].astype(np.int8))
+        body["after_instance"] = _b64(out["after_instance"].astype(np.int32))
+    return body
+
+
+def _serialize_delta(out: dict) -> dict:
+    return {
+        "op": out["op"], "direction": out["direction"],
+        "n_affected": out["n_affected"],
+        "indices": _b64(out["indices"].astype(np.int32)),
+        "after_class": _b64(out["after_class"].astype(np.int8)),
+        "after_instance": _b64(out["after_instance"].astype(np.int32)),
+    }
+
+
+@app.post("/api/segment/brush-query", response_model=BrushQueryResponse)
+def brush_query(req: BrushQueryRequest):
+    seg = _require_seg()
+    center = np.array(req.center, dtype=np.float32)
+    cam = np.array(req.camera_ray, dtype=np.float32) if req.camera_ray else None
+    idx = seg.brush_query(center, req.radius, camera_ray=cam, depth_cull=req.depth_cull)
+    return BrushQueryResponse(indices=_b64(idx.astype(np.int32)), n=int(idx.size))
+
+
+@app.post("/api/segment/apply")
+def segment_apply(req: ApplyRequest):
+    seg = _require_seg()
+    if req.op == "set_class":
+        idx = np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
+        out = seg.apply_set_class(idx, class_id=int(req.payload["class_id"]))
+    elif req.op == "merge":
+        out = seg.apply_merge(
+            source_inst=int(req.payload["source_inst"]),
+            target_inst=int(req.payload["target_inst"]),
+        )
+    elif req.op == "reassign":
+        idx = np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
+        out = seg.apply_reassign(
+            idx,
+            target_inst=req.payload.get("target_inst"),
+            target_class=req.payload.get("target_class"),
+        )
+    else:
+        raise HTTPException(400, f"unknown op: {req.op}")
+    return _serialize_apply(out)
+
+
+@app.post("/api/segment/undo")
+def segment_undo():
+    seg = _require_seg()
+    out = seg.undo()
+    if out is None:
+        return Response(status_code=204)
+    return _serialize_delta(out)
+
+
+@app.post("/api/segment/redo")
+def segment_redo():
+    seg = _require_seg()
+    out = seg.redo()
+    if out is None:
+        return Response(status_code=204)
+    return _serialize_delta(out)
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────
