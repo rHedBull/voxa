@@ -78,3 +78,38 @@ def test_reassign_raises_when_target_class_missing_but_target_inst_set():
     with pytest.raises(ValueError, match="target_class"):
         s.apply_reassign(np.array([1], dtype=np.int32),
                          target_inst=-1, target_class=None)
+
+
+def test_brush_query_returns_indices_within_radius():
+    rng = np.random.default_rng(0)
+    pts = rng.standard_normal((1000, 3)).astype(np.float32)
+    s = SegmentSession(
+        class_ids=np.full(1000, -1, dtype=np.int8),
+        instance_ids=np.full(1000, -1, dtype=np.int32),
+        positions=pts,
+    )
+    center = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    R = 0.5
+    got = set(s.brush_query(center, R).tolist())
+    expected = set(np.flatnonzero(np.linalg.norm(pts - center, axis=1) <= R).tolist())
+    assert got == expected
+
+
+def test_brush_query_depth_cull_excludes_far_points_along_ray():
+    # Place a near cluster at z=0 and a far cluster at z=10, both within sphere R.
+    near = np.array([[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]], dtype=np.float32)
+    far = np.array([[0.0, 0.0, 10.0], [0.01, 0.0, 10.0]], dtype=np.float32)
+    pts = np.concatenate([near, far], axis=0)
+    s = SegmentSession(
+        class_ids=np.full(4, -1, dtype=np.int8),
+        instance_ids=np.full(4, -1, dtype=np.int32),
+        positions=pts,
+    )
+    # Sphere big enough to cover both clusters; depth-cull along +z eliminates far.
+    got = s.brush_query(
+        np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        radius=20.0,
+        camera_ray=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        depth_cull=2.0,
+    )
+    assert set(got.tolist()) == {0, 1}

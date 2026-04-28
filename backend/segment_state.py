@@ -106,6 +106,35 @@ class SegmentSession:
         self.dirty = True
         return self._delta_payload(d, direction="redo")
 
+    # ── KD-tree query ──
+
+    def _ensure_tree(self):
+        if not hasattr(self, "_tree"):
+            from scipy.spatial import cKDTree
+            self._tree = cKDTree(self.positions)
+        return self._tree
+
+    def brush_query(
+        self,
+        center: np.ndarray,
+        radius: float,
+        *,
+        camera_ray: Optional[np.ndarray] = None,
+        depth_cull: Optional[float] = None,
+    ) -> np.ndarray:
+        tree = self._ensure_tree()
+        idx = np.array(tree.query_ball_point(center, r=float(radius)), dtype=np.int32)
+        if idx.size == 0:
+            return idx
+        if camera_ray is not None and depth_cull is not None:
+            ray = camera_ray.astype(np.float32)
+            ray = ray / (np.linalg.norm(ray) + 1e-9)
+            disp = self.positions[idx] - center.astype(np.float32)
+            along = disp @ ray
+            keep = along <= float(depth_cull)
+            idx = idx[keep]
+        return idx
+
     # ── Internal ──
 
     def _apply(self, op: str, indices: np.ndarray, payload: dict) -> dict:
