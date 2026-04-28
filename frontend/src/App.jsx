@@ -4,7 +4,7 @@
 import { useState as useStateApp, useRef as useRefApp,
          useEffect as useEffectApp, useCallback as useCallbackApp } from 'react';
 import { VoxaAPI } from './api.js';
-import { initSegState } from './segment-state.js';
+import { initSegState, applyDelta } from './segment-state.js';
 import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
@@ -120,6 +120,40 @@ export default function App() {
     setGtInstances(instances);
     setCuboidDirty(true);
   }, []);
+
+  // Cmd/Ctrl+Z / Shift+Z → segment undo / redo (only when segState active).
+  useEffectApp(() => {
+    const onKey = async (e) => {
+      if (!segState) return;
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return;
+      e.preventDefault();
+      try {
+        const r = e.shiftKey ? await VoxaAPI.segRedo() : await VoxaAPI.segUndo();
+        if (r === null) return;
+        setSegState((s) => {
+          if (!s) return s;
+          const next = applyDelta(s, {
+            indices: r.indices,
+            after_class: r.afterClass,
+            after_instance: r.afterInstance,
+          });
+          viewerRef.current?.recolorByEdit({
+            affectedFullIndices: r.indices,
+            classFull: next.classFull,
+            instanceFull: next.instanceFull,
+            colorMode: 'class',
+            palette: cloud?.classPalette ?? null,
+          });
+          return next;
+        });
+      } catch (err) {
+        console.error('undo/redo failed:', err);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [segState, viewerRef, cloud]);
 
   // Cmd/Ctrl+S → save segments first (if dirty), then cuboids.
   useEffectApp(() => {
