@@ -46,6 +46,7 @@ export default function App() {
   const [gtInstances, setGtInstances] = useStateApp([]);
   const [predInstances, setPredInstances] = useStateApp([]);
   const [savedAt, setSavedAt] = useStateApp(null);
+  const [cuboidDirty, setCuboidDirty] = useStateApp(false);
   const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
   const [segState, setSegState] = useStateApp(null);
   // Camera nav mode is shared across the three modes so toggling Inspect →
@@ -74,6 +75,7 @@ export default function App() {
       .then((c) => {
         if (cancel) return;
         setCloud(c);
+        setCuboidDirty(false);
         if (c.fullClassIds && c.fullInstanceIds) {
           setSegState(initSegState({
             classFull: c.fullClassIds,
@@ -111,19 +113,34 @@ export default function App() {
     setGtInstances(instances);
     await VoxaAPI.putAnnotation(activeScene, 'gt', { instances });
     setSavedAt(new Date().toLocaleTimeString());
+    setCuboidDirty(false);
   }, [activeScene]);
 
-  // Cmd/Ctrl+S → save
+  const onCuboidChange = useCallbackApp((instances) => {
+    setGtInstances(instances);
+    setCuboidDirty(true);
+  }, []);
+
+  // Cmd/Ctrl+S → save segments first (if dirty), then cuboids.
   useEffectApp(() => {
-    const onKey = (e) => {
+    const onKey = async (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
+        if (segState?.dirty) {
+          try {
+            await VoxaAPI.segSave();
+            setSegState((s) => s ? { ...s, dirty: false } : s);
+          } catch (err) {
+            console.error('segSave failed, skipping cuboid save:', err);
+            return;
+          }
+        }
         saveGt(gtInstances);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [gtInstances, saveGt]);
+  }, [gtInstances, saveGt, segState]);
 
   return (
     <div className={'app-shell ' + themeClass}>
@@ -160,6 +177,9 @@ export default function App() {
         <button className="header-btn" onClick={() => setScenePickerOpen((o) => !o)}>
           <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>◧</span>
           {activeScene || 'Pick scene'}
+          {(cuboidDirty || segState?.dirty) && (
+            <span title="Unsaved changes" style={{ color: 'oklch(0.75 0.18 60)', marginLeft: 4 }}>●</span>
+          )}
         </button>
         <button className="header-btn icon-only"
           onClick={() => setTweak('theme', t.theme === 'dark' ? 'light' : 'dark')}
@@ -199,7 +219,7 @@ export default function App() {
             classes={classes} instances={gtInstances} sceneName={activeScene}
             cloudBBox={cloud?.bbox}
             navMode={navMode} onNavModeChange={setNavMode}
-            onChange={setGtInstances} onSave={saveGt}
+            onChange={onCuboidChange} onSave={saveGt}
             segState={segState} setSegState={setSegState} />
         )}
         {t.mode === 'compare' && (
