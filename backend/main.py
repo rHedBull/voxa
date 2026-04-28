@@ -46,6 +46,7 @@ ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
 FRONTEND_DIST = ROOT / "dist"
 MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "300000"))
+MAX_LABEL_POINTS = int(os.environ.get("VOXA_MAX_LABEL_POINTS", "5000000"))
 LIDAR_ROOT = load_lidar_root_from_env()
 
 app = FastAPI(title="Voxa 3D scan studio")
@@ -446,15 +447,15 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
     )
     from segment_state import SegmentSession
-    _state["seg"] = (
-        SegmentSession(
+    if labels is not None and len(pc) <= MAX_LABEL_POINTS:
+        _state["seg"] = SegmentSession(
             class_ids=labels.class_ids,
             instance_ids=labels.instance_ids,
             positions=pc.points,
             is_from_prelabel=is_from_prelabel,
         )
-        if labels is not None else None
-    )
+    else:
+        _state["seg"] = None
 
     positions = sub.points.astype(np.float32)
     colors = _normalize_colors(sub)

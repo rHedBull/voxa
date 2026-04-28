@@ -241,3 +241,12 @@ def test_load_without_flag_omits_full_arrays(client_with_annotated_scene):
     j = r.json()
     assert j.get("full_class_ids") is None
     assert j.get("full_positions") is None
+
+
+def test_seg_session_skipped_above_label_cap(monkeypatch, client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    import main
+    monkeypatch.setattr(main, "MAX_LABEL_POINTS", 1, raising=False)
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    assert main._state["seg"] is None
