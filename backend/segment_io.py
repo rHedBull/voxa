@@ -44,7 +44,7 @@ def load_prelabel(
     return class_ids, instance_ids
 
 
-_TS_RE = re.compile(r"^\d{8}_\d{4}$")
+_TS_RE = re.compile(r"^\d{8}_\d{6}$")
 
 
 def _validate_invariants(class_ids: np.ndarray, instance_ids: np.ndarray) -> None:
@@ -104,7 +104,7 @@ def _build_segment_metadata(
 
 
 def _utc_timestamp() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M")
+    return datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 def save_labels(
@@ -116,7 +116,11 @@ def save_labels(
     write_history: bool = True,
     history_keep: int = 10,
 ) -> None:
-    """Atomically write gt_*.npy + metadata. Writes a history snapshot first."""
+    """Validate, snapshot existing labels, then write gt_*.npy + metadata.
+
+    Writes are sequential (3 files); not atomic across files. A history
+    snapshot is taken from the prior on-disk labels before overwrite.
+    """
     _validate_invariants(class_ids, instance_ids)
 
     labels_dir = scan_dir / "labels"

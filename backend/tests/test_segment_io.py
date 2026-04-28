@@ -121,13 +121,32 @@ def test_save_labels_writes_history_snapshot(tmp_path):
     assert hist.exists()
     snaps = list(hist.iterdir())
     assert len(snaps) == 1
-    assert re.match(r"^\d{8}_\d{4}$", snaps[0].name)
+    assert re.match(r"^\d{8}_\d{6}$", snaps[0].name)
+
+
+def test_save_labels_snapshots_existing_labels_before_overwrite(tmp_path):
+    """v1 → save → v2 → save: v1's class array must be preserved in history."""
+    scan_dir = tmp_path / "annotated" / "demo"
+    cls_v1 = np.array([0], dtype=np.int8)
+    inst_v1 = np.array([0], dtype=np.int32)
+    save_labels(scan_dir, cls_v1, inst_v1, write_history=False)
+
+    cls_v2 = np.array([1], dtype=np.int8)
+    inst_v2 = np.array([1], dtype=np.int32)
+    save_labels(scan_dir, cls_v2, inst_v2, write_history=True)
+
+    snaps = list((scan_dir / "annotation_history").iterdir())
+    assert len(snaps) == 1
+    saved_cls = np.load(snaps[0] / "gt_class_ids.npy")
+    np.testing.assert_array_equal(saved_cls, cls_v1.astype(np.int32))
+    saved_meta = json.loads((snaps[0] / "gt_segment_metadata.json").read_text())
+    assert saved_meta["segments"][0]["class_id"] == 0
 
 
 def test_prune_history_keeps_only_timestamped_dirs(tmp_path):
     hist = tmp_path / "annotation_history"
     hist.mkdir()
-    valid = [hist / f"2026010{i % 10}_{1000 + i:04d}" for i in range(12)]
+    valid = [hist / f"2026010{i % 10}_{100000 + i:06d}" for i in range(12)]
     for v in valid:
         v.mkdir()
     for i, v in enumerate(valid):
@@ -138,4 +157,4 @@ def test_prune_history_keeps_only_timestamped_dirs(tmp_path):
 
     remaining = sorted(p.name for p in hist.iterdir())
     assert "manual-backup" in remaining
-    assert sum(1 for n in remaining if re.match(r"^\d{8}_\d{4}$", n)) == 10
+    assert sum(1 for n in remaining if re.match(r"^\d{8}_\d{6}$", n)) == 10

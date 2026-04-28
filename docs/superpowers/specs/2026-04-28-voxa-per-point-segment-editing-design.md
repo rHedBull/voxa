@@ -139,9 +139,9 @@ Save fails (HTTP 400) with diagnostic on violation rather than silently corrupti
 
 ### 6.5 Annotation history
 
-`annotation_history/<UTC YYYYMMDD_HHMM>/` is written before every save by default (per SCHEMA's optional convention). 16 MB per save for a 2 M-point scene; capped at 10 most-recent snapshots per scene; older directories pruned on save. Disabled via env `VOXA_DISABLE_ANNOTATION_HISTORY=1`.
+`annotation_history/<UTC YYYYMMDD_HHMMSS>/` is written before every save by default (per SCHEMA's optional convention; SCHEMA shows `YYYYMMDD_HHMM` as an example, voxa uses seconds granularity to avoid same-minute collisions during rapid save-and-correct cycles). 16 MB per save for a 2 M-point scene; capped at 10 most-recent snapshots per scene; older directories pruned on save. Disabled via env `VOXA_DISABLE_ANNOTATION_HISTORY=1`.
 
-**Pruning identification.** Voxa only prunes directories whose name matches the strict regex `^\d{8}_\d{4}$` (UTC `YYYYMMDD_HHMM`). User-curated subdirectories with any other name (e.g. `pre-merge-2026-04-28`, `manual-backup`) are left alone. This protects external tools or annotators that drop snapshots under the same parent.
+**Pruning identification.** Voxa only prunes directories whose name matches the strict regex `^\d{8}_\d{6}$` (UTC `YYYYMMDD_HHMMSS`). User-curated subdirectories with any other name (e.g. `pre-merge-2026-04-28`, `manual-backup`) are left alone. This protects external tools or annotators that drop snapshots under the same parent.
 
 ## 7. Frontend state & wire format
 
