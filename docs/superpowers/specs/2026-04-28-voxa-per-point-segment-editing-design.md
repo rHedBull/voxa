@@ -45,7 +45,7 @@ Label mode gains a sub-tool selector. Today it's implicitly "cuboid" — that be
 
 - Click a point → select the segment it belongs to.
 - Shift-click → add to multi-selection.
-- Hotkeys on the active selection: `P / T / E / S / D / R` apply class (`pipe / tank / equipment / structural / double / unlabeled`) per `config/classes.yaml`.
+- Hotkeys on the active selection: `P / T / E / S / D` apply class (`pipe / tank / equipment / structural / double`) per `config/classes.yaml`. `R` is a special sentinel for unlabeled (`class_id = -1`, `instance_id = -1`) — not a config lookup; wired directly to the `-1` state.
 - With ≥2 segments selected, `M` merges into the lowest segment ID; the merged ID becomes the new selection.
 
 ### 4.2 Brush tool (key `B`)
@@ -76,7 +76,7 @@ Per stroke (each pointer move while left-button is held):
 
 1. Re-raycast → new sphere center.
 2. Spatial-index range query for points within `R` of center, on the **full-resolution** point set (not the subsampled render set).
-3. Optional depth gate: cull points whose camera-space depth is more than `2R` farther than the cursor hit, to avoid painting through occluders.
+3. Optional depth gate: cull points whose distance **along the camera-ray axis** is more than `2 * R` farther than the cursor hit (with `R` = brush radius in world units, same `R` as the sphere). Avoids painting through occluders. Operates along the camera ray, not world-Z.
 4. Apply destination assignment (existing instance, new instance, or `-1`) to the resulting indices.
 
 Continuous strokes accumulate indices into one edit; mouse-up commits one undo entry per stroke.
@@ -141,6 +141,8 @@ Save fails (HTTP 400) with diagnostic on violation rather than silently corrupti
 
 `annotation_history/<UTC YYYYMMDD_HHMM>/` is written before every save by default (per SCHEMA's optional convention). 16 MB per save for a 2 M-point scene; capped at 10 most-recent snapshots per scene; older directories pruned on save. Disabled via env `VOXA_DISABLE_ANNOTATION_HISTORY=1`.
 
+**Pruning identification.** Voxa only prunes directories whose name matches the strict regex `^\d{8}_\d{4}$` (UTC `YYYYMMDD_HHMM`). User-curated subdirectories with any other name (e.g. `pre-merge-2026-04-28`, `manual-backup`) are left alone. This protects external tools or annotators that drop snapshots under the same parent.
+
 ## 7. Frontend state & wire format
 
 ### 7.1 Cloud payload extensions
@@ -158,6 +160,8 @@ POST /api/load  body: { scene, want_full_labels: true }
 ```
 
 Subsampled arrays remain in their existing fields and drive the rendered point cloud. Full arrays drive editing math.
+
+`want_full_labels` is opt-in. Inspect and Compare modes continue to send the default (`false`) and pay no extra bandwidth. Only Label mode sets it to `true`. The `LoadResponse` Pydantic model in `backend/main.py` gets the new fields (`full_class_ids`, `full_instance_ids`, `full_positions`, `full_n`, `is_from_prelabel`, `segment_summary`) declared explicitly as `Optional[...]`, defaulting `None` when the flag isn't set.
 
 ### 7.2 Render path during edit
 
@@ -198,6 +202,8 @@ Single Cmd/Ctrl+S entry point (existing). The save handler now fires *both*:
 Each path errors independently and surfaces a per-family toast: "Cuboids saved" / "Segments saved" / "Save failed: <invariant>".
 
 **Order**: segments first, then cuboids. On segment failure, cuboids are not saved either — atomic-ish from the user's perspective. If cuboids fail (rare), segments don't roll back; surfaced in toast.
+
+Explicitly **not** a 2-phase commit. No transactional rollback machinery. The save handler is a sequential try/catch where the second step is gated on the first step succeeding. The annotation-history snapshot written before save (§6.5) is the recovery affordance, not transactional logic.
 
 **Dirty indicator.** Title bar shows `●` when either family is dirty. Tooltip on hover shows which.
 
