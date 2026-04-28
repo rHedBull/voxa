@@ -58,3 +58,25 @@ def test_apply_merge_routes_to_session(client_with_loaded_annotated_scene):
     body = {"op": "merge", "payload": {"source_inst": 2, "target_inst": 0}}
     r = client.post("/api/segment/apply", json=body)
     assert r.status_code == 200
+
+
+# ── Task 11: undo / redo ─────────────────────────────────────────────────────
+
+def test_undo_returns_inverse_delta(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    client.post("/api/segment/apply", json={
+        "op": "set_class",
+        "indices": _b64_int32([1, 2]),
+        "payload": {"class_id": 2},
+    })
+    r = client.post("/api/segment/undo")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["direction"] == "undo"
+    assert j["n_affected"] == 2
+
+
+def test_undo_returns_204_when_stack_empty(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/undo")
+    assert r.status_code == 204
