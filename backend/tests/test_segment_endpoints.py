@@ -94,3 +94,20 @@ def test_undo_returns_204_when_stack_empty(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/undo")
     assert r.status_code == 204
+
+
+# ── Task 12: save ────────────────────────────────────────────────────────────
+
+def test_save_writes_labels_to_disk(client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
+    client = client_with_loaded_annotated_scene
+    client.post("/api/segment/apply", json={
+        "op": "set_class",
+        "indices": _b64_int32([1, 2]),
+        "payload": {"class_id": 2},
+    })
+    r = client.put("/api/segment/save")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is True
+    arr = np.load(scan_dir_for_loaded_scene / "labels" / "gt_class_ids.npy")
+    assert int(arr[1]) == 2 and int(arr[2]) == 2

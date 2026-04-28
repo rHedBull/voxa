@@ -778,6 +778,29 @@ def segment_redo():
     return _serialize_delta(out)
 
 
+@app.put("/api/segment/save")
+def segment_save():
+    seg = _require_seg()
+    src = _resolve(_state["scene"])
+    if src.tier != "annotated":
+        raise HTTPException(409, "Save is only supported on annotated/<scene> tier")
+    scan_dir = Path(src.source_path).parent.parent
+    write_history = os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY") not in ("1", "true", "True")
+    try:
+        from segment_io import save_labels
+        save_labels(
+            scan_dir,
+            class_ids=seg.class_ids,
+            instance_ids=seg.instance_ids,
+            positions=seg.positions,
+            write_history=write_history,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    seg.dirty = False
+    return {"ok": True, "n_labeled_points": int((seg.instance_ids >= 0).sum())}
+
+
 # ── Static frontend ─────────────────────────────────────────────────────────
 # Mounted last so /api/* takes precedence. In dev, Vite serves the frontend
 # directly and proxies /api/* to this backend; in production, run `npm run

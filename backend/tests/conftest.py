@@ -103,3 +103,9 @@ def client_with_loaded_annotated_scene(client_with_annotated_scene):
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
     return client
+
+
+@pytest.fixture
+def scan_dir_for_loaded_scene(tmp_path):
+    """Return the on-disk scan_dir for the annotated/demo scene built by build_annotated_root."""
+    return tmp_path / "lidar" / "annotated" / "demo"
