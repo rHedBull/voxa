@@ -4,6 +4,7 @@
 import { useState as useStateApp, useRef as useRefApp,
          useEffect as useEffectApp, useCallback as useCallbackApp } from 'react';
 import { VoxaAPI } from './api.js';
+import { initSegState } from './segment-state.js';
 import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
@@ -46,6 +47,7 @@ export default function App() {
   const [predInstances, setPredInstances] = useStateApp([]);
   const [savedAt, setSavedAt] = useStateApp(null);
   const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
+  const [segState, setSegState] = useStateApp(null);
   // Camera nav mode is shared across the three modes so toggling Inspect →
   // Label preserves whether the user was orbiting or walking.
   const [navMode, setNavMode] = useStateApp('orbit');
@@ -60,16 +62,27 @@ export default function App() {
     // eslint-disable-next-line
   }, []);
 
-  // Load cloud + annotations whenever the active scene changes.
+  // Load cloud + annotations whenever the active scene or mode changes.
   useEffectApp(() => {
     if (!activeScene) return;
     let cancel = false;
     setLoading(true);
     setLoadError(null);
-    VoxaAPI.load(activeScene)
+    const activeSceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
+    const wantFullLabels = t.mode === 'label' && activeSceneObj?.tier === 'annotated';
+    VoxaAPI.load(activeScene, { wantFullLabels })
       .then((c) => {
         if (cancel) return;
         setCloud(c);
+        if (c.fullClassIds && c.fullInstanceIds) {
+          setSegState(initSegState({
+            classFull: c.fullClassIds,
+            instanceFull: c.fullInstanceIds,
+            isFromPrelabel: c.isFromPrelabel,
+          }));
+        } else {
+          setSegState(null);
+        }
         setLoading(false);
       })
       .catch((e) => {
@@ -82,7 +95,7 @@ export default function App() {
     VoxaAPI.getAnnotation(activeScene, 'pred')
       .then((d) => !cancel && setPredInstances(d.instances || []));
     return () => { cancel = true; };
-  }, [activeScene]);
+  }, [activeScene, t.mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const theme = t.theme === 'dark'
     ? { bg: '#0a0b0e', floor: '#15171c' }
@@ -186,7 +199,8 @@ export default function App() {
             classes={classes} instances={gtInstances} sceneName={activeScene}
             cloudBBox={cloud?.bbox}
             navMode={navMode} onNavModeChange={setNavMode}
-            onChange={setGtInstances} onSave={saveGt} />
+            onChange={setGtInstances} onSave={saveGt}
+            segState={segState} setSegState={setSegState} />
         )}
         {t.mode === 'compare' && (
           <CompareMode key="c" cloud={cloud} theme={theme}
