@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
-import { SegmentToolStrip, PickTool } from './segment-tools.jsx';
+import { SegmentToolStrip, PickTool, BrushTool } from './segment-tools.jsx';
 import { applyDelta } from './segment-state.js';
 
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange, segState, setSegState }) {
@@ -112,6 +112,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     }
   }, [setSegState]);
 
+  // Brush-tool apply: receives a pre-resolved apply response (op === '__delta__').
+  const onBrushApply = useCallbackLabel((_op, r) => {
+    setSegState((s) => s ? applyDelta(s, {
+      indices: r.indices,
+      after_class: r.afterClass,
+      after_instance: r.afterInstance,
+    }) : s);
+  }, [setSegState]);
+
   // Hotkeys: 0–9 assign class, ⌫ delete, A add, F frame, ⌘S save.
   // In walk mode the viewer owns WASD/QE; bail on those keys here so we
   // don't double-fire (e.g. 'A' is both walk-left and add-cuboid).
@@ -151,6 +160,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           segState={segState}
           onApply={onPickApply}
           classes={classes}
+        />
+      )}
+      {activeTool === 'brush' && segState && (
+        <BrushTool
+          viewerRef={viewerRef}
+          segState={segState}
+          classes={classes}
+          activeClassId={activeClass}
+          onApply={onBrushApply}
         />
       )}
 

@@ -1,6 +1,9 @@
-// segment-tools.jsx — tool strip + Pick tool for per-point segment editing.
+// segment-tools.jsx — tool strip + Pick tool + Brush tool for per-point segment editing.
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
+import * as THREE from 'three';
+import { VoxaAPI } from './api.js';
+import { applyDelta } from './segment-state.js';
 
 // ── Tool strip ──────────────────────────────────────────────────────────────
 // Three-button row: Cuboid / Pick / Brush.
@@ -121,6 +124,140 @@ export function PickTool({ viewerRef, segState, onApply, classes }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [segState, onApply, keyToClassId]);
+
+  return null;
+}
+
+// ── Brush tool ──────────────────────────────────────────────────────────────
+// Headless component — returns null. Mounts a sphere gizmo in the viewer,
+// follows the cursor, and paints per-point reassignments on left-drag.
+export function BrushTool({ viewerRef, segState, classes, activeClassId, onApply }) {
+  const radiusRef = useRef(segState?.brush?.radius ?? 0.05);
+  const gizmoMeshRef = useRef(null);
+  const strokeRef = useRef(null); // { indices: Set<number>, altHeld: bool } | null
+
+  const activeClassColor = useMemo(() => {
+    const cls = classes.find((c) => c.id === activeClassId);
+    return cls?.color || '#ffffff';
+  }, [classes, activeClassId]);
+
+  // Mount gizmo on activate; remove on unmount or color change.
+  useEffect(() => {
+    const viewer = viewerRef?.current;
+    if (!viewer?.attachBrushGizmo) return;
+    const { remove, mesh } = viewer.attachBrushGizmo({
+      radius: radiusRef.current,
+      color: activeClassColor,
+    });
+    gizmoMeshRef.current = mesh;
+    return () => {
+      gizmoMeshRef.current = null;
+      remove();
+    };
+  }, [viewerRef, activeClassColor]);
+
+  // Cursor-follow: move gizmo to the hovered point.
+  useEffect(() => {
+    const viewer = viewerRef?.current;
+    if (!viewer?.onPointerMove) return;
+    const unsub = viewer.onPointerMove((_idx, evt) => {
+      const mesh = gizmoMeshRef.current;
+      if (!mesh) return;
+      const hit = viewer.firstHitUnderCursor(evt);
+      viewer.setBrushPosition(hit ? hit.world : null, mesh);
+    });
+    return unsub;
+  }, [viewerRef]);
+
+  // Wheel on the canvas adjusts brush radius (×1.2 / ÷1.2, clamped [0.005, 5.0]).
+  useEffect(() => {
+    const viewer = viewerRef?.current;
+    if (!viewer?.domElement) return;
+    const dom = viewer.domElement();
+    if (!dom) return;
+    const onWheel = (e) => {
+      const mesh = gizmoMeshRef.current;
+      if (!mesh) return;
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1 / 1.2 : 1.2;
+      radiusRef.current = Math.max(0.005, Math.min(5.0, radiusRef.current * factor));
+      mesh.scale.setScalar(radiusRef.current);
+    };
+    dom.addEventListener('wheel', onWheel, { passive: false });
+    return () => dom.removeEventListener('wheel', onWheel);
+  }, [viewerRef]);
+
+  // Stroke: pointerdown starts accumulation → pointermove samples brush-query
+  // → pointerup commits one segApply call with all collected indices.
+  useEffect(() => {
+    const viewer = viewerRef?.current;
+    if (!viewer?.domElement) return;
+    const dom = viewer.domElement();
+    if (!dom) return;
+
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      strokeRef.current = { indices: new Set(), altHeld: e.altKey };
+    };
+
+    const onMove = async (e) => {
+      if (!strokeRef.current) return;
+      if (!(e.buttons & 1)) return;
+      const hit = viewer.firstHitUnderCursor(e);
+      if (!hit) return;
+      const center = [hit.world.x, hit.world.y, hit.world.z];
+      const fwd = viewer.cameraForward();
+      try {
+        const res = await VoxaAPI.segBrushQuery({
+          center,
+          radius: radiusRef.current,
+          cameraRay: fwd,
+          depthCull: radiusRef.current * 2,
+        });
+        if (!strokeRef.current) return;
+        for (let i = 0; i < res.indices.length; i++) {
+          strokeRef.current.indices.add(res.indices[i]);
+        }
+      } catch (_) {
+        // Non-fatal — skip this sample.
+      }
+    };
+
+    const onUp = async (e) => {
+      if (e.button !== 0) return;
+      const stroke = strokeRef.current;
+      strokeRef.current = null;
+      if (!stroke || stroke.indices.size === 0) return;
+
+      const indices = new Int32Array(stroke.indices);
+      let payload;
+      if (stroke.altHeld) {
+        payload = { target_inst: null, target_class: null };
+      } else if (segState.selection.size === 1) {
+        const targetInst = [...segState.selection][0];
+        const targetClass = segState.summary.get(targetInst)?.classId ?? -1;
+        payload = { target_inst: targetInst, target_class: targetClass };
+      } else {
+        payload = { target_inst: -1, target_class: activeClassId };
+      }
+
+      try {
+        const r = await VoxaAPI.segApply('reassign', { indices, payload });
+        onApply('__delta__', r);
+      } catch (err) {
+        console.error('brush segApply failed:', err);
+      }
+    };
+
+    dom.addEventListener('pointerdown', onDown);
+    dom.addEventListener('pointermove', onMove);
+    dom.addEventListener('pointerup', onUp);
+    return () => {
+      dom.removeEventListener('pointerdown', onDown);
+      dom.removeEventListener('pointermove', onMove);
+      dom.removeEventListener('pointerup', onUp);
+    };
+  }, [viewerRef, segState, activeClassId, onApply]);
 
   return null;
 }

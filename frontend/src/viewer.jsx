@@ -820,6 +820,39 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         if (i !== -1) s.moveSubs.splice(i, 1);
       };
     },
+    attachBrushGizmo({ radius, color }) {
+      const s = stateRef.current;
+      if (!s.scene) return { remove: () => {}, mesh: null };
+      const geom = new THREE.SphereGeometry(1, 16, 12);
+      const mat = new THREE.MeshBasicMaterial({
+        color: color || '#ffffff',
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false,
+        side: THREE.FrontSide,
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.scale.setScalar(radius);
+      mesh.visible = false;
+      s.scene.add(mesh);
+      return {
+        mesh,
+        remove() {
+          s.scene.remove(mesh);
+          geom.dispose();
+          mat.dispose();
+        },
+      };
+    },
+    setBrushPosition(worldVec, mesh) {
+      if (!mesh) return;
+      if (worldVec == null) {
+        mesh.visible = false;
+      } else {
+        mesh.position.copy(worldVec);
+        mesh.visible = true;
+      }
+    },
   }));
 
   return <div ref={mountRef} style={{ width: '100%', height: '100%', position: 'relative' }} />;
