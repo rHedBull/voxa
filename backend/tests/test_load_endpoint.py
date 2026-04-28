@@ -92,11 +92,17 @@ def test_load_annotated_surfaces_labels_and_palette(lidar_client):
     assert inst_arr.tolist() == [-1, 0, 0, 1, 1, 2, -1, 3]
 
 
-def test_load_unlabeled_omits_label_fields(lidar_client):
+def test_load_unlabeled_returns_all_minus_one_arrays(lidar_client):
+    """No labels + no prelabel → loader returns all-(-1) arrays so editing can start."""
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/stub", "max_points": 100}).json()
-    assert body["class_ids"] is None
-    assert body["instance_ids"] is None
+    # class_ids and instance_ids are present but entirely -1.
+    assert body["class_ids"] is not None
+    assert body["instance_ids"] is not None
+    class_arr = np.frombuffer(base64.b64decode(body["class_ids"]), dtype=np.int8)
+    inst_arr = np.frombuffer(base64.b64decode(body["instance_ids"]), dtype=np.int32)
+    assert int(class_arr.min()) == -1 and int(class_arr.max()) == -1
+    assert int(inst_arr.min()) == -1 and int(inst_arr.max()) == -1
     # Palette is allowed to be absent or empty.
     assert not body["class_palette"]
 

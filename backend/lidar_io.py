@@ -58,6 +58,7 @@ class AnnotatedScene:
     palette: list[ClassPaletteEntry]
     n_classes: int
     n_instances: int
+    is_from_prelabel: bool = False
 
 
 def _read_classes_json(lidar_root: Optional[Path]) -> dict[int, str]:
@@ -142,6 +143,28 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedSce
             n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
             n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
 
+    from segment_io import load_prelabel  # noqa: PLC0415
+
+    is_from_prelabel = False
+
+    if labels is None:
+        scan_dir = Path(src.source_path).parent.parent
+        pre = load_prelabel(scan_dir, n_points=len(pc))
+        if pre is not None:
+            ci8, ii = pre
+            labels = LabelArrays(class_ids=ci8, instance_ids=ii)
+            valid_classes = ci8[ci8 >= 0]
+            valid_inst = ii[ii >= 0]
+            n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
+            n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
+            is_from_prelabel = True
+
+    if labels is None:
+        labels = LabelArrays(
+            class_ids=np.full(len(pc), -1, dtype=np.int8),
+            instance_ids=np.full(len(pc), -1, dtype=np.int32),
+        )
+
     meta_path = src.extras.get("meta_path")
     meta = _read_segment_metadata(Path(meta_path)) if meta_path else {}
 
@@ -154,6 +177,7 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedSce
     return AnnotatedScene(
         pc=pc, intensity=None, labels=labels, meta=meta,
         palette=palette, n_classes=n_classes, n_instances=n_instances,
+        is_from_prelabel=is_from_prelabel,
     )
 
 
