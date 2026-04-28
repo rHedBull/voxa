@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from segment_io import load_prelabel
 
@@ -47,4 +46,20 @@ def test_load_prelabel_returns_none_when_missing(tmp_path):
 def test_load_prelabel_returns_none_on_size_mismatch(tmp_path):
     scan_dir = tmp_path / "annotated" / "demo"
     _write_prelabel(scan_dir, np.zeros(7, dtype=np.int32), [])
+    assert load_prelabel(scan_dir, n_points=8) is None
+
+
+def test_load_prelabel_returns_none_when_summary_is_not_a_dict(tmp_path):
+    scan_dir = tmp_path / "annotated" / "demo"
+    pre = scan_dir / "prelabel"
+    pre.mkdir(parents=True, exist_ok=True)
+    np.save(pre / "ransac_instance_ids.npy", np.zeros(8, dtype=np.int32))
+    (pre / "ransac_segment_summary.json").write_text("[]")
+    assert load_prelabel(scan_dir, n_points=8) is None
+
+
+def test_load_prelabel_returns_none_when_segment_missing_keys(tmp_path):
+    scan_dir = tmp_path / "annotated" / "demo"
+    _write_prelabel(scan_dir, np.zeros(8, dtype=np.int32),
+                    [{"id": 0}])  # class_id missing
     assert load_prelabel(scan_dir, n_points=8) is None
