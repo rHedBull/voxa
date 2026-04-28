@@ -7,14 +7,25 @@ import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
 import { SegmentToolStrip, PickTool, BrushTool } from './segment-tools.jsx';
-import { applyDelta } from './segment-state.js';
+import { applyDelta, computeDiffMask } from './segment-state.js';
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange, segState, setSegState }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
   const [activeTool, setActiveTool] = useStateLabel('cuboid');
   const [colorMode] = useStateLabel('class');
+  const [showDiff, setShowDiff] = useStateLabel(false);
+
+  const diffMask = useMemoLabel(() => {
+    if (!showDiff || !segState) return null;
+    const pre = prelabelRef?.current;
+    if (!pre?.classFull || !pre?.instanceFull) return null;
+    return computeDiffMask(
+      segState.classFull, pre.classFull,
+      segState.instanceFull, pre.instanceFull,
+    );
+  }, [showDiff, segState, prelabelRef]);
 
   // Keep activeClass valid as the class list streams in.
   useEffectLabel(() => {
@@ -243,6 +254,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           floorColor={theme.floor}
           navMode={navMode}
           colorMode={colorMode}
+          diffMask={diffMask}
+          showDiff={showDiff}
         />
 
         <div className="vp-hud-top">
@@ -269,6 +282,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               <ToolButton mini icon="✦" label="Auto-fit" onClick={autoFitSelected} />
               <ToolButton mini icon="⌫" label="Delete" onClick={deleteSelected} />
             </>
+          )}
+          {segState?.isFromPrelabel && (
+            <ToolButton mini
+              icon="Δ"
+              label={showDiff ? 'Hide diff' : 'Diff vs prelabel'}
+              onClick={() => setShowDiff((v) => !v)}
+              active={showDiff}
+            />
           )}
           <ToolButton mini icon="↺" label="Reset cam" onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>

@@ -304,6 +304,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     meshBrightness = 1.0,       // multiplier on every loaded mesh material's color (0..2)
     onMeshLoadProgress = null,  // ({ loaded, total }) — wire-progress callback
     onCameraChange = null,
+    diffMask = null,            // Uint8Array, length = num full-res points; 1 = changed vs prelabel
+    showDiff = false,           // when true, tint diff points red using diffMask
   } = props;
 
   const mountRef = useRef(null);
@@ -647,8 +649,31 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     } else {
       colorAttr.array.set(orig);
     }
+
+    if (showDiff && diffMask) {
+      const subsampleIdx = s.points.userData.subsampleIdx;
+      if (subsampleIdx) {
+        for (let sub = 0; sub < subsampleIdx.length; sub++) {
+          const fullIdx = subsampleIdx[sub];
+          if (fullIdx < diffMask.length && diffMask[fullIdx] === 1) {
+            colorAttr.array[sub * 3]     = 1.0;
+            colorAttr.array[sub * 3 + 1] = 0.18;
+            colorAttr.array[sub * 3 + 2] = 0.18;
+          }
+        }
+      } else {
+        for (let i = 0; i < diffMask.length; i++) {
+          if (diffMask[i] === 1) {
+            colorAttr.array[i * 3]     = 1.0;
+            colorAttr.array[i * 3 + 1] = 0.18;
+            colorAttr.array[i * 3 + 2] = 0.18;
+          }
+        }
+      }
+    }
+
     colorAttr.needsUpdate = true;
-  }, [colorMode, cloud]);
+  }, [colorMode, cloud, showDiff, diffMask]);
 
   // ── Mesh load/show ──────────────────────────────────────────────────────
   // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —

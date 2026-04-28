@@ -23,6 +23,17 @@ export function recomputeSummary(state) {
   return deriveSummary(state.classFull, state.instanceFull);
 }
 
+export function computeDiffMask(classFull, prelabelClass, instanceFull, prelabelInstance) {
+  const n = classFull.length;
+  const mask = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (classFull[i] !== prelabelClass[i] || instanceFull[i] !== prelabelInstance[i]) {
+      mask[i] = 1;
+    }
+  }
+  return mask;
+}
+
 function deriveSummary(cls, inst) {
   const m = new Map();
   for (let i = 0; i < inst.length; i++) {

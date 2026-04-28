@@ -36,6 +36,7 @@ const MODE_META = {
 export default function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const viewerRef = useRefApp();
+  const prelabelRef = useRefApp({ classFull: null, instanceFull: null });
 
   const [scenes, setScenes] = useStateApp([]);
   const [activeScene, setActiveScene] = useStateApp(null);
@@ -77,12 +78,21 @@ export default function App() {
         setCloud(c);
         setCuboidDirty(false);
         if (c.fullClassIds && c.fullInstanceIds) {
+          if (c.isFromPrelabel) {
+            prelabelRef.current = {
+              classFull: c.fullClassIds.slice(),
+              instanceFull: c.fullInstanceIds.slice(),
+            };
+          } else {
+            prelabelRef.current = { classFull: null, instanceFull: null };
+          }
           setSegState(initSegState({
             classFull: c.fullClassIds,
             instanceFull: c.fullInstanceIds,
             isFromPrelabel: c.isFromPrelabel,
           }));
         } else {
+          prelabelRef.current = { classFull: null, instanceFull: null };
           setSegState(null);
         }
         setLoading(false);
@@ -254,7 +264,8 @@ export default function App() {
             cloudBBox={cloud?.bbox}
             navMode={navMode} onNavModeChange={setNavMode}
             onChange={onCuboidChange} onSave={saveGt}
-            segState={segState} setSegState={setSegState} />
+            segState={segState} setSegState={setSegState}
+            prelabelRef={prelabelRef} />
         )}
         {t.mode === 'compare' && (
           <CompareMode key="c" cloud={cloud} theme={theme}
