@@ -84,7 +84,7 @@ def test_load_annotated_palette_resolves_labels_from_classes_json(tmp_path):
 
 
 def test_load_annotated_no_labels(tmp_path):
-    """factory_large-style stub: no .npy files. Loader must still work and report no labels."""
+    """factory_large-style stub: no .npy files and no prelabel/ → all-(-1) arrays."""
     root = tmp_path / "lidar"
     scan_dir = root / "annotated" / "stub"
     _write_ply(scan_dir / "source" / "scan.ply", n=4)
@@ -94,7 +94,9 @@ def test_load_annotated_no_labels(tmp_path):
     src = next(s for s in discover(tmp_path / "voxa-data", root)
                if s.tier == "annotated" and s.name == "stub")
     out = load_annotated(src, root)
-    assert out.labels is None
+    assert out.labels is not None
+    assert int(out.labels.class_ids.min()) == -1 and int(out.labels.class_ids.max()) == -1
+    assert out.is_from_prelabel is False
     assert out.n_classes == 0
     assert out.n_instances == 0
 
@@ -148,3 +150,44 @@ def test_load_laz_smaller_than_max_returns_all(tmp_path):
     pc, _intensity = load_laz(p, max_points=300_000)
     # stride collapses to 1; we keep every point.
     assert len(pc) == 50
+
+
+def test_load_annotated_falls_through_to_prelabel(tmp_path):
+    """When labels/gt_*.npy is absent, prelabel/ becomes the editable seed."""
+    root = tmp_path / "lidar"
+    scan_dir = root / "annotated" / "demo"
+    _write_ply(scan_dir / "source" / "scan.ply", n=8)
+    pre = scan_dir / "prelabel"; pre.mkdir(parents=True)
+    np.save(pre / "ransac_instance_ids.npy",
+            np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
+    (pre / "ransac_segment_summary.json").write_text(json.dumps({
+        "segments": [{"id": 0, "class_id": 0},
+                     {"id": 1, "class_id": 1},
+                     {"id": 2, "class_id": 2}],
+    }))
+    (root / "classes.json").write_text(json.dumps({
+        "version": 1, "unlabeled_id": -1,
+        "classes": [{"id": 0, "name": "pipe"}, {"id": 1, "name": "tank"},
+                    {"id": 2, "name": "equipment"}],
+    }))
+
+    src = next(s for s in discover(tmp_path / "voxa-data", root) if s.tier == "annotated")
+    out = load_annotated(src, root)
+
+    assert out.is_from_prelabel is True
+    assert out.labels is not None
+    assert out.labels.instance_ids.shape == (8,)
+    assert int(out.labels.instance_ids[1]) == 0
+    assert int(out.labels.class_ids[1]) == 0
+
+
+def test_load_annotated_empty_when_no_labels_no_prelabel(tmp_path):
+    root = tmp_path / "lidar"
+    scan_dir = root / "annotated" / "demo"
+    _write_ply(scan_dir / "source" / "scan.ply", n=8)
+    src = next(s for s in discover(tmp_path / "voxa-data", root) if s.tier == "annotated")
+    out = load_annotated(src, root)
+    # No labels, no prelabel → labels arrays present but all -1, is_from_prelabel False.
+    assert out.is_from_prelabel is False
+    assert out.labels is not None
+    assert int(out.labels.class_ids.min()) == -1 and int(out.labels.class_ids.max()) == -1

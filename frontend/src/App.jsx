@@ -4,6 +4,7 @@
 import { useState as useStateApp, useRef as useRefApp,
          useEffect as useEffectApp, useCallback as useCallbackApp } from 'react';
 import { VoxaAPI } from './api.js';
+import { initSegState, applyDelta } from './segment-state.js';
 import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
@@ -35,6 +36,7 @@ const MODE_META = {
 export default function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const viewerRef = useRefApp();
+  const prelabelRef = useRefApp({ classFull: null, instanceFull: null });
 
   const [scenes, setScenes] = useStateApp([]);
   const [activeScene, setActiveScene] = useStateApp(null);
@@ -45,7 +47,9 @@ export default function App() {
   const [gtInstances, setGtInstances] = useStateApp([]);
   const [predInstances, setPredInstances] = useStateApp([]);
   const [savedAt, setSavedAt] = useStateApp(null);
+  const [cuboidDirty, setCuboidDirty] = useStateApp(false);
   const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
+  const [segState, setSegState] = useStateApp(null);
   // Camera nav mode is shared across the three modes so toggling Inspect →
   // Label preserves whether the user was orbiting or walking.
   const [navMode, setNavMode] = useStateApp('orbit');
@@ -60,16 +64,37 @@ export default function App() {
     // eslint-disable-next-line
   }, []);
 
-  // Load cloud + annotations whenever the active scene changes.
+  // Load cloud + annotations whenever the active scene or mode changes.
   useEffectApp(() => {
     if (!activeScene) return;
     let cancel = false;
     setLoading(true);
     setLoadError(null);
-    VoxaAPI.load(activeScene)
+    const activeSceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
+    const wantFullLabels = t.mode === 'label' && activeSceneObj?.tier === 'annotated';
+    VoxaAPI.load(activeScene, { wantFullLabels })
       .then((c) => {
         if (cancel) return;
         setCloud(c);
+        setCuboidDirty(false);
+        if (c.fullClassIds && c.fullInstanceIds) {
+          if (c.isFromPrelabel) {
+            prelabelRef.current = {
+              classFull: c.fullClassIds.slice(),
+              instanceFull: c.fullInstanceIds.slice(),
+            };
+          } else {
+            prelabelRef.current = { classFull: null, instanceFull: null };
+          }
+          setSegState(initSegState({
+            classFull: c.fullClassIds,
+            instanceFull: c.fullInstanceIds,
+            isFromPrelabel: c.isFromPrelabel,
+          }));
+        } else {
+          prelabelRef.current = { classFull: null, instanceFull: null };
+          setSegState(null);
+        }
         setLoading(false);
       })
       .catch((e) => {
@@ -82,7 +107,7 @@ export default function App() {
     VoxaAPI.getAnnotation(activeScene, 'pred')
       .then((d) => !cancel && setPredInstances(d.instances || []));
     return () => { cancel = true; };
-  }, [activeScene]);
+  }, [activeScene, t.mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const theme = t.theme === 'dark'
     ? { bg: '#0a0b0e', floor: '#15171c' }
@@ -98,19 +123,68 @@ export default function App() {
     setGtInstances(instances);
     await VoxaAPI.putAnnotation(activeScene, 'gt', { instances });
     setSavedAt(new Date().toLocaleTimeString());
+    setCuboidDirty(false);
   }, [activeScene]);
 
-  // Cmd/Ctrl+S → save
+  const onCuboidChange = useCallbackApp((instances) => {
+    setGtInstances(instances);
+    setCuboidDirty(true);
+  }, []);
+
+  // Cmd/Ctrl+Z / Shift+Z → segment undo / redo (only when segState active).
   useEffectApp(() => {
-    const onKey = (e) => {
+    const onKey = async (e) => {
+      if (!segState) return;
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return;
+      e.preventDefault();
+      try {
+        const r = e.shiftKey ? await VoxaAPI.segRedo() : await VoxaAPI.segUndo();
+        if (r === null) return;
+        setSegState((s) => {
+          if (!s) return s;
+          const next = applyDelta(s, {
+            indices: r.indices,
+            after_class: r.afterClass,
+            after_instance: r.afterInstance,
+          });
+          viewerRef.current?.recolorByEdit({
+            affectedFullIndices: r.indices,
+            classFull: next.classFull,
+            instanceFull: next.instanceFull,
+            colorMode: 'class',
+            palette: cloud?.classPalette ?? null,
+          });
+          return next;
+        });
+      } catch (err) {
+        console.error('undo/redo failed:', err);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [segState, viewerRef, cloud]);
+
+  // Cmd/Ctrl+S → save segments first (if dirty), then cuboids.
+  useEffectApp(() => {
+    const onKey = async (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
+        if (segState?.dirty) {
+          try {
+            await VoxaAPI.segSave();
+            setSegState((s) => s ? { ...s, dirty: false } : s);
+          } catch (err) {
+            console.error('segSave failed, skipping cuboid save:', err);
+            return;
+          }
+        }
         saveGt(gtInstances);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [gtInstances, saveGt]);
+  }, [gtInstances, saveGt, segState]);
 
   return (
     <div className={'app-shell ' + themeClass}>
@@ -147,6 +221,9 @@ export default function App() {
         <button className="header-btn" onClick={() => setScenePickerOpen((o) => !o)}>
           <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>◧</span>
           {activeScene || 'Pick scene'}
+          {(cuboidDirty || segState?.dirty) && (
+            <span title="Unsaved changes" style={{ color: 'oklch(0.75 0.18 60)', marginLeft: 4 }}>●</span>
+          )}
         </button>
         <button className="header-btn icon-only"
           onClick={() => setTweak('theme', t.theme === 'dark' ? 'light' : 'dark')}
@@ -186,7 +263,9 @@ export default function App() {
             classes={classes} instances={gtInstances} sceneName={activeScene}
             cloudBBox={cloud?.bbox}
             navMode={navMode} onNavModeChange={setNavMode}
-            onChange={setGtInstances} onSave={saveGt} />
+            onChange={onCuboidChange} onSave={saveGt}
+            segState={segState} setSegState={setSegState}
+            prelabelRef={prelabelRef} />
         )}
         {t.mode === 'compare' && (
           <CompareMode key="c" cloud={cloud} theme={theme}

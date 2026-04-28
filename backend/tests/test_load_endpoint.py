@@ -92,11 +92,17 @@ def test_load_annotated_surfaces_labels_and_palette(lidar_client):
     assert inst_arr.tolist() == [-1, 0, 0, 1, 1, 2, -1, 3]
 
 
-def test_load_unlabeled_omits_label_fields(lidar_client):
+def test_load_unlabeled_returns_all_minus_one_arrays(lidar_client):
+    """No labels + no prelabel → loader returns all-(-1) arrays so editing can start."""
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/stub", "max_points": 100}).json()
-    assert body["class_ids"] is None
-    assert body["instance_ids"] is None
+    # class_ids and instance_ids are present but entirely -1.
+    assert body["class_ids"] is not None
+    assert body["instance_ids"] is not None
+    class_arr = np.frombuffer(base64.b64decode(body["class_ids"]), dtype=np.int8)
+    inst_arr = np.frombuffer(base64.b64decode(body["instance_ids"]), dtype=np.int32)
+    assert int(class_arr.min()) == -1 and int(class_arr.max()) == -1
+    assert int(inst_arr.min()) == -1 and int(inst_arr.max()) == -1
     # Palette is allowed to be absent or empty.
     assert not body["class_palette"]
 
@@ -137,7 +143,8 @@ def test_mesh_endpoint_serves_glb_when_present(lidar_client, tmp_path, monkeypat
 
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/withmesh", "max_points": 10}).json()
-    assert body["mesh_url"] == "/api/mesh/annotated/withmesh"
+    # mesh_url carries an mtime cache-buster (?v=…) that varies per run.
+    assert body["mesh_url"].startswith("/api/mesh/annotated/withmesh")
 
     r = lidar_client.get(body["mesh_url"])
     assert r.status_code == 200
@@ -205,3 +212,94 @@ def test_annotated_no_swap_when_source_is_glb(lidar_client, tmp_path, monkeypatc
     assert extents[2] == pytest.approx(20.0, abs=1e-3), f"got extents={extents}"
     assert extents[1] == pytest.approx(4.0, abs=1e-3)
     assert extents[0] == pytest.approx(2.0, abs=1e-3)
+
+
+def test_load_annotated_creates_segment_session(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    import main
+    assert main._state["seg"] is not None
+    assert main._state["seg"].class_ids.shape == main._state["seg"].instance_ids.shape
+
+
+def test_load_with_want_full_labels_returns_full_arrays(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "want_full_labels": True})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["full_class_ids"] is not None
+    assert j["full_instance_ids"] is not None
+    assert j["full_positions"] is not None
+    assert j["full_n"] is not None
+    assert isinstance(j["segment_summary"], dict)
+
+
+def test_load_without_flag_omits_full_arrays(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id})
+    j = r.json()
+    assert j.get("full_class_ids") is None
+    assert j.get("full_positions") is None
+
+
+def test_subsample_idx_absent_when_no_subsampling(client_with_annotated_scene):
+    """Cloud fits in max_points → no subsampling → subsample_idx is null."""
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    j = r.json()
+    assert j.get("subsample_idx") is None
+
+
+def test_subsample_idx_present_and_correct_when_subsampling(tmp_path, monkeypatch):
+    """Cloud exceeds max_points → subsample_idx maps sub rows → full indices."""
+    import main
+    from fastapi.testclient import TestClient
+
+    lidar = tmp_path / "lidar-sub"
+    scan_dir = lidar / "annotated" / "big"
+    n = 20
+    rng = np.random.default_rng(1)
+    pts = rng.standard_normal((n, 3)).astype(np.float32)
+    from plyfile import PlyData, PlyElement
+    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+    arr = np.zeros(n, dtype=dtype)
+    arr['x'], arr['y'], arr['z'] = pts[:, 0], pts[:, 1], pts[:, 2]
+    arr['red'] = arr['green'] = arr['blue'] = 200
+    (scan_dir / "source").mkdir(parents=True, exist_ok=True)
+    PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
+        str(scan_dir / "source" / "scan.ply"))
+    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
+    (scan_dir / "meta.json").write_text('{"scan_name": "big", "n_points": 20}')
+
+    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    client = TestClient(main.app)
+
+    max_pts = 5
+    r = client.post("/api/load", json={"name": "annotated/big", "max_points": max_pts})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["num_points"] == n
+    assert j["num_subsampled"] == max_pts
+    assert j["subsample_idx"] is not None
+
+    idx_bytes = base64.b64decode(j["subsample_idx"])
+    idx_arr = np.frombuffer(idx_bytes, dtype=np.int32)
+    assert len(idx_arr) == max_pts
+    # All indices must be valid full-res indices, sorted, and unique.
+    assert idx_arr.min() >= 0
+    assert idx_arr.max() < n
+    assert len(np.unique(idx_arr)) == max_pts
+    # Sorted because _safe_subsample calls idx.sort().
+    assert (np.diff(idx_arr) > 0).all()
+
+
+def test_seg_session_skipped_above_label_cap(monkeypatch, client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    import main
+    monkeypatch.setattr(main, "MAX_LABEL_POINTS", 1, raising=False)
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    assert main._state["seg"] is None

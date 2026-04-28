@@ -6,11 +6,26 @@ import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
+import { SegmentToolStrip, PickTool, BrushTool } from './segment-tools.jsx';
+import { applyDelta, computeDiffMask } from './segment-state.js';
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
+  const [activeTool, setActiveTool] = useStateLabel('cuboid');
+  const [colorMode] = useStateLabel('class');
+  const [showDiff, setShowDiff] = useStateLabel(false);
+
+  const diffMask = useMemoLabel(() => {
+    if (!showDiff || !segState) return null;
+    const pre = prelabelRef?.current;
+    if (!pre?.classFull || !pre?.instanceFull) return null;
+    return computeDiffMask(
+      segState.classFull, pre.classFull,
+      segState.instanceFull, pre.instanceFull,
+    );
+  }, [showDiff, segState, prelabelRef]);
 
   // Keep activeClass valid as the class list streams in.
   useEffectLabel(() => {
@@ -90,12 +105,64 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     updateSelected({ center: fitted.center, size: fitted.size });
   };
 
+  // Pick-tool apply: handles selection updates (__select__) and actual segment ops.
+  const onPickApply = useCallbackLabel(async (op, { indices, payload } = {}) => {
+    if (op === '__select__') {
+      // indices is actually the new Set of selected instance ids in this path.
+      setSegState((s) => s ? { ...s, selection: indices } : s);
+      return;
+    }
+    try {
+      const r = await VoxaAPI.segApply(op, { indices, payload });
+      setSegState((s) => {
+        if (!s) return s;
+        const next = applyDelta(s, {
+          indices: r.indices,
+          after_class: r.afterClass,
+          after_instance: r.afterInstance,
+        });
+        viewerRef.current?.recolorByEdit({
+          affectedFullIndices: r.indices,
+          classFull: next.classFull,
+          instanceFull: next.instanceFull,
+          colorMode,
+          palette: cloud?.classPalette ?? null,
+        });
+        return next;
+      });
+    } catch (err) {
+      console.error('segApply failed:', err);
+    }
+  }, [setSegState, colorMode, cloud, viewerRef]);
+
+  // Brush-tool apply: receives a pre-resolved apply response (op === '__delta__').
+  const onBrushApply = useCallbackLabel((_op, r) => {
+    setSegState((s) => {
+      if (!s) return s;
+      const next = applyDelta(s, {
+        indices: r.indices,
+        after_class: r.afterClass,
+        after_instance: r.afterInstance,
+      });
+      viewerRef.current?.recolorByEdit({
+        affectedFullIndices: r.indices,
+        classFull: next.classFull,
+        instanceFull: next.instanceFull,
+        colorMode,
+        palette: cloud?.classPalette ?? null,
+      });
+      return next;
+    });
+  }, [setSegState, colorMode, cloud, viewerRef]);
+
   // Hotkeys: 0–9 assign class, ⌫ delete, A add, F frame, ⌘S save.
   // In walk mode the viewer owns WASD/QE; bail on those keys here so we
   // don't double-fire (e.g. 'A' is both walk-left and add-cuboid).
+  // Gated on activeTool === 'cuboid' so Pick/Brush tools own their own hotkeys.
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (activeTool !== 'cuboid') return;
       if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
@@ -117,10 +184,28 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, instances]);
+  }, [classes, selected, instances, activeTool, navMode]);
 
   return (
     <div className="mode-root label">
+      {activeTool === 'pick' && segState && (
+        <PickTool
+          viewerRef={viewerRef}
+          segState={segState}
+          onApply={onPickApply}
+          classes={classes}
+        />
+      )}
+      {activeTool === 'brush' && segState && (
+        <BrushTool
+          viewerRef={viewerRef}
+          segState={segState}
+          classes={classes}
+          activeClassId={activeClass}
+          onApply={onBrushApply}
+        />
+      )}
+
       {/* Left: class palette */}
       <aside className="side-l">
         <div className="side-hd">
@@ -168,6 +253,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           background={theme.bg}
           floorColor={theme.floor}
           navMode={navMode}
+          colorMode={colorMode}
+          diffMask={diffMask}
+          showDiff={showDiff}
         />
 
         <div className="vp-hud-top">
@@ -183,10 +271,26 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         </div>
 
         <ViewportToolbar side="left">
-          <ToolButton mini icon="◫" label="Cuboid" active onClick={addCuboid} />
-          <ToolButton mini icon="✦" label="Auto-fit" onClick={autoFitSelected} />
+          <SegmentToolStrip
+            activeTool={activeTool}
+            onChange={setActiveTool}
+            hasSegState={!!segState}
+          />
           <div className="tool-sep" />
-          <ToolButton mini icon="⌫" label="Delete" onClick={deleteSelected} />
+          {activeTool === 'cuboid' && (
+            <>
+              <ToolButton mini icon="✦" label="Auto-fit" onClick={autoFitSelected} />
+              <ToolButton mini icon="⌫" label="Delete" onClick={deleteSelected} />
+            </>
+          )}
+          {segState?.isFromPrelabel && (
+            <ToolButton mini
+              icon="Δ"
+              label={showDiff ? 'Hide diff' : 'Diff vs prelabel'}
+              onClick={() => setShowDiff((v) => !v)}
+              active={showDiff}
+            />
+          )}
           <ToolButton mini icon="↺" label="Reset cam" onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>
 

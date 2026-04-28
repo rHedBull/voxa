@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 import numpy as np
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +46,7 @@ ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
 FRONTEND_DIST = ROOT / "dist"
 MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "300000"))
+MAX_LABEL_POINTS = int(os.environ.get("VOXA_MAX_LABEL_POINTS", "5000000"))
 LIDAR_ROOT = load_lidar_root_from_env()
 
 app = FastAPI(title="Voxa 3D scan studio")
@@ -70,6 +71,7 @@ _state: dict[str, Any] = {
     "intensity": None,      # full-resolution intensity array (or None)
     "labels": None,         # LabelArrays (or None)
     "recenter_offset": [0.0, 0.0, 0.0],
+    "seg": None,            # SegmentSession | None
 }
 
 
@@ -92,6 +94,7 @@ class SceneInfo(BaseModel):
 class LoadRequest(BaseModel):
     name: str                              # tier-prefixed id or bare legacy name
     max_points: int = MAX_POINTS_DEFAULT
+    want_full_labels: bool = False
 
 
 class LoadResponse(BaseModel):
@@ -112,6 +115,13 @@ class LoadResponse(BaseModel):
     recenter_offset: list[float] = [0.0, 0.0, 0.0]
     mesh_url: Optional[str] = None    # /api/mesh/<id> when a GLB exists
     mesh_is_z_up: bool = False        # frontend rotates the GLB only if true
+    full_class_ids: Optional[str] = None     # b64 Int8, full-res
+    full_instance_ids: Optional[str] = None  # b64 Int32, full-res
+    full_positions: Optional[str] = None     # b64 Float32 (xyz, recentered), full-res
+    full_n: Optional[int] = None
+    is_from_prelabel: bool = False
+    segment_summary: Optional[dict] = None   # { "<inst>": {class_id, n_points} }
+    subsample_idx: Optional[str] = None      # b64 Int32, len==num_subsampled, maps sub row → full idx
 
 
 class Cuboid(BaseModel):
@@ -385,29 +395,34 @@ def _scene_is_z_up(src: SceneSource) -> bool:
 
 
 def _load_scene_source(src: SceneSource, max_points: int):
-    """Dispatch to the right loader. Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled_points)."""
+    """Dispatch to the right loader.
+
+    Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances,
+             n_labeled_points, is_from_prelabel).
+    """
     if src.tier == "annotated":
         a = load_annotated(src, LIDAR_ROOT)
         n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
         palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
-        return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances, n_labeled)
+        return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
+                n_labeled, bool(a.is_from_prelabel))
 
     if src.tier == "raw":
         pc, intensity = load_laz(src.source_path, max_points=max(max_points, 50_000))
-        return (pc, None, intensity, None, None, None, None, None)
+        return (pc, None, intensity, None, None, None, None, None, False)
 
     # legacy + decimated → reuse the existing loaders
     if src.source_format == "glb":
         pc, mesh = load_glb(src.source_path, num_samples=max(max_points, 50_000))
-        return (pc, mesh, None, None, None, None, None, None)
+        return (pc, mesh, None, None, None, None, None, None, False)
     pc, _ = load_ply(src.source_path)
-    return (pc, None, None, None, None, None, None, None)
+    return (pc, None, None, None, None, None, None, None, False)
 
 
 @app.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
     src = _resolve(req.name)
-    pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled = (
+    pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled, is_from_prelabel = (
         _load_scene_source(src, req.max_points)
     )
 
@@ -432,6 +447,16 @@ def load_scene(req: LoadRequest):
         labels=labels,
         recenter_offset=offset,
     )
+    from segment_state import SegmentSession
+    if labels is not None and len(pc) <= MAX_LABEL_POINTS:
+        _state["seg"] = SegmentSession(
+            class_ids=labels.class_ids,
+            instance_ids=labels.instance_ids,
+            positions=pc.points,
+            is_from_prelabel=is_from_prelabel,
+        )
+    else:
+        _state["seg"] = None
 
     positions = sub.points.astype(np.float32)
     colors = _normalize_colors(sub)
@@ -441,6 +466,29 @@ def load_scene(req: LoadRequest):
     intensity_b64 = _b64(sub_intensity.astype(np.float32)) if sub_intensity is not None else None
     class_ids_b64 = _b64(sub_labels.class_ids.astype(np.int8)) if sub_labels is not None else None
     instance_ids_b64 = _b64(sub_labels.instance_ids.astype(np.int32)) if sub_labels is not None else None
+
+    full_payload: dict[str, Any] = {}
+    if req.want_full_labels and labels is not None:
+        full_payload["full_class_ids"] = _b64(labels.class_ids.astype(np.int8))
+        full_payload["full_instance_ids"] = _b64(labels.instance_ids.astype(np.int32))
+        full_payload["full_positions"] = _b64(pc.points.astype(np.float32))
+        full_payload["full_n"] = int(len(pc))
+        ii = labels.instance_ids
+        ci = labels.class_ids
+        m = ii >= 0
+        if m.any():
+            uids, idx0, counts = np.unique(ii[m], return_index=True, return_counts=True)
+            summary = {
+                str(int(uid)): {"class_id": int(ci[m][idx0[k]]), "n_points": int(counts[k])}
+                for k, uid in enumerate(uids)
+            }
+        else:
+            summary = {}
+        full_payload["segment_summary"] = summary
+    seg_for_meta = _state.get("seg")
+    full_payload["is_from_prelabel"] = bool(seg_for_meta.is_from_prelabel) if seg_for_meta is not None else False
+
+    subsample_idx_b64 = _b64(idx.astype(np.int32)) if idx is not None else None
 
     return LoadResponse(
         scene=src.scene_id,
@@ -458,9 +506,25 @@ def load_scene(req: LoadRequest):
         n_instances=n_instances,
         n_labeled_points=n_labeled,
         recenter_offset=offset,
-        mesh_url=(f"/api/mesh/{src.scene_id}" if src.has_mesh else None),
+        mesh_url=_mesh_url_for(src),
         mesh_is_z_up=is_z_up if src.has_mesh else False,
+        subsample_idx=subsample_idx_b64,
+        **full_payload,
     )
+
+
+def _mesh_url_for(src: SceneSource) -> Optional[str]:
+    """Cache-bust the mesh URL with the GLB's mtime, so a rebuilt mesh.glb
+    is treated as a fresh resource by both HTTP caches and Three.js's
+    GLTFLoader cache (which keys on URL)."""
+    if not src.has_mesh:
+        return None
+    mesh_path = src.extras.get("mesh_path")
+    try:
+        mtime = int(os.path.getmtime(mesh_path)) if mesh_path else 0
+    except OSError:
+        mtime = 0
+    return f"/api/mesh/{src.scene_id}?v={mtime}"
 
 
 @app.get("/api/mesh/{tier}/{name}")
@@ -610,6 +674,146 @@ def auto_fit(req: AutoFitRequest):
         center=list(fitted_center),
         size=list(fitted_size),
     )
+
+
+# ── Segment endpoints ────────────────────────────────────────────────────────
+
+class BrushQueryRequest(BaseModel):
+    center: list[float]
+    radius: float
+    camera_ray: Optional[list[float]] = None
+    depth_cull: Optional[float] = None
+
+
+class BrushQueryResponse(BaseModel):
+    indices: str        # b64 Int32
+    n: int
+
+
+class ApplyRequest(BaseModel):
+    op: str
+    indices: Optional[str] = None     # b64 Int32; required for set_class & reassign
+    payload: dict
+
+
+def _require_seg():
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "No segment session loaded — load an annotated scene first")
+    return seg
+
+
+def _serialize_apply(out: dict) -> dict:
+    body = {"op": out["op"], "n_affected": out["n_affected"], "dirty": True}
+    if "new_instance_id" in out:
+        body["new_instance_id"] = int(out["new_instance_id"])
+    if "indices" in out:
+        body["indices"] = _b64(out["indices"].astype(np.int32))
+        body["after_class"] = _b64(out["after_class"].astype(np.int8))
+        body["after_instance"] = _b64(out["after_instance"].astype(np.int32))
+    return body
+
+
+def _serialize_delta(out: dict) -> dict:
+    return {
+        "op": out["op"], "direction": out["direction"],
+        "n_affected": out["n_affected"],
+        "indices": _b64(out["indices"].astype(np.int32)),
+        "after_class": _b64(out["after_class"].astype(np.int8)),
+        "after_instance": _b64(out["after_instance"].astype(np.int32)),
+    }
+
+
+@app.post("/api/segment/brush-query", response_model=BrushQueryResponse)
+def brush_query(req: BrushQueryRequest):
+    seg = _require_seg()
+    center = np.array(req.center, dtype=np.float32)
+    cam = np.array(req.camera_ray, dtype=np.float32) if req.camera_ray else None
+    idx = seg.brush_query(center, req.radius, camera_ray=cam, depth_cull=req.depth_cull)
+    return BrushQueryResponse(indices=_b64(idx.astype(np.int32)), n=int(idx.size))
+
+
+def _decode_indices_or_400(req: "ApplyRequest") -> np.ndarray:
+    if req.indices is None:
+        raise HTTPException(400, f"op '{req.op}' requires 'indices' (b64 Int32)")
+    return np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
+
+
+@app.post("/api/segment/apply")
+def segment_apply(req: ApplyRequest):
+    seg = _require_seg()
+    try:
+        if req.op == "set_class":
+            idx = _decode_indices_or_400(req)
+            out = seg.apply_set_class(idx, class_id=int(req.payload["class_id"]))
+        elif req.op == "merge":
+            out = seg.apply_merge(
+                source_inst=int(req.payload["source_inst"]),
+                target_inst=int(req.payload["target_inst"]),
+            )
+        elif req.op == "reassign":
+            idx = _decode_indices_or_400(req)
+            out = seg.apply_reassign(
+                idx,
+                target_inst=req.payload.get("target_inst"),
+                target_class=req.payload.get("target_class"),
+            )
+        else:
+            raise HTTPException(400, f"unknown op: {req.op}")
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, f"apply failed: {e}")
+    return _serialize_apply(out)
+
+
+@app.post("/api/segment/undo")
+def segment_undo():
+    seg = _require_seg()
+    out = seg.undo()
+    if out is None:
+        return Response(status_code=204)
+    return _serialize_delta(out)
+
+
+@app.post("/api/segment/redo")
+def segment_redo():
+    seg = _require_seg()
+    out = seg.redo()
+    if out is None:
+        return Response(status_code=204)
+    return _serialize_delta(out)
+
+
+@app.put("/api/segment/save")
+def segment_save():
+    seg = _require_seg()
+    src = _resolve(_state["scene"])
+    if src.tier != "annotated":
+        raise HTTPException(409, "Save is only supported on annotated/<scene> tier")
+    scan_dir = Path(src.source_path).parent.parent
+    write_history = (
+        os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
+        not in ("1", "true", "yes", "on")
+    )
+    try:
+        from segment_io import save_labels
+        save_labels(
+            scan_dir,
+            class_ids=seg.class_ids,
+            instance_ids=seg.instance_ids,
+            positions=seg.positions,
+            write_history=write_history,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    seg.dirty = False
+    labeled = seg.instance_ids >= 0
+    n_labeled_points = int(labeled.sum())
+    n_segments = int(np.unique(seg.instance_ids[labeled]).size) if labeled.any() else 0
+    return {
+        "ok": True,
+        "n_labeled_points": n_labeled_points,
+        "n_segments": n_segments,
+    }
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────

@@ -14,6 +14,15 @@ import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
+// Converts a pointer event + bounding rect to normalized device coords [-1,1].
+// Exported for unit testing.
+export function evtToNdc(evt, rect) {
+  return {
+    x:  ((evt.clientX - rect.left) / rect.width)  * 2 - 1,
+    y: -((evt.clientY - rect.top)  / rect.height) * 2 + 1,
+  };
+}
+
 // Resolve a class palette (list of {id, color, label}) into a dense RGB lookup
 // indexed by class id. Out-of-range ids fall through to the unlabeled grey.
 function buildPaletteRGB(palette) {
@@ -26,6 +35,17 @@ function buildPaletteRGB(palette) {
     out[id] = [tmp.r, tmp.g, tmp.b];
   }
   return out;
+}
+
+// Build an inverse map: fullIdx → subsampled row index (or -1 if not rendered).
+// subsampleIdx: Int32Array of length numSubsampled, value = full-res index.
+// fullN: total number of full-resolution points.
+export function buildFullToSubMap(subsampleIdx, fullN) {
+  const map = new Int32Array(fullN).fill(-1);
+  for (let sub = 0; sub < subsampleIdx.length; sub++) {
+    map[subsampleIdx[sub]] = sub;
+  }
+  return map;
 }
 
 function attachOrbit(camera, dom, target, onChange) {
@@ -281,8 +301,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     meshUrl = null,             // GLB streaming URL
     meshIsZUp = false,          // rotate GLB by -π/2 around X when its source frame is Z-up
     showMesh = false,           // when false, mesh stays unloaded (saves a 100MB+ fetch)
+    meshBrightness = 1.0,       // multiplier on every loaded mesh material's color (0..2)
     onMeshLoadProgress = null,  // ({ loaded, total }) — wire-progress callback
     onCameraChange = null,
+    diffMask = null,            // Uint8Array, length = num full-res points; 1 = changed vs prelabel
+    showDiff = false,           // when true, tint diff points red using diffMask
   } = props;
 
   const mountRef = useRef(null);
@@ -299,6 +322,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
+    // Linear tone mapping lets per-material color > 1 actually brighten
+    // pixels instead of clamping. Used by the mesh-brightness slider.
+    renderer.toneMapping = THREE.LinearToneMapping;
+    renderer.toneMappingExposure = 1.0;
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -346,6 +373,14 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     meshGroup.visible = false;
     scene.add(meshGroup);
 
+    // Lights so PBR/standard glTF materials don't render pure black. Cheap
+    // and benign for the textured munich GLB; required for vertex-colored
+    // BPA meshes whose default PBR material has no emissive.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 1.0));
+    const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    sunLight.position.set(2, 4, 2);
+    scene.add(sunLight);
+
     let raf;
     const tick = () => {
       renderer.render(scene, camera);
@@ -368,17 +403,62 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     setTimeout(onResize, 50);
     setTimeout(onResize, 200);
 
+    // Pointer-pick subscriber list: { cb } entries added by onPointerPick/onPointerMove.
+    const pickSubs = [];
+    const moveSubs = [];
+
+    const raycaster = new THREE.Raycaster();
+
+    const onPointerDown = (e) => {
+      if (pickSubs.length === 0) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndc = evtToNdc(e, rect);
+      raycaster.setFromCamera(ndc, camera);
+      const m = stateRef.current?.points;
+      if (!m) return;
+      raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
+      const hits = raycaster.intersectObject(m);
+      if (!hits.length) return;
+      const subRow = hits[0].index;
+      const subsampleIdx = m.userData.subsampleIdx;
+      // subsampleIdx maps subsampled row → full-res index.
+      // Falls back to subRow when subsampleIdx is not yet available (Task 20).
+      const fullIndex = subsampleIdx ? subsampleIdx[subRow] : subRow;
+      pickSubs.forEach(({ cb }) => cb(fullIndex, e));
+    };
+
+    const onPointerMove = (e) => {
+      if (moveSubs.length === 0) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndc = evtToNdc(e, rect);
+      raycaster.setFromCamera(ndc, camera);
+      const m = stateRef.current?.points;
+      if (!m) return;
+      raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
+      const hits = raycaster.intersectObject(m);
+      const subRow = hits.length ? hits[0].index : null;
+      const subsampleIdx = m.userData.subsampleIdx;
+      const fullIndex = subRow != null ? (subsampleIdx ? subsampleIdx[subRow] : subRow) : null;
+      moveSubs.forEach(({ cb }) => cb(fullIndex, e));
+    };
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+
     stateRef.current = {
       renderer, scene, camera, pointsGeom, pointsMat, points,
       controller: null,
       cuboidGroup, meshGroup, meshUrlLoaded: null, meshLoadAbort: null,
       floor, grid, axes, mount,
+      pickSubs, moveSubs,
     };
 
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
       stateRef.current.controller?.dispose();
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointermove', onPointerMove);
       pointsGeom.dispose();
       pointsMat.dispose();
       renderer.dispose();
@@ -413,6 +493,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.pointsGeom.setAttribute('color',
       new THREE.BufferAttribute(cloud.colors.slice(), 3));
     s.pointsGeom.computeBoundingSphere();
+    s.points.userData.subsampleIdx = cloud.subsampleIdx ?? null;
 
     // Apply the recenter offset to the mesh group so a co-located mesh
     // overlays the cloud. The group's rotation already brings GLB Z-up
@@ -568,8 +649,31 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     } else {
       colorAttr.array.set(orig);
     }
+
+    if (showDiff && diffMask) {
+      const subsampleIdx = s.points.userData.subsampleIdx;
+      if (subsampleIdx) {
+        for (let sub = 0; sub < subsampleIdx.length; sub++) {
+          const fullIdx = subsampleIdx[sub];
+          if (fullIdx < diffMask.length && diffMask[fullIdx] === 1) {
+            colorAttr.array[sub * 3]     = 1.0;
+            colorAttr.array[sub * 3 + 1] = 0.18;
+            colorAttr.array[sub * 3 + 2] = 0.18;
+          }
+        }
+      } else {
+        for (let i = 0; i < diffMask.length; i++) {
+          if (diffMask[i] === 1) {
+            colorAttr.array[i * 3]     = 1.0;
+            colorAttr.array[i * 3 + 1] = 0.18;
+            colorAttr.array[i * 3 + 2] = 0.18;
+          }
+        }
+      }
+    }
+
     colorAttr.needsUpdate = true;
-  }, [colorMode, cloud]);
+  }, [colorMode, cloud, showDiff, diffMask]);
 
   // ── Mesh load/show ──────────────────────────────────────────────────────
   // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —
@@ -610,6 +714,20 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       meshUrl,
       (gltf) => {
         if (cancelled) return;
+        // Swap PBR materials to fullbright Basic so vertex colors and
+        // baked textures render at capture brightness — these meshes ARE
+        // the data, we don't want lighting to multiply/darken them.
+        gltf.scene.traverse((node) => {
+          if (!node.isMesh || !node.material) return;
+          const old = node.material;
+          const m = new THREE.MeshBasicMaterial({
+            vertexColors: true,
+            map: old.map || null,
+            side: THREE.DoubleSide,
+          });
+          node.material = m;
+          old.dispose?.();
+        });
         s.meshGroup.add(gltf.scene);
         s.meshUrlLoaded = meshUrl;
         s.meshGroup.visible = true;
@@ -627,6 +745,19 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     );
     return () => { cancelled = true; };
   }, [meshUrl, meshIsZUp, showMesh, onMeshLoadProgress]);
+
+  // Mesh brightness: multiply every loaded mesh material's base color.
+  // Linear tone mapping on the renderer lets values >1 actually brighten.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.meshGroup) return;
+    const b = Math.max(0, meshBrightness);
+    s.meshGroup.traverse((node) => {
+      if (!node.isMesh || !node.material) return;
+      (Array.isArray(node.material) ? node.material : [node.material])
+        .forEach((m) => { m.color?.setRGB(b, b, b); });
+    });
+  }, [meshBrightness, meshUrl, showMesh]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -681,6 +812,161 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     frame(center, radius) { stateRef.current.controller?.frame?.(center, radius); },
     setCameraState(s) { stateRef.current.controller?.setFromState?.(s); },
     getCameraState() { return stateRef.current.controller?.getState?.(); },
+    domElement() {
+      return stateRef.current.renderer?.domElement ?? null;
+    },
+    cameraForward() {
+      const s = stateRef.current;
+      if (!s.camera) return [0, 0, -1];
+      const dir = new THREE.Vector3();
+      s.camera.getWorldDirection(dir);
+      return [dir.x, dir.y, dir.z];
+    },
+    firstHitUnderCursor(evt) {
+      const s = stateRef.current;
+      if (!s.camera || !s.points) return null;
+      const rect = s.renderer.domElement.getBoundingClientRect();
+      const ndc = evtToNdc(evt, rect);
+      const raycaster = new THREE.Raycaster();
+      raycaster.params.Points = { threshold: (s.pointsMat.size || 0.012) * 2.0 };
+      raycaster.setFromCamera(ndc, s.camera);
+      const hits = raycaster.intersectObject(s.points);
+      if (!hits.length) return null;
+      const subRow = hits[0].index;
+      const subsampleIdx = s.points.userData.subsampleIdx;
+      const fullIndex = subsampleIdx ? subsampleIdx[subRow] : subRow;
+      return { fullIndex, world: hits[0].point.clone() };
+    },
+    onPointerPick(cb) {
+      const s = stateRef.current;
+      if (!s) return () => {};
+      const entry = { cb };
+      s.pickSubs.push(entry);
+      return () => {
+        const i = s.pickSubs.indexOf(entry);
+        if (i !== -1) s.pickSubs.splice(i, 1);
+      };
+    },
+    onPointerMove(cb) {
+      const s = stateRef.current;
+      if (!s) return () => {};
+      const entry = { cb };
+      s.moveSubs.push(entry);
+      return () => {
+        const i = s.moveSubs.indexOf(entry);
+        if (i !== -1) s.moveSubs.splice(i, 1);
+      };
+    },
+    attachBrushGizmo({ radius, color }) {
+      const s = stateRef.current;
+      if (!s.scene) return { remove: () => {}, mesh: null };
+      const geom = new THREE.SphereGeometry(1, 16, 12);
+      const mat = new THREE.MeshBasicMaterial({
+        color: color || '#ffffff',
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false,
+        side: THREE.FrontSide,
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.scale.setScalar(radius);
+      mesh.visible = false;
+      s.scene.add(mesh);
+      return {
+        mesh,
+        remove() {
+          s.scene.remove(mesh);
+          geom.dispose();
+          mat.dispose();
+        },
+      };
+    },
+    setBrushPosition(worldVec, mesh) {
+      if (!mesh) return;
+      if (worldVec == null) {
+        mesh.visible = false;
+      } else {
+        mesh.position.copy(worldVec);
+        mesh.visible = true;
+      }
+    },
+    recolorByEdit({ affectedFullIndices, classFull, instanceFull, colorMode, palette }) {
+      const s = stateRef.current;
+      if (!s.pointsGeom) return;
+      const colorAttr = s.pointsGeom.getAttribute('color');
+      if (!colorAttr) return;
+
+      const subsampleIdx = s.points.userData.subsampleIdx;
+      if (!subsampleIdx) {
+        // No subsampling: sub row == full idx. Recolor directly.
+        const paletteRgb = (colorMode === 'class' && palette) ? buildPaletteRGB(palette) : null;
+        const grey = [0.42, 0.44, 0.48];
+        const tmp = new THREE.Color();
+        for (const fullIdx of affectedFullIndices) {
+          const base = fullIdx * 3;
+          if (colorMode === 'class' && paletteRgb && classFull) {
+            const cid = classFull[fullIdx];
+            const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
+            colorAttr.array[base]     = rgb[0];
+            colorAttr.array[base + 1] = rgb[1];
+            colorAttr.array[base + 2] = rgb[2];
+          } else if (colorMode === 'instance' && instanceFull) {
+            const iid = instanceFull[fullIdx];
+            if (iid < 0) {
+              colorAttr.array[base]     = 0.42;
+              colorAttr.array[base + 1] = 0.44;
+              colorAttr.array[base + 2] = 0.48;
+            } else {
+              const hue = ((iid * 0.6180339887) % 1 + 1) % 1;
+              tmp.setHSL(hue, 0.62, 0.58);
+              colorAttr.array[base]     = tmp.r;
+              colorAttr.array[base + 1] = tmp.g;
+              colorAttr.array[base + 2] = tmp.b;
+            }
+          }
+        }
+        colorAttr.needsUpdate = true;
+        return;
+      }
+
+      // Build inverse map on first call (cached on stateRef).
+      if (!s._fullToSubMap || s._fullToSubMapFor !== subsampleIdx) {
+        s._fullToSubMap = buildFullToSubMap(subsampleIdx, classFull?.length ?? instanceFull?.length ?? 0);
+        s._fullToSubMapFor = subsampleIdx;
+      }
+      const fullToSub = s._fullToSubMap;
+
+      const paletteRgb = (colorMode === 'class' && palette) ? buildPaletteRGB(palette) : null;
+      const grey = [0.42, 0.44, 0.48];
+      const tmp = new THREE.Color();
+
+      for (const fullIdx of affectedFullIndices) {
+        const subRow = fullToSub[fullIdx];
+        if (subRow === -1) continue;
+        const base = subRow * 3;
+        if (colorMode === 'class' && paletteRgb && classFull) {
+          const cid = classFull[fullIdx];
+          const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
+          colorAttr.array[base]     = rgb[0];
+          colorAttr.array[base + 1] = rgb[1];
+          colorAttr.array[base + 2] = rgb[2];
+        } else if (colorMode === 'instance' && instanceFull) {
+          const iid = instanceFull[fullIdx];
+          if (iid < 0) {
+            colorAttr.array[base]     = 0.42;
+            colorAttr.array[base + 1] = 0.44;
+            colorAttr.array[base + 2] = 0.48;
+          } else {
+            const hue = ((iid * 0.6180339887) % 1 + 1) % 1;
+            tmp.setHSL(hue, 0.62, 0.58);
+            colorAttr.array[base]     = tmp.r;
+            colorAttr.array[base + 1] = tmp.g;
+            colorAttr.array[base + 2] = tmp.b;
+          }
+        }
+      }
+      colorAttr.needsUpdate = true;
+    },
   }));
 
   return <div ref={mountRef} style={{ width: '100%', height: '100%', position: 'relative' }} />;

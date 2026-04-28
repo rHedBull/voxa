@@ -11,6 +11,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
   const [colorMode, setColorMode] = useStateInspect('rgb');
   const [showFloor, setShowFloor] = useStateInspect(true);
   const [showMesh, setShowMesh] = useStateInspect(false);
+  const [meshBrightness, setMeshBrightness] = useStateInspect(1.0);
   const [meshProgress, setMeshProgress] = useStateInspect(null);
 
   // Reset mesh toggle when switching to a scene without a mesh, so the
@@ -62,6 +63,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
           meshUrl={cloud?.meshUrl || null}
           meshIsZUp={!!cloud?.meshIsZUp}
           showMesh={showMesh}
+          meshBrightness={meshBrightness}
           onMeshLoadProgress={setMeshProgress}
         />
 
@@ -154,6 +156,14 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
                   title={cloud?.meshUrl ? '' : 'No mesh.glb for this scene'}
                   onClick={() => cloud?.meshUrl && setShowMesh(!showMesh)}><i /></button>
               </div>
+              {showMesh && (
+                <div className="ctrl row">
+                  <label>Brightness <span className="mono dim">{meshBrightness.toFixed(2)}×</span></label>
+                  <input type="range" min={0} max={2} step={0.05}
+                    value={meshBrightness}
+                    onChange={(e) => setMeshBrightness(parseFloat(e.target.value))} />
+                </div>
+              )}
             </div>
           </div>
         </div>
