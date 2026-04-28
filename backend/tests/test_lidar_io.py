@@ -191,3 +191,30 @@ def test_load_annotated_empty_when_no_labels_no_prelabel(tmp_path):
     assert out.is_from_prelabel is False
     assert out.labels is not None
     assert int(out.labels.class_ids.min()) == -1 and int(out.labels.class_ids.max()) == -1
+
+
+def test_load_annotated_treats_all_minus_one_labels_as_placeholder(tmp_path):
+    """All-(-1) gt arrays = "slot reserved, not labeled yet" — fall
+    through to the prelabel chain instead of treating them as authored GT."""
+    root = tmp_path / "lidar"
+    scan_dir = root / "annotated" / "stub"
+    _write_ply(scan_dir / "source" / "scan.ply", n=8)
+    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
+    np.save(scan_dir / "labels" / "gt_class_ids.npy", np.full(8, -1, dtype=np.int32))
+    np.save(scan_dir / "labels" / "gt_segment_ids.npy", np.full(8, -1, dtype=np.int32))
+
+    pre = scan_dir / "prelabel"; pre.mkdir(parents=True)
+    np.save(pre / "ransac_instance_ids.npy",
+            np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
+    (pre / "ransac_segment_summary.json").write_text(json.dumps({
+        "segments": [{"id": 0, "class_id": 0},
+                     {"id": 1, "class_id": 1},
+                     {"id": 2, "class_id": 2}],
+    }))
+
+    src = next(s for s in discover(tmp_path / "voxa-data", root) if s.tier == "annotated")
+    out = load_annotated(src, root)
+    # Placeholder labels skipped → prelabel wins → is_from_prelabel=True.
+    assert out.is_from_prelabel is True
+    assert out.labels is not None
+    assert int(out.labels.instance_ids[1]) == 0
