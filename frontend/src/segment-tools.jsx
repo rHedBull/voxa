@@ -1,7 +1,6 @@
 // segment-tools.jsx — tool strip + Pick tool for per-point segment editing.
 
 import { useEffect, useMemo } from 'react';
-import { VoxaAPI } from './api.js';
 
 // ── Tool strip ──────────────────────────────────────────────────────────────
 // Three-button row: Cuboid / Pick / Brush.
