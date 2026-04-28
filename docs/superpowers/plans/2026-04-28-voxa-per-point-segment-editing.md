@@ -864,15 +864,6 @@ def test_merge_moves_source_points_to_target_instance_and_class():
     assert int(s.class_ids[5]) == 0
 
 
-def test_reassign_creates_new_instance_when_target_inst_is_none():
-    s = _seed()
-    out = s.apply_reassign(np.array([0, 6], dtype=np.int32),
-                           target_inst=None, target_class=2)
-    # erase path expects both None; target_class set means allocate (legacy guard)
-    # — adjust: caller passes target_inst=-1 + target_class=cid for "create new"
-    assert out["op"] == "reassign"
-
-
 def test_reassign_with_negative_target_inst_allocates_new_id():
     s = _seed()
     out = s.apply_reassign(np.array([0, 6], dtype=np.int32),
@@ -1039,39 +1030,71 @@ In `load_scene`, after `_state.update(...)`, add:
 
 ```python
     from segment_state import SegmentSession  # local import — avoids startup cost
+    is_from_prelabel = bool(getattr(annotated_scene, "is_from_prelabel", False)) if 'annotated_scene' in locals() else False
     _state["seg"] = (
         SegmentSession(
             class_ids=labels.class_ids,
             instance_ids=labels.instance_ids,
             positions=pc.points,
+            is_from_prelabel=is_from_prelabel,
         )
         if labels is not None else None
     )
 ```
 
+The `_load_scene_source` helper currently returns `labels` but not the `AnnotatedScene` it came from. Change `_load_scene_source` to return `is_from_prelabel` as an extra return value (or restructure to return the full `AnnotatedScene` for annotated tier). Pick whichever fits the existing code shape; both are small refactors.
+
+Update `SegmentSession.__init__` to accept and store `self.is_from_prelabel`:
+
+```python
+def __init__(self, class_ids, instance_ids, positions, *, is_from_prelabel: bool = False):
+    ...
+    self.is_from_prelabel = bool(is_from_prelabel)
+```
+
 (If `labels` is `None` because no annotated/no prelabel/no fallback was applied — i.e. legacy non-annotated scenes — `seg` stays `None` and segment endpoints will 409.)
 
-- [ ] **Step 3: Add an integration test**
+- [ ] **Step 3: Build a `client_with_annotated_scene` fixture in `conftest.py`**
+
+This fixture is reused by Tasks 8–12. Move `_write_ply` and `_build_annotated_root` from `test_lidar_io.py` into `conftest.py` (or import them) and add:
+
+```python
+@pytest.fixture
+def client_with_annotated_scene(monkeypatch, tmp_path):
+    from tests.test_lidar_io import _build_annotated_root  # or move helper to conftest
+    root = _build_annotated_root(tmp_path)
+    monkeypatch.setenv("VOXA_LIDAR_ROOT", str(root))
+    # Re-import scene_registry so it re-reads the env, then construct client.
+    import importlib, scene_registry, main
+    importlib.reload(scene_registry); importlib.reload(main)
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    return client, "annotated/demo"
+
+
+@pytest.fixture
+def client_with_loaded_annotated_scene(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "want_full_labels": True})
+    assert r.status_code == 200
+    return client
+```
+
+- [ ] **Step 4: Add the integration test**
 
 Append to `backend/tests/test_load_endpoint.py`:
 
 ```python
-def test_load_annotated_creates_segment_session(client, monkeypatch, tmp_path):
-    """After /api/load on an annotated scene, _state['seg'] is populated."""
-    import main, lidar_io  # noqa: F401
-    # Reuse the existing annotated-scene fixture builder if present;
-    # otherwise inline a tiny one (see existing test_lidar_io._build_annotated_root).
-    # ... build root, point lidar_root env at it, call /api/load ...
-    # Final assertion:
-    # from main import _state
-    # assert _state["seg"] is not None
-    # assert _state["seg"].class_ids.shape == _state["seg"].instance_ids.shape
-    pytest.skip("integration test stub — wire up against existing fixtures in next step")
+def test_load_annotated_creates_segment_session(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "want_full_labels": True})
+    assert r.status_code == 200
+    import main
+    assert main._state["seg"] is not None
+    assert main._state["seg"].class_ids.shape == main._state["seg"].instance_ids.shape
 ```
 
-(This stub is a placeholder; if you have time, finish it by reusing `_build_annotated_root` from `test_lidar_io.py`. If skipped, the next task's endpoint test will exercise the same path.)
-
-- [ ] **Step 4: Run smoke test to verify nothing regresses**
+- [ ] **Step 5: Run smoke test to verify nothing regresses**
 
 ```bash
 npm run test:backend
@@ -1079,10 +1102,10 @@ npm run test:backend
 
 Expected: green.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add backend/main.py backend/tests/test_load_endpoint.py
+git add backend/main.py backend/tests/conftest.py backend/tests/test_load_endpoint.py
 git commit -m "feat(backend): construct SegmentSession on /api/load when labels exist"
 ```
 
@@ -1138,22 +1161,13 @@ Right before constructing `LoadResponse(...)`, add:
         else:
             summary = {}
         full_payload["segment_summary"] = summary
-    full_payload["is_from_prelabel"] = bool(getattr(_state.get("seg"), "is_from_prelabel", False))
+    seg_for_meta = _state.get("seg")
+    full_payload["is_from_prelabel"] = bool(seg_for_meta.is_from_prelabel) if seg_for_meta is not None else False
 ```
 
-(`SegmentSession` doesn't carry `is_from_prelabel` yet — fix in next step.)
+`SegmentSession.is_from_prelabel` was added in Task 7 — `_state["seg"]` is the single source of truth here.
 
-- [ ] **Step 3: Carry `is_from_prelabel` on the session**
-
-In `load_scene` where you construct `SegmentSession`, look up `is_from_prelabel` from the loader output. Easiest: change the `_load_scene_source` helper to return it (it currently returns labels separately). Add a parallel return slot, or stuff it on `_state` directly:
-
-```python
-    _state["is_from_prelabel"] = bool(annotated_scene.is_from_prelabel) if annotated_scene else False
-```
-
-…and read from `_state["is_from_prelabel"]` in step 2's `full_payload`.
-
-- [ ] **Step 4: Pass `**full_payload` into `LoadResponse(...)`**
+- [ ] **Step 3: Pass `**full_payload` into `LoadResponse(...)`**
 
 ```python
     return LoadResponse(
@@ -1163,7 +1177,7 @@ In `load_scene` where you construct `SegmentSession`, look up `is_from_prelabel`
     )
 ```
 
-- [ ] **Step 5: Add a regression test**
+- [ ] **Step 4: Add a regression test**
 
 In `backend/tests/test_load_endpoint.py`, add:
 
@@ -1188,9 +1202,9 @@ def test_load_without_flag_omits_full_arrays(client_with_annotated_scene):
     assert j.get("full_positions") is None
 ```
 
-You'll need a `client_with_annotated_scene` fixture if not already present — extract from `test_lidar_io._build_annotated_root` and stand up a TestClient pointed at it. Put the fixture in `backend/tests/conftest.py`.
+The `client_with_annotated_scene` fixture was added in Task 7 — reuse it.
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 5: Run tests**
 
 ```bash
 npm run test:backend
@@ -1198,7 +1212,7 @@ npm run test:backend
 
 Expected: green.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/main.py backend/tests/conftest.py backend/tests/test_load_endpoint.py
@@ -1878,25 +1892,28 @@ export function PickTool({ viewerRef, segState, onApply, classes }) {
     return off;
   }, [viewerRef, segState, selection]);
 
-  // Hotkeys
+  // Hotkeys — driven by the `hotkey` field on each ClassDef (which the
+  // backend serializes from `config/classes.yaml`'s `key`). `R` is reserved
+  // as the unlabeled sentinel (writes -1 / -1) — matches existing voxa
+  // convention in mode-label.jsx where `classes.find(c => c.hotkey === e.key)`
+  // already drives cuboid class hotkeys.
+  const keyToClassId = useMemo(() => Object.fromEntries(
+    classes.filter(c => c.hotkey).map(c => [c.hotkey.toLowerCase(), c.id])
+  ), [classes]);
+
   useEffect(() => {
     if (!segState) return;
     const on = (e) => {
       if (selection.size === 0) return;
-      const map = { p: 'pipe', t: 'tank', e: 'equipment', s: 'structural', d: 'double' };
-      const cls = map[e.key.toLowerCase()];
-      if (cls) {
-        const cid = classes.find(c => c.label.toLowerCase() === cls)?.id;
-        if (cid != null) {
-          // Collect indices from all selected segments.
-          const idx = collectIndices(segState.instanceFull, selection);
-          onApply({ op: 'set_class', indices: idx, payload: { class_id: cid } });
-        }
-      } else if (e.key.toLowerCase() === 'r') {
-        const idx = collectIndices(segState.instanceFull, selection);
+      const k = e.key.toLowerCase();
+      const idx = collectIndices(segState.instanceFull, selection);
+      if (k === 'r') {
         onApply({ op: 'reassign', indices: idx,
                   payload: { target_inst: null, target_class: null } });
-      } else if (e.key.toLowerCase() === 'm' && selection.size >= 2) {
+      } else if (k in keyToClassId) {
+        onApply({ op: 'set_class', indices: idx,
+                  payload: { class_id: keyToClassId[k] } });
+      } else if (k === 'm' && selection.size >= 2) {
         const sids = [...selection].sort((a, b) => a - b);
         const target = sids[0];
         for (const src of sids.slice(1)) {
@@ -1907,7 +1924,7 @@ export function PickTool({ viewerRef, segState, onApply, classes }) {
     };
     window.addEventListener('keydown', on);
     return () => window.removeEventListener('keydown', on);
-  }, [segState, selection, classes, onApply]);
+  }, [segState, selection, keyToClassId, onApply]);
 
   return null;   // headless
 }
@@ -1926,11 +1943,78 @@ function collectIndices(instanceFull, selection) {
 
 Add `activeTool` state, render `<SegmentToolStrip>`, render `<PickTool>` when `activeTool === 'pick'` and `segState` exists. Keep existing cuboid hotkeys gated on `activeTool === 'cuboid'`.
 
-- [ ] **Step 3: Implement `viewerRef.current.onPointerPick`**
+- [ ] **Step 3: Add raycast utilities to `viewer.jsx` imperative handle**
 
-In `viewer.jsx`, add a method on the imperative handle that registers a callback fired on left-click with the picked point index (use `THREE.Raycaster` against the points; for performance, return the closest point within a small screen-space radius). Skip the implementation detail in this plan — just add the imperative handle entry.
+This is the non-trivial Three.js work. The imperative handle exposed by `viewer.jsx` (`useImperativeHandle` already in use for `preset`) gains four new methods:
 
-- [ ] **Step 4: Manual smoke test**
+```js
+useImperativeHandle(ref, () => ({
+  // existing: preset, ...
+  domElement: () => glRef.current.domElement,
+  cameraForward: () => {
+    const v = new THREE.Vector3();
+    cameraRef.current.getWorldDirection(v);
+    return [v.x, v.y, v.z];
+  },
+  // Returns { fullIndex, world } or null. fullIndex is the *full-resolution*
+  // point index (not the subsample row). The frontend's subsample→full map
+  // is held by the Points.userData.subsampleIdx attached at load time.
+  firstHitUnderCursor: (evt) => raycastPoint(evt, pointsRef.current, cameraRef.current, glRef.current),
+  // Subscriptions: the viewer doesn't manage React state, just dispatches.
+  onPointerPick: (cb) => subscribePick(cb),
+  onPointerMove: (cb) => subscribePointerMove(cb),
+}), [/* deps */]);
+```
+
+Implementation notes:
+
+```js
+import * as THREE from 'three';
+
+function raycastPoint(evt, points, camera, renderer) {
+  if (!points) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((evt.clientX - rect.left) / rect.width) * 2 - 1,
+    -((evt.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, camera);
+  // Threshold scales with rendered point size; without it, sparse clouds rarely hit.
+  ray.params.Points.threshold = (points.material.size || 0.012) * 2.0;
+  const hits = ray.intersectObject(points, false);
+  if (hits.length === 0) return null;
+  // Return closest. `index` is the subsample row; map to full-res via userData.
+  const sub = hits[0].index;
+  const subToFull = points.userData.subsampleIdx;
+  const fullIndex = subToFull ? subToFull[sub] : sub;
+  return { fullIndex, world: hits[0].point.clone() };
+}
+```
+
+`subscribePick` and `subscribePointerMove` are simple internal `Set<Callback>` registries dispatched on `pointerdown` / `pointermove` events bound on the canvas.
+
+When loading the cloud, set `pointsRef.current.userData.subsampleIdx = subsampleIdx` (the `Int32Array` decoded in api.js — see Task 14 / Task 20).
+
+- [ ] **Step 4: Sanity-test raycast in isolation**
+
+Add a tiny vitest case in `frontend/src/api.test.js` (or a new `viewer-raycast.test.js`) that covers only the NDC math (Three.js Raycaster itself is well-tested; we just need to confirm the screen-to-NDC translation):
+
+```js
+import { describe, it, expect } from 'vitest';
+import { evtToNdc } from './viewer.jsx';   // exported helper
+
+it('evtToNdc maps top-left (0,0) to (-1, +1) NDC', () => {
+  const rect = { left: 0, top: 0, width: 100, height: 100 };
+  const ndc = evtToNdc({ clientX: 0, clientY: 0 }, rect);
+  expect(ndc.x).toBeCloseTo(-1);
+  expect(ndc.y).toBeCloseTo(1);
+});
+```
+
+Extract the NDC math into a top-level `evtToNdc` so it's testable without a real renderer.
+
+- [ ] **Step 5: Manual smoke test**
 
 ```bash
 npm run dev
@@ -2280,6 +2364,7 @@ npm run dev
 - Cmd/Ctrl+Z → reverts the last stroke.
 - Cmd/Ctrl+S → toast confirms save; file `<scene>/labels/gt_class_ids.npy` updated; `annotation_history/<ts>/` written.
 - Reload the scene → state persists.
+- Toggle "Show edits" (diff vs prelabel) → only edited points tint red; toggle off → normal coloring restored.
 
 - [ ] **Step 3: Negative path checklist**
 
