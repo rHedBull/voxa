@@ -137,7 +137,8 @@ def test_mesh_endpoint_serves_glb_when_present(lidar_client, tmp_path, monkeypat
 
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/withmesh", "max_points": 10}).json()
-    assert body["mesh_url"] == "/api/mesh/annotated/withmesh"
+    # mesh_url carries an mtime cache-buster (?v=…) that varies per run.
+    assert body["mesh_url"].startswith("/api/mesh/annotated/withmesh")
 
     r = lidar_client.get(body["mesh_url"])
     assert r.status_code == 200
