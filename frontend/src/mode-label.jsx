@@ -14,6 +14,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
   const [activeTool, setActiveTool] = useStateLabel('cuboid');
+  const [colorMode, setColorMode] = useStateLabel('class');
 
   // Keep activeClass valid as the class list streams in.
   useEffectLabel(() => {
@@ -102,24 +103,46 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     }
     try {
       const r = await VoxaAPI.segApply(op, { indices, payload });
-      setSegState((s) => s ? applyDelta(s, {
-        indices: r.indices,
-        after_class: r.afterClass,
-        after_instance: r.afterInstance,
-      }) : s);
+      setSegState((s) => {
+        if (!s) return s;
+        const next = applyDelta(s, {
+          indices: r.indices,
+          after_class: r.afterClass,
+          after_instance: r.afterInstance,
+        });
+        viewerRef.current?.recolorByEdit({
+          affectedFullIndices: r.indices,
+          classFull: next.classFull,
+          instanceFull: next.instanceFull,
+          colorMode,
+          palette: cloud?.classPalette ?? null,
+        });
+        return next;
+      });
     } catch (err) {
       console.error('segApply failed:', err);
     }
-  }, [setSegState]);
+  }, [setSegState, colorMode, cloud, viewerRef]);
 
   // Brush-tool apply: receives a pre-resolved apply response (op === '__delta__').
   const onBrushApply = useCallbackLabel((_op, r) => {
-    setSegState((s) => s ? applyDelta(s, {
-      indices: r.indices,
-      after_class: r.afterClass,
-      after_instance: r.afterInstance,
-    }) : s);
-  }, [setSegState]);
+    setSegState((s) => {
+      if (!s) return s;
+      const next = applyDelta(s, {
+        indices: r.indices,
+        after_class: r.afterClass,
+        after_instance: r.afterInstance,
+      });
+      viewerRef.current?.recolorByEdit({
+        affectedFullIndices: r.indices,
+        classFull: next.classFull,
+        instanceFull: next.instanceFull,
+        colorMode,
+        palette: cloud?.classPalette ?? null,
+      });
+      return next;
+    });
+  }, [setSegState, colorMode, cloud, viewerRef]);
 
   // Hotkeys: 0–9 assign class, ⌫ delete, A add, F frame, ⌘S save.
   // In walk mode the viewer owns WASD/QE; bail on those keys here so we
@@ -219,6 +242,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           background={theme.bg}
           floorColor={theme.floor}
           navMode={navMode}
+          colorMode={colorMode}
         />
 
         <div className="vp-hud-top">

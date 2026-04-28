@@ -121,6 +121,7 @@ class LoadResponse(BaseModel):
     full_n: Optional[int] = None
     is_from_prelabel: bool = False
     segment_summary: Optional[dict] = None   # { "<inst>": {class_id, n_points} }
+    subsample_idx: Optional[str] = None      # b64 Int32, len==num_subsampled, maps sub row → full idx
 
 
 class Cuboid(BaseModel):
@@ -487,6 +488,8 @@ def load_scene(req: LoadRequest):
     seg_for_meta = _state.get("seg")
     full_payload["is_from_prelabel"] = bool(seg_for_meta.is_from_prelabel) if seg_for_meta is not None else False
 
+    subsample_idx_b64 = _b64(idx.astype(np.int32)) if idx is not None else None
+
     return LoadResponse(
         scene=src.scene_id,
         num_points=len(pc),
@@ -505,6 +508,7 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
         mesh_url=_mesh_url_for(src),
         mesh_is_z_up=is_z_up if src.has_mesh else False,
+        subsample_idx=subsample_idx_b64,
         **full_payload,
     )
 

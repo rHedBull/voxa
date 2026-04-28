@@ -143,6 +143,19 @@ describe('decodeLoadResponse', () => {
     expect(out.scene).toBe('test_scene');
     expect(out.numPoints).toBe(3);
   });
+
+  it('decodes subsampleIdx as Int32Array when present', () => {
+    const j = { ...makeFakeLoadResponse(), subsample_idx: encodeInt32([0, 2, 4]) };
+    const out = decodeLoadResponse(j);
+    expect(out.subsampleIdx).toBeInstanceOf(Int32Array);
+    expect(Array.from(out.subsampleIdx)).toEqual([0, 2, 4]);
+  });
+
+  it('returns null subsampleIdx when absent', () => {
+    const j = makeFakeLoadResponse();
+    const out = decodeLoadResponse(j);
+    expect(out.subsampleIdx).toBeNull();
+  });
 });
 
 describe('VoxaAPI.segApply wire shape', () => {

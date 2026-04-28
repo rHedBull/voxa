@@ -37,6 +37,17 @@ function buildPaletteRGB(palette) {
   return out;
 }
 
+// Build an inverse map: fullIdx → subsampled row index (or -1 if not rendered).
+// subsampleIdx: Int32Array of length numSubsampled, value = full-res index.
+// fullN: total number of full-resolution points.
+export function buildFullToSubMap(subsampleIdx, fullN) {
+  const map = new Int32Array(fullN).fill(-1);
+  for (let sub = 0; sub < subsampleIdx.length; sub++) {
+    map[subsampleIdx[sub]] = sub;
+  }
+  return map;
+}
+
 function attachOrbit(camera, dom, target, onChange) {
   const state = {
     dragging: false, mode: null, lx: 0, ly: 0,
@@ -480,6 +491,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.pointsGeom.setAttribute('color',
       new THREE.BufferAttribute(cloud.colors.slice(), 3));
     s.pointsGeom.computeBoundingSphere();
+    s.points.userData.subsampleIdx = cloud.subsampleIdx ?? null;
 
     // Apply the recenter offset to the mesh group so a co-located mesh
     // overlays the cloud. The group's rotation already brings GLB Z-up
@@ -852,6 +864,83 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         mesh.position.copy(worldVec);
         mesh.visible = true;
       }
+    },
+    recolorByEdit({ affectedFullIndices, classFull, instanceFull, colorMode, palette }) {
+      const s = stateRef.current;
+      if (!s.pointsGeom) return;
+      const colorAttr = s.pointsGeom.getAttribute('color');
+      if (!colorAttr) return;
+
+      const subsampleIdx = s.points.userData.subsampleIdx;
+      if (!subsampleIdx) {
+        // No subsampling: sub row == full idx. Recolor directly.
+        const paletteRgb = (colorMode === 'class' && palette) ? buildPaletteRGB(palette) : null;
+        const grey = [0.42, 0.44, 0.48];
+        const tmp = new THREE.Color();
+        for (const fullIdx of affectedFullIndices) {
+          const base = fullIdx * 3;
+          if (colorMode === 'class' && paletteRgb && classFull) {
+            const cid = classFull[fullIdx];
+            const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
+            colorAttr.array[base]     = rgb[0];
+            colorAttr.array[base + 1] = rgb[1];
+            colorAttr.array[base + 2] = rgb[2];
+          } else if (colorMode === 'instance' && instanceFull) {
+            const iid = instanceFull[fullIdx];
+            if (iid < 0) {
+              colorAttr.array[base]     = 0.42;
+              colorAttr.array[base + 1] = 0.44;
+              colorAttr.array[base + 2] = 0.48;
+            } else {
+              const hue = ((iid * 0.6180339887) % 1 + 1) % 1;
+              tmp.setHSL(hue, 0.62, 0.58);
+              colorAttr.array[base]     = tmp.r;
+              colorAttr.array[base + 1] = tmp.g;
+              colorAttr.array[base + 2] = tmp.b;
+            }
+          }
+        }
+        colorAttr.needsUpdate = true;
+        return;
+      }
+
+      // Build inverse map on first call (cached on stateRef).
+      if (!s._fullToSubMap || s._fullToSubMapFor !== subsampleIdx) {
+        s._fullToSubMap = buildFullToSubMap(subsampleIdx, classFull?.length ?? instanceFull?.length ?? 0);
+        s._fullToSubMapFor = subsampleIdx;
+      }
+      const fullToSub = s._fullToSubMap;
+
+      const paletteRgb = (colorMode === 'class' && palette) ? buildPaletteRGB(palette) : null;
+      const grey = [0.42, 0.44, 0.48];
+      const tmp = new THREE.Color();
+
+      for (const fullIdx of affectedFullIndices) {
+        const subRow = fullToSub[fullIdx];
+        if (subRow === -1) continue;
+        const base = subRow * 3;
+        if (colorMode === 'class' && paletteRgb && classFull) {
+          const cid = classFull[fullIdx];
+          const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
+          colorAttr.array[base]     = rgb[0];
+          colorAttr.array[base + 1] = rgb[1];
+          colorAttr.array[base + 2] = rgb[2];
+        } else if (colorMode === 'instance' && instanceFull) {
+          const iid = instanceFull[fullIdx];
+          if (iid < 0) {
+            colorAttr.array[base]     = 0.42;
+            colorAttr.array[base + 1] = 0.44;
+            colorAttr.array[base + 2] = 0.48;
+          } else {
+            const hue = ((iid * 0.6180339887) % 1 + 1) % 1;
+            tmp.setHSL(hue, 0.62, 0.58);
+            colorAttr.array[base]     = tmp.r;
+            colorAttr.array[base + 1] = tmp.g;
+            colorAttr.array[base + 2] = tmp.b;
+          }
+        }
+      }
+      colorAttr.needsUpdate = true;
     },
   }));
 

@@ -243,6 +243,59 @@ def test_load_without_flag_omits_full_arrays(client_with_annotated_scene):
     assert j.get("full_positions") is None
 
 
+def test_subsample_idx_absent_when_no_subsampling(client_with_annotated_scene):
+    """Cloud fits in max_points → no subsampling → subsample_idx is null."""
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    j = r.json()
+    assert j.get("subsample_idx") is None
+
+
+def test_subsample_idx_present_and_correct_when_subsampling(tmp_path, monkeypatch):
+    """Cloud exceeds max_points → subsample_idx maps sub rows → full indices."""
+    import main
+    from fastapi.testclient import TestClient
+
+    lidar = tmp_path / "lidar-sub"
+    scan_dir = lidar / "annotated" / "big"
+    n = 20
+    rng = np.random.default_rng(1)
+    pts = rng.standard_normal((n, 3)).astype(np.float32)
+    from plyfile import PlyData, PlyElement
+    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+    arr = np.zeros(n, dtype=dtype)
+    arr['x'], arr['y'], arr['z'] = pts[:, 0], pts[:, 1], pts[:, 2]
+    arr['red'] = arr['green'] = arr['blue'] = 200
+    (scan_dir / "source").mkdir(parents=True, exist_ok=True)
+    PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
+        str(scan_dir / "source" / "scan.ply"))
+    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
+    (scan_dir / "meta.json").write_text('{"scan_name": "big", "n_points": 20}')
+
+    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    client = TestClient(main.app)
+
+    max_pts = 5
+    r = client.post("/api/load", json={"name": "annotated/big", "max_points": max_pts})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["num_points"] == n
+    assert j["num_subsampled"] == max_pts
+    assert j["subsample_idx"] is not None
+
+    idx_bytes = base64.b64decode(j["subsample_idx"])
+    idx_arr = np.frombuffer(idx_bytes, dtype=np.int32)
+    assert len(idx_arr) == max_pts
+    # All indices must be valid full-res indices, sorted, and unique.
+    assert idx_arr.min() >= 0
+    assert idx_arr.max() < n
+    assert len(np.unique(idx_arr)) == max_pts
+    # Sorted because _safe_subsample calls idx.sort().
+    assert (np.diff(idx_arr) > 0).all()
+
+
 def test_seg_session_skipped_above_label_cap(monkeypatch, client_with_annotated_scene):
     client, scene_id = client_with_annotated_scene
     import main

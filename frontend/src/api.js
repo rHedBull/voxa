@@ -24,6 +24,7 @@ export function decodeLoadResponse(j) {
     fullN: j.full_n ?? null,
     isFromPrelabel: !!j.is_from_prelabel,
     segmentSummary: j.segment_summary || null,
+    subsampleIdx: j.subsample_idx ? b64ToInt32(j.subsample_idx) : null,
   };
 }
 
