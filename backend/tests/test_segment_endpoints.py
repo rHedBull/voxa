@@ -109,5 +109,8 @@ def test_save_writes_labels_to_disk(client_with_loaded_annotated_scene, scan_dir
     assert r.status_code == 200
     j = r.json()
     assert j["ok"] is True
+    # Demo fixture has 4 instances (ids 0,1,2,3) and 6 labeled points.
+    assert j["n_segments"] == 4
+    assert j["n_labeled_points"] == 6
     arr = np.load(scan_dir_for_loaded_scene / "labels" / "gt_class_ids.npy")
     assert int(arr[1]) == 2 and int(arr[2]) == 2

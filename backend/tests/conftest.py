@@ -106,6 +106,12 @@ def client_with_loaded_annotated_scene(client_with_annotated_scene):
 
 
 @pytest.fixture
-def scan_dir_for_loaded_scene(tmp_path):
-    """Return the on-disk scan_dir for the annotated/demo scene built by build_annotated_root."""
+def scan_dir_for_loaded_scene(client_with_loaded_annotated_scene, tmp_path):
+    """On-disk scan_dir for the annotated/demo scene built by build_annotated_root.
+
+    Depends on client_with_loaded_annotated_scene to enforce that the scene
+    exists on disk before this path is read — without that link, the fixture
+    silently returns a path under a different tmp_path when used standalone.
+    """
+    del client_with_loaded_annotated_scene
     return tmp_path / "lidar" / "annotated" / "demo"

@@ -786,7 +786,10 @@ def segment_save():
     if src.tier != "annotated":
         raise HTTPException(409, "Save is only supported on annotated/<scene> tier")
     scan_dir = Path(src.source_path).parent.parent
-    write_history = os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY") not in ("1", "true", "True")
+    write_history = (
+        os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
+        not in ("1", "true", "yes", "on")
+    )
     try:
         from segment_io import save_labels
         save_labels(
@@ -799,7 +802,14 @@ def segment_save():
     except ValueError as e:
         raise HTTPException(400, str(e))
     seg.dirty = False
-    return {"ok": True, "n_labeled_points": int((seg.instance_ids >= 0).sum())}
+    labeled = seg.instance_ids >= 0
+    n_labeled_points = int(labeled.sum())
+    n_segments = int(np.unique(seg.instance_ids[labeled]).size) if labeled.any() else 0
+    return {
+        "ok": True,
+        "n_labeled_points": n_labeled_points,
+        "n_segments": n_segments,
+    }
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────
