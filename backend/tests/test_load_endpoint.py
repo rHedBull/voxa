@@ -212,3 +212,12 @@ def test_annotated_no_swap_when_source_is_glb(lidar_client, tmp_path, monkeypatc
     assert extents[2] == pytest.approx(20.0, abs=1e-3), f"got extents={extents}"
     assert extents[1] == pytest.approx(4.0, abs=1e-3)
     assert extents[0] == pytest.approx(2.0, abs=1e-3)
+
+
+def test_load_annotated_creates_segment_session(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    import main
+    assert main._state["seg"] is not None
+    assert main._state["seg"].class_ids.shape == main._state["seg"].instance_ids.shape

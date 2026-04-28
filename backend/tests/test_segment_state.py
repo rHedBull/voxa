@@ -95,6 +95,17 @@ def test_brush_query_returns_indices_within_radius():
     assert got == expected
 
 
+def test_is_from_prelabel_stored_on_session():
+    cls = np.array([0, 1], dtype=np.int8)
+    inst = np.array([0, 1], dtype=np.int32)
+    pos = np.zeros((2, 3), dtype=np.float32)
+    s = SegmentSession(class_ids=cls, instance_ids=inst, positions=pos,
+                       is_from_prelabel=True)
+    assert s.is_from_prelabel is True
+    s2 = SegmentSession(class_ids=cls, instance_ids=inst, positions=pos)
+    assert s2.is_from_prelabel is False
+
+
 def test_brush_query_depth_cull_excludes_far_points_along_ray():
     # Place a near cluster at z=0 and a far cluster at z=10, both within sphere R.
     near = np.array([[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]], dtype=np.float32)

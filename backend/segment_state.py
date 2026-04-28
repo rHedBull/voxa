@@ -35,6 +35,8 @@ class SegmentSession:
         class_ids: np.ndarray,
         instance_ids: np.ndarray,
         positions: np.ndarray,
+        *,
+        is_from_prelabel: bool = False,
     ) -> None:
         if class_ids.dtype != np.int8:
             class_ids = class_ids.astype(np.int8)
@@ -46,6 +48,7 @@ class SegmentSession:
         self.class_ids = class_ids
         self.instance_ids = instance_ids
         self.positions = positions.astype(np.float32, copy=False)
+        self.is_from_prelabel: bool = bool(is_from_prelabel)
         self._undo: deque[_Delta] = deque()
         self._redo: deque[_Delta] = deque()
         self.history_cap: int = 100

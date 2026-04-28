@@ -70,6 +70,7 @@ _state: dict[str, Any] = {
     "intensity": None,      # full-resolution intensity array (or None)
     "labels": None,         # LabelArrays (or None)
     "recenter_offset": [0.0, 0.0, 0.0],
+    "seg": None,            # SegmentSession | None
 }
 
 
@@ -385,29 +386,34 @@ def _scene_is_z_up(src: SceneSource) -> bool:
 
 
 def _load_scene_source(src: SceneSource, max_points: int):
-    """Dispatch to the right loader. Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled_points)."""
+    """Dispatch to the right loader.
+
+    Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances,
+             n_labeled_points, is_from_prelabel).
+    """
     if src.tier == "annotated":
         a = load_annotated(src, LIDAR_ROOT)
         n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
         palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
-        return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances, n_labeled)
+        return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
+                n_labeled, bool(a.is_from_prelabel))
 
     if src.tier == "raw":
         pc, intensity = load_laz(src.source_path, max_points=max(max_points, 50_000))
-        return (pc, None, intensity, None, None, None, None, None)
+        return (pc, None, intensity, None, None, None, None, None, False)
 
     # legacy + decimated → reuse the existing loaders
     if src.source_format == "glb":
         pc, mesh = load_glb(src.source_path, num_samples=max(max_points, 50_000))
-        return (pc, mesh, None, None, None, None, None, None)
+        return (pc, mesh, None, None, None, None, None, None, False)
     pc, _ = load_ply(src.source_path)
-    return (pc, None, None, None, None, None, None, None)
+    return (pc, None, None, None, None, None, None, None, False)
 
 
 @app.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
     src = _resolve(req.name)
-    pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled = (
+    pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled, is_from_prelabel = (
         _load_scene_source(src, req.max_points)
     )
 
@@ -431,6 +437,16 @@ def load_scene(req: LoadRequest):
         intensity=intensity,
         labels=labels,
         recenter_offset=offset,
+    )
+    from segment_state import SegmentSession
+    _state["seg"] = (
+        SegmentSession(
+            class_ids=labels.class_ids,
+            instance_ids=labels.instance_ids,
+            positions=pc.points,
+            is_from_prelabel=is_from_prelabel,
+        )
+        if labels is not None else None
     )
 
     positions = sub.points.astype(np.float32)
