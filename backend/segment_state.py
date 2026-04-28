@@ -7,7 +7,7 @@ undo/redo can replay without re-deriving anything.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -60,10 +60,10 @@ class SegmentSession:
         # Merge: every point with instance==source becomes target. Class is
         # taken from the target's existing class. Source must exist.
         if source_inst == target_inst:
-            return {"op": "merge", "n_affected": 0, "new_instance_id": target_inst}
+            return {"op": "merge", "n_affected": 0}
         idx = np.flatnonzero(self.instance_ids == source_inst).astype(np.int32)
         if idx.size == 0:
-            return {"op": "merge", "n_affected": 0, "new_instance_id": target_inst}
+            return {"op": "merge", "n_affected": 0}
         # Resolve target class id (might be -1 if target has no points; rare).
         tgt_mask = self.instance_ids == target_inst
         if tgt_mask.any():
@@ -123,18 +123,22 @@ class SegmentSession:
         elif op == "reassign":
             ti, tc = payload["target_inst"], payload["target_class"]
             if ti is None and tc is None:
-                # erase
                 self.instance_ids[indices] = np.int32(-1)
                 self.class_ids[indices] = np.int8(-1)
             else:
+                # Non-erase reassign must specify a class — otherwise points
+                # would carry a fresh/foreign instance id with their old class,
+                # which can break SCHEMA invariant 4 at save.
+                if tc is None:
+                    raise ValueError(
+                        "apply_reassign: target_class is required unless target_inst is None too (erase)",
+                    )
                 if ti is None or ti < 0:
-                    # Allocate a fresh instance id.
                     new_inst_id = int(self.instance_ids.max(initial=-1)) + 1
                     self.instance_ids[indices] = np.int32(new_inst_id)
                 else:
                     self.instance_ids[indices] = np.int32(ti)
-                if tc is not None:
-                    self.class_ids[indices] = np.int8(tc)
+                self.class_ids[indices] = np.int8(tc)
         else:
             raise ValueError(f"unknown op: {op}")
 

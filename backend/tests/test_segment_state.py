@@ -70,3 +70,11 @@ def test_reassign_with_both_none_erases_to_unlabeled():
                      target_inst=None, target_class=None)
     assert int(s.instance_ids[1]) == -1
     assert int(s.class_ids[1]) == -1
+
+
+def test_reassign_raises_when_target_class_missing_but_target_inst_set():
+    """A non-erase reassign without a target class would risk invariant 4."""
+    s = _seed()
+    with pytest.raises(ValueError, match="target_class"):
+        s.apply_reassign(np.array([1], dtype=np.int32),
+                         target_inst=-1, target_class=None)
