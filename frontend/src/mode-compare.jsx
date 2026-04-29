@@ -8,16 +8,14 @@ import { Viewer } from './viewer.jsx';
 import { CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI } from './api.js';
 
-function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef }) {
+function ComparePanel({ title, color, viewerProps, viewerRef }) {
   return (
     <div className="cmp-panel">
       <div className="cmp-hd">
-        <span className="cmp-title">{title}</span>
-        <span className="cmp-badge"
-          style={{ background: badgeColor + '22', color: badgeColor, borderColor: badgeColor + '55' }}>
-          {badge}
+        <span className="cmp-tag"
+          style={{ background: color + '22', color, borderColor: color + '55' }}>
+          {title}
         </span>
-        <div className="cmp-cam"><CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} /></div>
       </div>
       <div className="cmp-vp">
         <Viewer ref={viewerRef} {...viewerProps} />
@@ -123,20 +121,16 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
   return (
     <div className="mode-root compare">
       <div className="cmp-bar">
-        <div className="cmp-bar-l">
-          <span className="cmp-bar-title">Diff overview</span>
-          <span className="cmp-bar-sub mono">{sceneName || '—'} · ground truth vs prediction</span>
-        </div>
-        <div className="cmp-bar-r">
-          <div className="cmp-metric"><label>Precision</label>
-            <b className="mono">{diff?.precision != null ? diff.precision.toFixed(3) : '—'}</b></div>
-          <div className="cmp-metric"><label>Recall</label>
-            <b className="mono">{diff?.recall != null ? diff.recall.toFixed(3) : '—'}</b></div>
-          <div className="cmp-metric"><label>F1</label>
-            <b className="mono accent">{diff?.f1 != null ? diff.f1.toFixed(3) : '—'}</b></div>
-          <div className="cmp-metric"><label>IoU<sub>μ</sub></label>
-            <b className="mono">{diff?.iou_mean != null ? diff.iou_mean.toFixed(3) : '—'}</b></div>
-          <div className="cmp-metric"><label>TP / FP / FN</label>
+        <div className="cmp-bar-metrics">
+          <span className="cmp-metric"><label>P</label>
+            <b className="mono">{diff?.precision != null ? diff.precision.toFixed(3) : '—'}</b></span>
+          <span className="cmp-metric"><label>R</label>
+            <b className="mono">{diff?.recall != null ? diff.recall.toFixed(3) : '—'}</b></span>
+          <span className="cmp-metric"><label>F1</label>
+            <b className="mono accent">{diff?.f1 != null ? diff.f1.toFixed(3) : '—'}</b></span>
+          <span className="cmp-metric"><label>IoU<sub>μ</sub></label>
+            <b className="mono">{diff?.iou_mean != null ? diff.iou_mean.toFixed(3) : '—'}</b></span>
+          <span className="cmp-metric"><label>TP/FP/FN</label>
             <span className="diff-pills">
               <i style={{ background: 'oklch(0.65 0.15 150 / 0.2)', color: 'oklch(0.78 0.15 150)' }}>
                 {diff?.tp ?? '—'}</i>
@@ -145,27 +139,27 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
               <i style={{ background: 'oklch(0.65 0.18 60 / 0.2)',  color: 'oklch(0.82 0.14 70)' }}>
                 {diff?.fn ?? '—'}</i>
             </span>
-          </div>
-          <div className="cmp-toggle">
-            <label>Nav</label>
-            <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
-          </div>
-          <div className="cmp-toggle">
-            <label>Sync cameras</label>
+          </span>
+        </div>
+        <div className="cmp-bar-controls">
+          <span className="cmp-toggle">
+            <NavModeToggle navMode={navMode} onChange={onNavModeChange} /></span>
+          <span className="cmp-toggle"><label>Sync</label>
             <button className={'sw' + (syncCameras ? ' on' : '')}
-              onClick={() => setSyncCameras(!syncCameras)}><i /></button>
-          </div>
-          <div className="cmp-toggle">
-            <HelpButton sections={helpSections} />
-          </div>
+              onClick={() => setSyncCameras(!syncCameras)}><i /></button></span>
+          <span className="cmp-toggle"><label>View</label>
+            <CameraPresets onPreset={(p) => {
+              leftRef.current?.preset(p);
+              rightRef.current?.preset(p);
+            }} /></span>
+          <span className="cmp-toggle"><HelpButton sections={helpSections} /></span>
         </div>
       </div>
 
       <div className="cmp-grid">
         <ComparePanel
           title="Ground truth"
-          badge="GT"
-          badgeColor="#10b981"
+          color="#10b981"
           viewerRef={leftRef}
           viewerProps={{
             cloud, instances: gtInstances, visibleInstanceIds: gtVisible,
@@ -176,8 +170,7 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
         />
         <ComparePanel
           title="Prediction"
-          badge="PRED"
-          badgeColor="#5b8def"
+          color="#5b8def"
           viewerRef={rightRef}
           viewerProps={{
             cloud, instances: predInstances, visibleInstanceIds: predVisible,

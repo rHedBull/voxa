@@ -659,18 +659,31 @@ kbd {
 
 /* ── Compare mode ───────────────────────────────────────────── */
 .cmp-bar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 14px; background: var(--bg-elev);
-  border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 16px;
+  position: relative;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 4px 12px; background: var(--bg-elev);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+  min-height: 32px;
 }
-.cmp-bar-l { display: flex; flex-direction: column; gap: 2px; }
-.cmp-bar-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.cmp-bar-sub { font-size: 11px; color: var(--text-faint); }
-.cmp-bar-r { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.cmp-metric { display: flex; flex-direction: column; gap: 2px; min-width: 56px; }
-.cmp-metric label { font-size: 10px; color: var(--text-faint); letter-spacing: 0.04em;
-                    text-transform: uppercase; font-weight: 500; }
-.cmp-metric b { font-size: 13px; font-weight: 600; }
+/* Absolute-centered so metrics stay anchored to the screen midline
+   regardless of how wide the right-side controls become. */
+.cmp-bar-metrics {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex; align-items: center; gap: 14px;
+  pointer-events: none;
+}
+.cmp-bar-metrics > * { pointer-events: auto; }
+.cmp-bar-controls {
+  display: flex; align-items: center; gap: 14px;
+}
+.cmp-metric { display: inline-flex; align-items: baseline; gap: 5px;
+              white-space: nowrap; }
+.cmp-metric label { font-size: 10px; color: var(--text-faint);
+                    letter-spacing: 0.04em; text-transform: uppercase;
+                    font-weight: 500; }
+.cmp-metric label::after { content: ':'; opacity: 0.5; margin-left: 1px; }
+.cmp-metric b { font-size: 12px; font-weight: 600; }
 .cmp-metric .accent { color: var(--accent); }
 .diff-pills { display: inline-flex; gap: 3px; }
 .diff-pills i {
@@ -678,9 +691,12 @@ kbd {
   min-width: 22px; height: 18px; padding: 0 5px; border-radius: 4px;
   font: 600 11px/1 'JetBrains Mono', monospace; font-style: normal;
 }
-.cmp-toggle { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
-.cmp-toggle label { font-size: 10px; color: var(--text-faint); letter-spacing: 0.04em;
-                    text-transform: uppercase; font-weight: 500; }
+.cmp-toggle { display: inline-flex; align-items: center; gap: 6px;
+              white-space: nowrap; }
+.cmp-toggle label { font-size: 10px; color: var(--text-faint);
+                    letter-spacing: 0.04em; text-transform: uppercase;
+                    font-weight: 500; }
+.cmp-toggle label::after { content: ':'; opacity: 0.5; margin-left: 1px; }
 
 .cmp-grid {
   flex: 1; min-height: 0;
@@ -689,25 +705,23 @@ kbd {
   height: 60%;
 }
 .cmp-panel {
+  position: relative;
   background: var(--bg-app); display: flex; flex-direction: column;
   min-width: 0; min-height: 0;
 }
 .cmp-hd {
+  position: absolute; top: 10px; left: 12px; z-index: 2;
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
-  background: var(--bg-elev); flex-shrink: 0;
+  pointer-events: none;
 }
-.cmp-title { font-size: 12px; font-weight: 600; color: var(--text); }
-.cmp-badge {
+.cmp-hd > * { pointer-events: auto; }
+.cmp-tag {
   display: inline-flex; align-items: center;
-  height: 20px; padding: 0 7px; border-radius: 4px;
-  font: 600 10px/1 'JetBrains Mono', monospace;
-  border: 1px solid;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  flex-shrink: 0;
+  height: 22px; padding: 0 10px; border-radius: 4px;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  border: 1px solid; white-space: nowrap;
 }
-.cmp-cam { margin-left: auto; }
 .cmp-vp { flex: 1; min-height: 0; position: relative; }
 
 .cmp-table {
