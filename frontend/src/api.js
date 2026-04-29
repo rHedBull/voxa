@@ -56,6 +56,26 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`load failed: ${r.status} ${await r.text()}`);
     return decodeLoadResponse(await r.json());
   },
+  async loadRegion(aabbMin, aabbMax, { maxPoints = null } = {}) {
+    const body = {
+      aabb_min: aabbMin,
+      aabb_max: aabbMax,
+      ...(maxPoints != null ? { max_points: maxPoints } : {}),
+    };
+    const r = await fetch('/api/load-region', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`loadRegion failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return {
+      numPoints: j.num_points,
+      numInRegionTotal: j.num_in_region_total,
+      positions: b64ToFloat32(j.positions),
+      colors: j.colors ? b64ToFloat32(j.colors) : null,
+    };
+  },
   async getAnnotation(scene, kind) {
     // Tier-prefixed ids contain `/` which Starlette decodes during routing,
     // so the route puts `kind` first and matches `scene` greedily as a path.

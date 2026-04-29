@@ -298,3 +298,70 @@ def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray, int]:
         intensity = intensity.astype(np.float32)
 
     return PointCloud(points=points, colors=colors), intensity, n_total
+
+
+def load_laz_region(
+    path: Path,
+    aabb_min: np.ndarray,
+    aabb_max: np.ndarray,
+    *,
+    is_z_up: bool,
+    offset: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Stream a LAZ and return ALL points (no stride) inside `aabb`.
+
+    The AABB is in the *loaded* frame (post Z-up→Y-up + post recenter).
+    Each chunk is transformed into that frame before the filter, so the
+    caller gets points already aligned with what the viewer is showing.
+
+    Returns (positions[Nx3 f32], colors[Nx3 f32 in 0..1] | None).
+    """
+    pos_chunks: list[np.ndarray] = []
+    col_chunks: list[np.ndarray] = []
+    has_color = True
+
+    for _hdr, chunk in _laz_chunk_iter(path, chunk_size=2_000_000):
+        x = np.asarray(chunk.x, dtype=np.float64)
+        y = np.asarray(chunk.y, dtype=np.float64)
+        z = np.asarray(chunk.z, dtype=np.float64)
+        if is_z_up:
+            lx, ly, lz = x, z, -y
+        else:
+            lx, ly, lz = x, y, z
+        lx = (lx - offset[0]).astype(np.float32)
+        ly = (ly - offset[1]).astype(np.float32)
+        lz = (lz - offset[2]).astype(np.float32)
+
+        m = ((lx >= aabb_min[0]) & (lx <= aabb_max[0]) &
+             (ly >= aabb_min[1]) & (ly <= aabb_max[1]) &
+             (lz >= aabb_min[2]) & (lz <= aabb_max[2]))
+        if not m.any():
+            continue
+
+        pos_chunks.append(np.column_stack([lx[m], ly[m], lz[m]]))
+
+        if has_color:
+            try:
+                r = np.asarray(chunk.red[m], dtype=np.uint32)
+                g = np.asarray(chunk.green[m], dtype=np.uint32)
+                b = np.asarray(chunk.blue[m], dtype=np.uint32)
+                col_chunks.append(np.column_stack([r, g, b]))
+            except (AttributeError, ValueError):
+                has_color = False
+                col_chunks.clear()
+
+    if not pos_chunks:
+        return np.zeros((0, 3), dtype=np.float32), None
+
+    positions = np.concatenate(pos_chunks).astype(np.float32)
+    colors: np.ndarray | None = None
+    if has_color and col_chunks:
+        col_arr = np.concatenate(col_chunks)
+        cmax = int(col_arr.max(initial=0))
+        if cmax > 255:
+            col_arr = (col_arr >> 8).astype(np.uint8)
+        else:
+            col_arr = col_arr.astype(np.uint8)
+        colors = (col_arr.astype(np.float32) / 255.0).astype(np.float32)
+
+    return positions, colors

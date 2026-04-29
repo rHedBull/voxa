@@ -332,6 +332,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     confirmedCuboids = null,    // [{ center, size, rotation }] — confirmed cuboids; always present (drives stats)
     hideConfirmedPoints = true, // when true, points inside any confirmedCuboid are NaN'd in the position buffer
     onLabelStats = null,        // ({ total, labeled, left }) => void — reported after each confirmed-set change
+    denseOverlay = null,        // { positions: Float32Array, colors: Float32Array | null } — full-density points to show inside the selected cuboid; takes precedence over the base cloud where they overlap
   } = props;
 
   const mountRef = useRef(null);
@@ -422,6 +423,23 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     highlightPoints.frustumCulled = false;
     highlightPoints.visible = false;
     scene.add(highlightPoints);
+
+    // Dense overlay: full-density points fetched for the AABB of the selected
+    // cuboid. Drawn on top of the base cloud so small geometry (pipes, valves)
+    // is legible even when the base is strided to ~1M for performance. Uses
+    // vertex colors from the LAZ source; a slight size bump distinguishes it
+    // visually without being garish.
+    const denseGeom = new THREE.BufferGeometry();
+    const denseMat = new THREE.PointsMaterial({
+      size: pointSize * 1.1,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: false,
+    });
+    const densePoints = new THREE.Points(denseGeom, denseMat);
+    densePoints.frustumCulled = false;
+    densePoints.visible = false;
+    scene.add(densePoints);
 
     // Gizmo anchor. Persistent Object3D the TransformControls is attached to —
     // we sync its position/rotation/scale from the selected instance, and
@@ -552,6 +570,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       pickSubs, moveSubs,
       transformAnchor, transformControls,
       highlightGeom, highlightMat, highlightPoints,
+      denseGeom, denseMat, densePoints,
     };
 
     return () => {
@@ -934,6 +953,38 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     hAttr.needsUpdate = true;
     s.highlightPoints.visible = count > 0;
   }, [highlightCuboid, cloud]);
+
+  // ── Dense overlay (full-density points around selected cuboid) ──────────
+  // Replaces the geometry on each `denseOverlay` change. We allocate fresh
+  // buffers each time (instead of a fixed cap + drawRange like the highlight
+  // overlay) because the per-region count varies wildly with cuboid size and
+  // scene density. Colors fall back to a flat tint when the LAZ has no RGB.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.denseGeom || !s.densePoints) return;
+    if (!denseOverlay || !denseOverlay.positions || denseOverlay.positions.length === 0) {
+      s.denseGeom.setDrawRange(0, 0);
+      s.densePoints.visible = false;
+      return;
+    }
+    const positions = denseOverlay.positions;
+    const n = positions.length / 3;
+    let colors = denseOverlay.colors;
+    if (!colors || colors.length !== n * 3) {
+      // Flat warm tint so the region still reads as "extra detail" without RGB.
+      colors = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        colors[i * 3]     = 0.85;
+        colors[i * 3 + 1] = 0.78;
+        colors[i * 3 + 2] = 0.55;
+      }
+    }
+    s.denseGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    s.denseGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    s.denseGeom.computeBoundingSphere();
+    s.denseGeom.setDrawRange(0, n);
+    s.densePoints.visible = true;
+  }, [denseOverlay]);
 
   // ── Mesh load/show ──────────────────────────────────────────────────────
   // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —

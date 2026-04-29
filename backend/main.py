@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from lidar_io import LabelArrays, load_annotated, load_laz
+from lidar_io import LabelArrays, load_annotated, load_laz, load_laz_region
 from point_cloud import PointCloud, load_glb, load_ply
 from scene_registry import (
     SceneSource,
@@ -123,6 +123,19 @@ class LoadResponse(BaseModel):
     is_from_prelabel: bool = False
     segment_summary: Optional[dict] = None   # { "<inst>": {class_id, n_points} }
     subsample_idx: Optional[str] = None      # b64 Int32, len==num_subsampled, maps sub row → full idx
+
+
+class LoadRegionRequest(BaseModel):
+    aabb_min: list[float]    # in loaded frame (post recenter)
+    aabb_max: list[float]
+    max_points: Optional[int] = None   # None → no cap, return everything inside
+
+
+class LoadRegionResponse(BaseModel):
+    num_points: int                   # what we returned (post-cap)
+    num_in_region_total: int          # before any cap
+    positions: str                    # b64 Float32 (xyz, recentered frame)
+    colors: Optional[str] = None      # b64 Float32 (rgb 0..1)
 
 
 class Cuboid(BaseModel):
@@ -518,6 +531,71 @@ def load_scene(req: LoadRequest):
         mesh_is_z_up=is_z_up if src.has_mesh else False,
         subsample_idx=subsample_idx_b64,
         **full_payload,
+    )
+
+
+@app.post("/api/load-region", response_model=LoadRegionResponse)
+def load_region(req: LoadRegionRequest):
+    """Return points inside an AABB at *full* density (no stride).
+
+    For LAZ scenes the file is re-streamed and filtered chunk-by-chunk in the
+    loaded frame (z-up→y-up + recenter). For PLY/GLB scenes (already loaded
+    full-density into _state) we just numpy-mask. Used by the viewer to pop
+    extra detail inside a selected cuboid without re-loading the whole scene.
+    """
+    scene_id = _state.get("scene")
+    if not scene_id:
+        raise HTTPException(400, "No scene loaded")
+    src = _resolve(scene_id)
+
+    aabb_min = np.asarray(req.aabb_min, dtype=np.float32)
+    aabb_max = np.asarray(req.aabb_max, dtype=np.float32)
+    if (aabb_max <= aabb_min).any():
+        raise HTTPException(400, "aabb_max must be > aabb_min componentwise")
+
+    # Annotated scenes annotate against the 500k–1M PLY but their per-point
+    # ML labels need to land on the *original* LAZ. When the user selects a
+    # cuboid we pop full density from the source LAZ that the PLY was sampled
+    # from — so labeling is in the dense substrate, not the navigation proxy.
+    laz_path: Optional[Path] = None
+    if src.tier in ("decimated", "raw") and src.source_format == "laz":
+        laz_path = src.source_path
+    elif src.tier == "annotated":
+        slp = src.extras.get("source_laz_path")
+        if slp:
+            laz_path = Path(slp)
+
+    if laz_path is not None:
+        offset = np.asarray(_state.get("recenter_offset") or [0.0, 0.0, 0.0], dtype=np.float64)
+        positions, colors = load_laz_region(
+            laz_path, aabb_min, aabb_max,
+            is_z_up=_scene_is_z_up(src), offset=offset,
+        )
+    else:
+        pc = _state.get("pc")
+        if pc is None:
+            raise HTTPException(400, "Scene state missing")
+        m = ((pc.points >= aabb_min) & (pc.points <= aabb_max)).all(axis=1)
+        positions = pc.points[m].astype(np.float32)
+        if pc.colors is not None:
+            colors = (pc.colors[m].astype(np.float32) / 255.0).astype(np.float32)
+        else:
+            colors = None
+
+    n_in_region = int(len(positions))
+    if req.max_points is not None and n_in_region > req.max_points:
+        rng = np.random.default_rng(7)
+        idx = rng.choice(n_in_region, size=req.max_points, replace=False)
+        idx.sort()
+        positions = positions[idx]
+        if colors is not None:
+            colors = colors[idx]
+
+    return LoadRegionResponse(
+        num_points=int(len(positions)),
+        num_in_region_total=n_in_region,
+        positions=_b64(positions),
+        colors=_b64(colors) if colors is not None else None,
     )
 
 
