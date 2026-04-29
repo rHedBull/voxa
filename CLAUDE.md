@@ -32,7 +32,7 @@ npx vitest run src/api.test.js      # single frontend test (run from ./frontend 
 - `VOXA_DATA_DIR` — overrides `./data` for scenes + annotations
 - `VOXA_LIDAR_ROOT` — root of the canonical lidar archive (default `/home/hendrik/coding/engine/data/lidar`). Adds `annotated/`, `ply_viewer/`, `laz/` scenes to the picker; set to a missing path to disable.
 - `VOXA_CONFIG` — path to a `classes.yaml` (default `config/classes.yaml`)
-- `VOXA_MAX_POINTS` — server-side subsample cap (default `300000`)
+- `VOXA_MAX_POINTS` — server-side subsample cap (default `1000000`)
 - `VOXA_RELOAD=1` — enable uvicorn `--reload` (off by default to avoid hitting the system inotify limit)
 - `VOXA_BACKEND`, `VOXA_FRONTEND_PORT` — Vite dev proxy target / port
 

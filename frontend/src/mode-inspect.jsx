@@ -6,7 +6,7 @@ import { useEffect as useEffectInspect,
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 
-export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMode, onNavModeChange }) {
+export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMode, onNavModeChange, onCameraChange }) {
   const [pointSize, setPointSize] = useStateInspect(0.012);
   const [colorMode, setColorMode] = useStateInspect('rgb');
   const [showFloor, setShowFloor] = useStateInspect(true);
@@ -110,12 +110,13 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
           showMesh={showMesh}
           meshBrightness={meshBrightness}
           onMeshLoadProgress={setMeshProgress}
+          onCameraChange={onCameraChange}
         />
 
         <div className="vp-hud-top">
           <div className="hud-group">
             <HUDChip label="Scene" value={sceneName || '—'} mono />
-            <HUDChip label="Points" value={cloud ? `${(cloud.numSubsampled / 1000).toFixed(0)}k / ${(cloud.numPoints / 1000).toFixed(0)}k` : '—'} mono />
+            <HUDChip label="Points" value={cloud ? `${(cloud.numSubsampled / 1000).toFixed(0)}k / ${(((cloud.numPointsTotal ?? cloud.numPoints)) / 1000).toFixed(0)}k` : '—'} mono />
             {stats && <HUDChip label="Extent" value={`${stats.ext}×${stats.dep}×${stats.hgt}m`} mono />}
           </div>
           <div className="hud-group">
@@ -136,7 +137,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
             <div className="panel-body">
               <div className="kv"><span>name</span><b>{sceneName || '—'}</b></div>
               {cloud && <>
-                <div className="kv"><span>points</span><b className="mono">{cloud.numPoints.toLocaleString()}</b></div>
+                <div className="kv"><span>points</span><b className="mono">{(cloud.numPointsTotal ?? cloud.numPoints).toLocaleString()}{cloud.numPointsTotal ? ` (loaded ${cloud.numPoints.toLocaleString()})` : ''}</b></div>
                 <div className="kv"><span>shown</span><b className="mono">{cloud.numSubsampled.toLocaleString()}</b></div>
                 <div className="kv"><span>x-min/max</span><b className="mono">{cloud.bbox.min[0].toFixed(2)}/{cloud.bbox.max[0].toFixed(2)}</b></div>
                 <div className="kv"><span>y-min/max</span><b className="mono">{cloud.bbox.min[1].toFixed(2)}/{cloud.bbox.max[1].toFixed(2)}</b></div>

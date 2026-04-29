@@ -16,7 +16,7 @@ function formatPointCount(n) {
   return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
 }
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -33,6 +33,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // viewport (NaN'd in the position buffer). Default on so the labeling
   // workflow naturally reveals what's left to label.
   const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
+  const [sideRCollapsed, setSideRCollapsed] = useStateLabel(() => {
+    try { return localStorage.getItem('voxa.label.sideRCollapsed') === '1'; }
+    catch { return false; }
+  });
+  useEffectLabel(() => {
+    try { localStorage.setItem('voxa.label.sideRCollapsed', sideRCollapsed ? '1' : '0'); }
+    catch { /* quota / private mode */ }
+  }, [sideRCollapsed]);
 
   const diffMask = useMemoLabel(() => {
     if (!showDiff || !segState) return null;
@@ -476,6 +484,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           confirmedCuboids={confirmedCuboids}
           hideConfirmedPoints={hideConfirmed}
           onLabelStats={setLabelStats}
+          onCameraChange={onCameraChange}
         />
 
         <div className="vp-hud-top">
@@ -489,6 +498,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <div className="hud-group">
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
+            <button className="hud-chip-btn"
+              onClick={() => window.open(window.location.pathname + '?mesh=1', 'voxa-mesh',
+                'popup=yes,width=960,height=720')}
+              disabled={!hasMesh}
+              title={hasMesh
+                ? 'Open synced mesh-only companion window'
+                : 'No mesh available for this scene'}>
+              ▦ Mesh window
+            </button>
           </div>
         </div>
 
@@ -551,8 +569,21 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       </div>
 
       {/* Right: filterable instance list + slim inspector */}
-      <aside className="side-r">
+      <aside className={'side-r' + (sideRCollapsed ? ' collapsed' : '')}>
+        {sideRCollapsed ? (
+          <button className="side-collapse-handle"
+            onClick={() => setSideRCollapsed(false)}
+            title={`Show instances panel (${instances.length})`}>
+            <span className="side-collapse-chev">‹</span>
+            <span className="side-collapse-label">Instances</span>
+            <span className="badge-soft">{instances.length}</span>
+          </button>
+        ) : (
+        <>
         <div className="side-hd">
+          <button className="side-collapse-btn"
+            onClick={() => setSideRCollapsed(true)}
+            title="Collapse panel">›</button>
           <span>Instances</span>
           <div className="side-hd-actions">
             {confirmedCount > 0 && (
@@ -672,6 +703,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             );
           })}
         </div>
+        </>
+        )}
       </aside>
     </div>
   );

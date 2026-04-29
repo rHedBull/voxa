@@ -216,12 +216,14 @@ def _laz_chunk_iter(path: Path, chunk_size: int = 1_000_000):
         reader.close()
 
 
-def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray]:
+def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray, int]:
     """Stride-sample a LAS/LAZ file down to ~max_points.
 
-    Returns (PointCloud, intensity[N]) where intensity is float32 in 0..1.
-    The point count returned will be slightly less than max_points because
-    stride is computed from the header total.
+    Returns (PointCloud, intensity[N], n_source_total) where intensity is
+    float32 in 0..1 and n_source_total is the file's true point count (from
+    the LAS header, before any subsampling). The PointCloud size will be
+    slightly less than max_points because stride is computed from the header
+    total.
     """
     import laspy
 
@@ -295,4 +297,4 @@ def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray]:
             intensity = intensity / imax
         intensity = intensity.astype(np.float32)
 
-    return PointCloud(points=points, colors=colors), intensity
+    return PointCloud(points=points, colors=colors), intensity, n_total

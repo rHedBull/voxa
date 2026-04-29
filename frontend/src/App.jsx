@@ -9,6 +9,8 @@ import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
 import { useTweaks, TweaksPanel, TweakSection, TweakRadio } from './tweaks-panel.jsx';
+import { MeshCompanion } from './mesh-companion.jsx';
+import { openChannel, postState, postCamera, isMeshCompanion } from './mesh-sync.js';
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "dark",
@@ -47,6 +49,14 @@ const MODE_META = {
 };
 
 export default function App() {
+  // The mesh companion is the same bundle, served at `/?mesh=1`. Branching
+  // here keeps it cheap (no separate Vite entry) and lets the companion reuse
+  // the existing Viewer + CSS.
+  if (isMeshCompanion()) return <MeshCompanion />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const [t, setTweak] = useTweaks(INITIAL_TWEAKS);
   const viewerRef = useRefApp();
   const prelabelRef = useRefApp({ classFull: null, instanceFull: null });
@@ -95,6 +105,58 @@ export default function App() {
   useEffectApp(() => {
     try { localStorage.setItem('voxa.mode', t.mode); } catch { /* quota / private mode */ }
   }, [t.mode]);
+
+  // ── Mesh companion sync ─────────────────────────────────────────────────
+  // BroadcastChannel link to any open `?mesh=1` window. Main publishes the
+  // scene-shape state (mesh URL, cuboids, theme) and the live camera; companion
+  // publishes only its camera back. The viewer's setFromState already silences
+  // its onChange while applying, so the loop terminates after one hop.
+  const meshChannelRef = useRefApp(null);
+  const themeBg = t.theme === 'light' ? '#f5f5f5' : '#0a0b0e';
+  const themeFloor = t.theme === 'light' ? '#e7e8ec' : '#15171c';
+  useEffectApp(() => {
+    const ch = openChannel();
+    meshChannelRef.current = ch;
+    if (!ch) return;
+    ch.onmessage = (ev) => {
+      const m = ev.data;
+      if (!m || typeof m !== 'object') return;
+      if (m.type === 'camera' && m.camera) {
+        viewerRef.current?.setCameraState(m.camera);
+      } else if (m.type === 'request-state') {
+        // Companion just opened — re-broadcast latest. We rely on the next
+        // effect's broadcast to fire on the next render cycle, so simulate
+        // an explicit broadcast here too.
+        meshBroadcastRef.current?.();
+      }
+    };
+    return () => { ch.close(); meshChannelRef.current = null; };
+    // eslint-disable-next-line
+  }, []);
+
+  // Latest broadcast closure, kept in a ref so the channel-open effect (which
+  // runs once) can call the freshest version on demand.
+  const meshBroadcastRef = useRefApp(null);
+  useEffectApp(() => {
+    meshBroadcastRef.current = () => {
+      const ch = meshChannelRef.current;
+      if (!ch || !cloud) return;
+      postState(ch, {
+        scene: activeScene,
+        meshUrl: cloud.meshUrl ? new URL(cloud.meshUrl, window.location.origin).toString() : null,
+        meshIsZUp: !!cloud.meshIsZUp,
+        instances: gtInstances,
+        bbox: cloud.bbox || null,
+        background: themeBg,
+        floorColor: themeFloor,
+      });
+    };
+    meshBroadcastRef.current();
+  }, [cloud, gtInstances, activeScene, themeBg, themeFloor]);
+
+  const onMainCameraChange = useCallbackApp((cam) => {
+    postCamera(meshChannelRef.current, cam);
+  }, []);
 
   // Load cloud + annotations whenever the active scene or mode changes.
   useEffectApp(() => {
@@ -310,7 +372,7 @@ export default function App() {
             : loadError
               ? <><span className="dot" style={{ background: 'oklch(0.65 0.18 25)' }} /> {loadError}</>
               : cloud
-                ? <><span className="dot" /> {cloud.numSubsampled.toLocaleString()} pts loaded</>
+                ? <><span className="dot" /> {cloud.numSubsampled.toLocaleString()} / {(cloud.numPointsTotal ?? cloud.numPoints).toLocaleString()} pts</>
                 : <><span className="dot" style={{ background: 'oklch(0.6 0.02 250)' }} /> No scene</>
           }
         </div>
@@ -345,7 +407,8 @@ export default function App() {
         {t.mode === 'inspect' && (
           <InspectMode key="i" cloud={cloud} loading={loading} theme={theme}
             viewerRef={viewerRef} sceneName={activeScene}
-            navMode={navMode} onNavModeChange={setNavMode} />
+            navMode={navMode} onNavModeChange={setNavMode}
+            onCameraChange={onMainCameraChange} />
         )}
         {t.mode === 'label' && (
           <LabelMode key="l" cloud={cloud} theme={theme} viewerRef={viewerRef}
@@ -354,7 +417,9 @@ export default function App() {
             navMode={navMode} onNavModeChange={setNavMode}
             onChange={onCuboidChange} onSave={saveGt}
             segState={segState} setSegState={setSegState}
-            prelabelRef={prelabelRef} />
+            prelabelRef={prelabelRef}
+            onCameraChange={onMainCameraChange}
+            hasMesh={!!cloud?.meshUrl} />
         )}
         {t.mode === 'compare' && (
           <CompareMode key="c" cloud={cloud} theme={theme}

@@ -125,10 +125,11 @@ def test_load_laz_stride_subsamples_to_target(tmp_path):
     p = tmp_path / "tiny.las"
     _write_tiny_las(p, n=1000)
 
-    pc, intensity = load_laz(p, max_points=100)
+    pc, intensity, n_total = load_laz(p, max_points=100)
 
     # stride = ceil(1000 / 100) = 10 → exactly 100 sampled points.
     assert len(pc) == 100
+    assert n_total == 1000
     assert intensity.shape == (100,)
     assert intensity.dtype == np.float32
     assert intensity.min() >= 0.0 and intensity.max() <= 1.0
@@ -138,7 +139,7 @@ def test_load_laz_intensity_normalized_to_unit_range(tmp_path):
     p = tmp_path / "tiny.las"
     _write_tiny_las(p, n=200)
 
-    _pc, intensity = load_laz(p, max_points=200)
+    _pc, intensity, _n_total = load_laz(p, max_points=200)
     # Intensity must be 0..1 regardless of LAS raw uint16 range.
     assert float(intensity.max()) == pytest.approx(1.0, abs=1e-6)
 
@@ -147,9 +148,10 @@ def test_load_laz_smaller_than_max_returns_all(tmp_path):
     p = tmp_path / "tiny.las"
     _write_tiny_las(p, n=50)
 
-    pc, _intensity = load_laz(p, max_points=300_000)
+    pc, _intensity, n_total = load_laz(p, max_points=300_000)
     # stride collapses to 1; we keep every point.
     assert len(pc) == 50
+    assert n_total == 50
 
 
 def test_load_annotated_falls_through_to_prelabel(tmp_path):

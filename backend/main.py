@@ -45,7 +45,7 @@ SCENES_DIR = DATA_DIR / "scenes"
 ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
 FRONTEND_DIST = ROOT / "dist"
-MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "300000"))
+MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "1000000"))
 MAX_LABEL_POINTS = int(os.environ.get("VOXA_MAX_LABEL_POINTS", "5000000"))
 LIDAR_ROOT = load_lidar_root_from_env()
 
@@ -99,7 +99,8 @@ class LoadRequest(BaseModel):
 
 class LoadResponse(BaseModel):
     scene: str                             # tier-prefixed canonical id
-    num_points: int
+    num_points: int                        # in-memory full-resolution count
+    num_points_total: Optional[int] = None # source file truth (e.g. LAZ header) when > num_points
     num_subsampled: int
     bbox_min: list[float]
     bbox_max: list[float]
@@ -399,31 +400,36 @@ def _load_scene_source(src: SceneSource, max_points: int):
     """Dispatch to the right loader.
 
     Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances,
-             n_labeled_points, is_from_prelabel).
+             n_labeled_points, is_from_prelabel, n_source_total).
+
+    `n_source_total` is the source file's true point count when it differs
+    from the loaded count (LAZ stride-samples at read time); None when the
+    loaded count already matches the on-disk count.
     """
     if src.tier == "annotated":
         a = load_annotated(src, LIDAR_ROOT)
         n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
         palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
         return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
-                n_labeled, bool(a.is_from_prelabel))
+                n_labeled, bool(a.is_from_prelabel), None)
 
     if src.tier == "raw":
-        pc, intensity = load_laz(src.source_path, max_points=max(max_points, 50_000))
-        return (pc, None, intensity, None, None, None, None, None, False)
+        pc, intensity, n_source_total = load_laz(src.source_path, max_points=max(max_points, 50_000))
+        return (pc, None, intensity, None, None, None, None, None, False, n_source_total)
 
     # legacy + decimated → reuse the existing loaders
     if src.source_format == "glb":
         pc, mesh = load_glb(src.source_path, num_samples=max(max_points, 50_000))
-        return (pc, mesh, None, None, None, None, None, None, False)
+        return (pc, mesh, None, None, None, None, None, None, False, None)
     pc, _ = load_ply(src.source_path)
-    return (pc, None, None, None, None, None, None, None, False)
+    return (pc, None, None, None, None, None, None, None, False, None)
 
 
 @app.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
     src = _resolve(req.name)
-    pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled, is_from_prelabel = (
+    (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled,
+     is_from_prelabel, n_source_total) = (
         _load_scene_source(src, req.max_points)
     )
 
@@ -494,6 +500,7 @@ def load_scene(req: LoadRequest):
     return LoadResponse(
         scene=src.scene_id,
         num_points=len(pc),
+        num_points_total=n_source_total if (n_source_total is not None and n_source_total > len(pc)) else None,
         num_subsampled=len(sub),
         bbox_min=bbox_min,
         bbox_max=bbox_max,

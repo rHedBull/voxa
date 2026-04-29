@@ -4,6 +4,7 @@ export function decodeLoadResponse(j) {
   return {
     scene: j.scene,
     numPoints: j.num_points,
+    numPointsTotal: j.num_points_total ?? null,
     numSubsampled: j.num_subsampled,
     bbox: { min: j.bbox_min, max: j.bbox_max },
     positions: b64ToFloat32(j.positions),
