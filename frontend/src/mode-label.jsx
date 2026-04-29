@@ -9,6 +9,13 @@ import { VoxaAPI, newId } from './api.js';
 import { SegmentToolStrip, PickTool, BrushTool } from './segment-tools.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 
+// "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
+function formatPointCount(n) {
+  if (n < 1000) return String(n);
+  if (n < 1e6) return `${(n / 1e3).toFixed(n < 10000 ? 1 : 0)}k`;
+  return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
+}
+
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
@@ -95,8 +102,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     [instances],
   );
 
-  const hideCuboids = useMemoLabel(() => {
-    if (!hideConfirmed || !confirmedKey) return [];
+  // Always populated when there are confirmed instances, regardless of the
+  // hide toggle. The Viewer uses it to compute "points labeled / left" stats
+  // as well as to optionally NaN positions.
+  const confirmedCuboids = useMemoLabel(() => {
+    if (!confirmedKey) return [];
     return instances
       .filter((i) => i.confirmed)
       .map((i) => ({
@@ -106,7 +116,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       }));
     // confirmedKey transitively covers `instances`; eslint can't see that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [confirmedKey, hideConfirmed]);
+  }, [confirmedKey]);
+
+  // Stats from Viewer's confirmed-mask pass: how many points fall inside any
+  // confirmed cuboid (unique), regardless of show/hide toggle.
+  const [labelStats, setLabelStats] = useStateLabel({ total: 0, labeled: 0, left: 0 });
 
   const filteredInstances = useMemoLabel(() => {
     const q = instFilter.trim().toLowerCase();
@@ -455,20 +469,27 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           transformMode={activeTool === 'cuboid' ? transformMode : null}
           onCuboidTransform={onCuboidTransform}
           highlightCuboid={highlightCuboid}
-          hideCuboids={hideCuboids}
+          confirmedCuboids={confirmedCuboids}
+          hideConfirmedPoints={hideConfirmed}
+          onLabelStats={setLabelStats}
         />
 
         <div className="vp-hud-top">
           <div className="hud-group">
-            <HUDChip label="Scene" value={sceneName || '—'} mono />
-            <HUDChip label="Annotations" value={instances.length} mono />
-            <HUDChip label="Active class" value={activeClassDef?.label || '—'} accent />
+            {labelStats.total > 0 && (
+              <HUDChip label="Points left"
+                value={`${formatPointCount(labelStats.left)} / ${formatPointCount(labelStats.total)}`}
+                mono />
+            )}
           </div>
           <div className="hud-group">
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
-            <HelpButton sections={helpSections} />
           </div>
+        </div>
+
+        <div className="vp-help-corner">
+          <HelpButton sections={helpSections} placement="up" />
         </div>
 
         <ViewportToolbar side="left">
@@ -515,27 +536,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <ToolButton mini icon="↺" label="Reset cam" onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>
 
-        <div className="vp-hud-bottom">
-          <div className="kbd-strip">
-            {navMode === 'walk' ? (
-              <>
-                <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
-                <span><kbd>Q</kbd>/<kbd>E</kbd> down/up</span>
-                <span><kbd>Drag</kbd> look</span>
-                <span style={{ opacity: 0.5 }}>(toggle off walk to use label hotkeys)</span>
-              </>
-            ) : (
-              <>
-                <span><kbd>A</kbd> add cuboid</span>
-                {classes.length > 0 && <span><kbd>{classes[0].hotkey}</kbd>–<kbd>{classes[classes.length - 1].hotkey}</kbd> assign class</span>}
-                <span><kbd>G</kbd>/<kbd>R</kbd>/<kbd>Y</kbd> move/rotate/scale</span>
-                <span><kbd>F</kbd> frame selection</span>
-                <span><kbd>⌫</kbd> delete</span>
-                <span><kbd>⌘S</kbd> save</span>
-              </>
-            )}
-          </div>
-        </div>
       </div>
 
       {/* Right: filterable instance list + slim inspector */}

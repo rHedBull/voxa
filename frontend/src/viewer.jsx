@@ -329,7 +329,9 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     transformMode = null,       // 'translate' | 'rotate' | 'scale' | null — gizmo for selected cuboid
     onCuboidTransform = null,   // (id, { center, size, rotation }) => void; called on gizmo drag
     highlightCuboid = null,     // { center, size, rotation, color } — points inside this oriented box are tinted
-    hideCuboids = null,         // [{ center, size, rotation }] — points inside any cuboid have NaN'd positions
+    confirmedCuboids = null,    // [{ center, size, rotation }] — confirmed cuboids; always present (drives stats)
+    hideConfirmedPoints = true, // when true, points inside any confirmedCuboid are NaN'd in the position buffer
+    onLabelStats = null,        // ({ total, labeled, left }) => void — reported after each confirmed-set change
   } = props;
 
   const mountRef = useRef(null);
@@ -342,6 +344,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
   // mount, but the callback identity changes per render.
   const onCuboidTransformRef = useRef(onCuboidTransform);
   onCuboidTransformRef.current = onCuboidTransform;
+  // Latest onLabelStats; read inside the hide-effect without forcing a re-run
+  // when only the callback identity changes.
+  const onLabelStatsRef = useRef(onLabelStats);
+  onLabelStatsRef.current = onLabelStats;
   // ID of the cuboid the gizmo is currently attached to. Read inside the
   // gizmo's objectChange listener so we know which instance to patch.
   const gizmoTargetIdRef = useRef(null);
@@ -678,12 +684,12 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.axes.visible = showAxes;
   }, [pointSize, background, floorColor, showFloor, showAxes]);
 
-  // ── Hide-cuboid positions ───────────────────────────────────────────────
-  // For each cuboid in `hideCuboids`, write NaN over the positions of any
-  // points that fall inside. The GPU rasterizer drops NaN-position points,
-  // so they vanish. The raycaster's distance test on NaN is also never true,
-  // so hidden points are not pickable. On re-runs we always restore from
-  // cloud.positions first so toggling Show/Hide is a clean reset.
+  // ── Confirmed-cuboid mask + hide ────────────────────────────────────────
+  // Build a per-point mask of points inside ANY confirmed cuboid (unique
+  // count regardless of overlap). When `hideConfirmedPoints` is true, NaN
+  // those positions so they vanish from rendering AND raycasting. Always
+  // emit { total, labeled, left } via onLabelStats so the HUD can show the
+  // unlabeled count even when hide is toggled off.
   useEffect(() => {
     const s = stateRef.current;
     if (!s.pointsGeom || !cloud) return;
@@ -691,10 +697,13 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     if (!posAttr) return;
     const out = posAttr.array;
     out.set(cloud.positions);
+    const N = out.length;
+    const numPts = N / 3;
 
-    if (hideCuboids && hideCuboids.length > 0) {
-      const N = out.length;
-      for (const cub of hideCuboids) {
+    let labeled = 0;
+    if (confirmedCuboids && confirmedCuboids.length > 0) {
+      const mask = new Uint8Array(numPts);
+      for (const cub of confirmedCuboids) {
         const cx = cub.center[0], cy = cub.center[1], cz = cub.center[2];
         const hx = cub.size[0] / 2, hy = cub.size[1] / 2, hz = cub.size[2] / 2;
         const rx = cub.rotation?.[0] || 0;
@@ -702,10 +711,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         const rz = cub.rotation?.[2] || 0;
         const isAA = rx === 0 && ry === 0 && rz === 0;
         if (isAA) {
-          for (let p = 0; p < N; p += 3) {
+          for (let p = 0, i = 0; p < N; p += 3, i++) {
+            if (mask[i]) continue;
             const dx = out[p] - cx, dy = out[p + 1] - cy, dz = out[p + 2] - cz;
             if (dx > -hx && dx < hx && dy > -hy && dy < hy && dz > -hz && dz < hz) {
-              out[p] = NaN; out[p + 1] = NaN; out[p + 2] = NaN;
+              mask[i] = 1;
             }
           }
         } else {
@@ -716,20 +726,32 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
           const e0 = e[0], e1 = e[1], e2 = e[2];
           const e4 = e[4], e5 = e[5], e6 = e[6];
           const e8 = e[8], e9 = e[9], e10 = e[10];
-          for (let p = 0; p < N; p += 3) {
+          for (let p = 0, i = 0; p < N; p += 3, i++) {
+            if (mask[i]) continue;
             const dx = out[p] - cx, dy = out[p + 1] - cy, dz = out[p + 2] - cz;
             const lx = e0 * dx + e4 * dy + e8 * dz;
             const ly = e1 * dx + e5 * dy + e9 * dz;
             const lz = e2 * dx + e6 * dy + e10 * dz;
             if (lx > -hx && lx < hx && ly > -hy && ly < hy && lz > -hz && lz < hz) {
-              out[p] = NaN; out[p + 1] = NaN; out[p + 2] = NaN;
+              mask[i] = 1;
             }
           }
         }
       }
+      if (hideConfirmedPoints) {
+        for (let p = 0, i = 0; p < N; p += 3, i++) {
+          if (mask[i]) {
+            labeled++;
+            out[p] = NaN; out[p + 1] = NaN; out[p + 2] = NaN;
+          }
+        }
+      } else {
+        for (let i = 0; i < numPts; i++) if (mask[i]) labeled++;
+      }
     }
     posAttr.needsUpdate = true;
-  }, [hideCuboids, cloud]);
+    onLabelStatsRef.current?.({ total: numPts, labeled, left: numPts - labeled });
+  }, [confirmedCuboids, hideConfirmedPoints, cloud]);
 
   // ── Per-point color recompute ───────────────────────────────────────────
   useEffect(() => {

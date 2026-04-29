@@ -45,7 +45,7 @@ export function CameraPresets({ onPreset }) {
 //   { title: string, items: [{ keys: string[], desc: string }, ...] }
 // The popover toggles open on click or `?`, closes on Esc or outside-click.
 // Hosts pass a sections array tailored to the active mode.
-export function HelpButton({ sections, hotkey = '?' }) {
+export function HelpButton({ sections, hotkey = '?', placement = 'down' }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
 
@@ -81,7 +81,7 @@ export function HelpButton({ sections, hotkey = '?' }) {
         aria-label="Keyboard shortcuts"
       >?</button>
       {open && (
-        <div className="help-pop" role="dialog">
+        <div className={'help-pop' + (placement === 'up' ? ' up' : '')} role="dialog">
           <div className="help-hd">
             <span>Shortcuts</span>
             <button className="help-close" onClick={() => setOpen(false)}
