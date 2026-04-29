@@ -541,7 +541,10 @@ def get_mesh(tier: str, name: str):
                         filename=f"{name}.glb")
 
 
-@app.get("/api/annotations/{scene}/{kind}", response_model=AnnotationDoc)
+# `kind` comes first so `scene:path` can greedily match tier-prefixed ids
+# like `annotated/smart_ais` (Starlette decodes `%2F` back to `/` during
+# routing, so a `{scene}/{kind}` template would split such ids).
+@app.get("/api/annotations/{kind}/{scene:path}", response_model=AnnotationDoc)
 def get_annotation(scene: str, kind: str):
     p = _annotation_path(scene, kind)
     if not p.exists():
@@ -556,7 +559,7 @@ def get_annotation(scene: str, kind: str):
     )
 
 
-@app.put("/api/annotations/{scene}/{kind}")
+@app.put("/api/annotations/{kind}/{scene:path}")
 def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest):
     p = _annotation_path(scene, kind)
     p.parent.mkdir(parents=True, exist_ok=True)

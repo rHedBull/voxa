@@ -61,11 +61,11 @@ def test_annotation_roundtrip_preserves_all_fields(client):
     }
     doc = {"scene": scene, "kind": "gt", "instances": [inst], "meta": {"note": "hello"}}
 
-    put = client.put(f"/api/annotations/{scene}/gt", json=doc)
+    put = client.put(f"/api/annotations/gt/{scene}", json=doc)
     assert put.status_code == 200
     assert put.json()["count"] == 1
 
-    body = client.get(f"/api/annotations/{scene}/gt").json()
+    body = client.get(f"/api/annotations/gt/{scene}").json()
     assert body["scene"] == scene
     assert body["meta"] == {"note": "hello"}
     assert len(body["instances"]) == 1
@@ -75,9 +75,20 @@ def test_annotation_roundtrip_preserves_all_fields(client):
 
 
 def test_get_annotation_missing_returns_empty(client):
-    r = client.get("/api/annotations/never-saved/gt")
+    r = client.get("/api/annotations/gt/never-saved")
     assert r.status_code == 200
     assert r.json()["instances"] == []
+
+
+def test_annotations_round_trip_tier_prefixed_scene(client):
+    """Tier-prefixed ids contain `/`; the route puts kind first so scene:path
+    can match greedily."""
+    scene = "annotated/smart_ais"
+    doc = {"scene": scene, "kind": "gt", "instances": [], "meta": {}}
+    put = client.put(f"/api/annotations/gt/{scene}", json=doc)
+    assert put.status_code == 200
+    body = client.get(f"/api/annotations/gt/{scene}").json()
+    assert body["scene"] == scene
 
 
 def test_compare_perfect_match(client):
@@ -86,11 +97,11 @@ def test_compare_perfect_match(client):
     pred = _cuboid("inst-pr-1")  # same center/size/cls → IoU = 1.0
 
     client.put(
-        f"/api/annotations/{scene}/gt",
+        f"/api/annotations/gt/{scene}",
         json={"scene": scene, "kind": "gt", "instances": [inst], "meta": {}},
     )
     client.put(
-        f"/api/annotations/{scene}/pred",
+        f"/api/annotations/pred/{scene}",
         json={"scene": scene, "kind": "pred", "instances": [pred], "meta": {}},
     )
 
@@ -110,11 +121,11 @@ def test_compare_disjoint_is_fp_fn(client):
     pr = _cuboid("inst-pr-1", center=(10, 10, 10))  # no overlap
 
     client.put(
-        f"/api/annotations/{scene}/gt",
+        f"/api/annotations/gt/{scene}",
         json={"scene": scene, "kind": "gt", "instances": [gt], "meta": {}},
     )
     client.put(
-        f"/api/annotations/{scene}/pred",
+        f"/api/annotations/pred/{scene}",
         json={"scene": scene, "kind": "pred", "instances": [pr], "meta": {}},
     )
 

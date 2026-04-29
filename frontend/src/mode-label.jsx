@@ -16,7 +16,7 @@ function formatPointCount(n) {
   return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
 }
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, sceneName, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -69,6 +69,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const selected = instances.find((i) => i.id === selectedId);
   const activeClassDef = classes.find((c) => c.id === activeClass);
+  // Confirmed instances are read-only: no gizmo, no auto-fit, no rename, no
+  // class change, no delete. The user reopens (toggles confirmed off) first.
+  const isLocked = !!selected?.confirmed;
 
   // Pass-through for the viewer to highlight points inside the currently
   // selected cuboid. Updates as the box is dragged because `selected` is
@@ -371,9 +374,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
         setActiveClass(cls.id);
-        if (selected) updateSelected({ cls: cls.id, color: cls.color });
+        // Class change is an edit — block it for confirmed instances.
+        if (selected && !isLocked) updateSelected({ cls: cls.id, color: cls.color });
       } else if (e.key === 'Backspace' || e.key === 'Delete') {
-        if (selected) { e.preventDefault(); deleteSelected(); }
+        if (selected && !isLocked) { e.preventDefault(); deleteSelected(); }
       } else if (e.key === 'a' || e.key === 'A') {
         addCuboid();
       } else if (e.key === 'f' || e.key === 'F') {
@@ -383,18 +387,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             Math.max(...selected.size) / 2,
           );
         }
-      } else if (e.key === 'g' || e.key === 'G') {
+      } else if (!isLocked && (e.key === 'g' || e.key === 'G')) {
         setTransformMode('translate');
-      } else if (e.key === 'r' || e.key === 'R') {
+      } else if (!isLocked && (e.key === 'r' || e.key === 'R')) {
         setTransformMode('rotate');
-      } else if (e.key === 'y' || e.key === 'Y') {
+      } else if (!isLocked && (e.key === 'y' || e.key === 'Y')) {
         setTransformMode('scale');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, instances, activeTool, navMode]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode]);
 
   return (
     <div className="mode-root label">
@@ -466,7 +470,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           colorMode={colorMode}
           diffMask={diffMask}
           showDiff={showDiff}
-          transformMode={activeTool === 'cuboid' ? transformMode : null}
+          transformMode={activeTool === 'cuboid' && !isLocked ? transformMode : null}
           onCuboidTransform={onCuboidTransform}
           highlightCuboid={highlightCuboid}
           confirmedCuboids={confirmedCuboids}
@@ -505,22 +509,30 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           )}
           {activeTool === 'cuboid' && (
             <>
-              <ToolButton mini icon="⇄" label="Move (G)"
-                onClick={() => setTransformMode('translate')}
-                active={transformMode === 'translate'} />
-              <ToolButton mini icon="↻" label="Rotate (R)"
-                onClick={() => setTransformMode('rotate')}
-                active={transformMode === 'rotate'} />
-              <ToolButton mini icon="⇲" label="Scale (Y)"
-                onClick={() => setTransformMode('scale')}
-                active={transformMode === 'scale'} />
+              {!isLocked && (
+                <>
+                  <ToolButton mini icon="⇄" label="Move (G)"
+                    onClick={() => setTransformMode('translate')}
+                    active={transformMode === 'translate'} />
+                  <ToolButton mini icon="↻" label="Rotate (R)"
+                    onClick={() => setTransformMode('rotate')}
+                    active={transformMode === 'rotate'} />
+                  <ToolButton mini icon="⇲" label="Scale (Y)"
+                    onClick={() => setTransformMode('scale')}
+                    active={transformMode === 'scale'} />
+                </>
+              )}
               {selected && (
                 <>
                   <div className="tool-sep" />
                   <ToolButton mini icon="◎" label="Focus selection (F)"
                     onClick={() => focusInstance(selected)} />
-                  <ToolButton mini icon="✦" label="Auto-fit selection" onClick={autoFitSelected} />
-                  <ToolButton mini icon="⌫" label="Delete selection" onClick={deleteSelected} />
+                  {!isLocked && (
+                    <>
+                      <ToolButton mini icon="✦" label="Auto-fit selection" onClick={autoFitSelected} />
+                      <ToolButton mini icon="⌫" label="Delete selection" onClick={deleteSelected} />
+                    </>
+                  )}
                 </>
               )}
             </>
@@ -582,8 +594,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             return (
               <div key={inst.id} className={'inst-item' + (isEditing ? ' editing' : '')}>
                 <div className={'inst-row' + (isSel ? ' selected' : '') + (inst.confirmed ? ' confirmed' : '')}
-                  onDoubleClick={() => setSelectedId(inst.id)}
-                  title="Double-click to select (shows bounding box)">
+                  onDoubleClick={() => setSelectedId(isSel ? null : inst.id)}
+                  title={isSel ? 'Double-click to deselect' : 'Double-click to select (shows bounding box)'}>
                   <span className="inst-dot" style={{ background: cls?.color || inst.color }} />
                   <div className="inst-text">
                     <b>{inst.label}</b>
@@ -615,11 +627,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 </div>
                 {isEditing && (
                   <div className="inst-edit-panel">
+                    {inst.confirmed && (
+                      <div className="locked-banner">🔒 Confirmed — Reopen to edit</div>
+                    )}
                     <div className="ins-row">
                       <label>Name</label>
                       <input className="ins-input"
                         value={inst.label}
                         autoFocus
+                        disabled={inst.confirmed}
                         onChange={(e) => updateInstance(inst.id, { label: e.target.value })} />
                     </div>
                     <div className="ins-row">
@@ -628,6 +644,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                         {classes.map((c) => (
                           <button key={c.id}
                             className={'class-pill' + (c.id === inst.cls ? ' active' : '')}
+                            disabled={inst.confirmed}
                             onClick={() => updateInstance(inst.id, { cls: c.id, color: c.color })}
                             title={`${c.label}${c.hotkey ? `  (${c.hotkey})` : ''}`}>
                             <span className="class-swatch" style={{ background: c.color }} />
@@ -638,12 +655,16 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                     </div>
                     <div className="ins-actions">
                       <button className="ghost-btn" onClick={() => focusInstance(inst)}>◎ Focus</button>
-                      <button className="ghost-btn" onClick={() => autoFitInstance(inst)}>↻ Auto-fit</button>
+                      {!inst.confirmed && (
+                        <button className="ghost-btn" onClick={() => autoFitInstance(inst)}>↻ Auto-fit</button>
+                      )}
                       <button className="ghost-btn" onClick={() => toggleConfirm(inst.id)}
                         title={inst.confirmed ? 'Reopen' : 'Confirm (Ctrl+Enter)'}>
                         {inst.confirmed ? '✓ Reopen' : '✓ Confirm'}
                       </button>
-                      <button className="ghost-btn danger" onClick={() => deleteInstance(inst.id)}>Delete</button>
+                      {!inst.confirmed && (
+                        <button className="ghost-btn danger" onClick={() => deleteInstance(inst.id)}>Delete</button>
+                      )}
                     </div>
                   </div>
                 )}

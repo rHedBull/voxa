@@ -15,6 +15,19 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "mode": "inspect"
 }/*EDITMODE-END*/;
 
+// Pull persisted overrides at module-load so the first paint already shows
+// the right mode — avoids a flash from default → restored. Only `mode` is
+// browser-persisted; `theme` lives in the on-disk EDITMODE block.
+const INITIAL_TWEAKS = (() => {
+  try {
+    const m = localStorage.getItem('voxa.mode');
+    if (m && ['inspect', 'label', 'compare'].includes(m)) {
+      return { ...TWEAK_DEFAULTS, mode: m };
+    }
+  } catch { /* private mode / no localStorage */ }
+  return TWEAK_DEFAULTS;
+})();
+
 const MODE_META = {
   inspect: {
     label: 'Inspect',
@@ -34,12 +47,16 @@ const MODE_META = {
 };
 
 export default function App() {
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [t, setTweak] = useTweaks(INITIAL_TWEAKS);
   const viewerRef = useRefApp();
   const prelabelRef = useRefApp({ classFull: null, instanceFull: null });
 
   const [scenes, setScenes] = useStateApp([]);
-  const [activeScene, setActiveScene] = useStateApp(null);
+  // Lazy-init from localStorage so refresh keeps you on the scene you were
+  // working on. Validated against the scenes list once it loads.
+  const [activeScene, setActiveScene] = useStateApp(() => {
+    try { return localStorage.getItem('voxa.activeScene') || null; } catch { return null; }
+  });
   const [cloud, setCloud] = useStateApp(null);
   const [loading, setLoading] = useStateApp(false);
   const [loadError, setLoadError] = useStateApp(null);
@@ -54,15 +71,30 @@ export default function App() {
   // Label preserves whether the user was orbiting or walking.
   const [navMode, setNavMode] = useStateApp('orbit');
 
-  // Initial config + scene list.
+  // Initial config + scene list. If a persisted scene id no longer exists in
+  // the list, fall back to the first scene rather than firing a 404 load.
   useEffectApp(() => {
     VoxaAPI.config().then((c) => setClasses(c.classes || []));
     VoxaAPI.scenes().then((s) => {
       setScenes(s);
-      if (s.length && !activeScene) setActiveScene(s[0].id || s[0].name);
+      setActiveScene((cur) => {
+        if (cur && s.some((x) => (x.id || x.name) === cur)) return cur;
+        return s[0]?.id || s[0]?.name || null;
+      });
     });
     // eslint-disable-next-line
   }, []);
+
+  // Persist active scene across refreshes.
+  useEffectApp(() => {
+    if (!activeScene) return;
+    try { localStorage.setItem('voxa.activeScene', activeScene); } catch { /* quota / private mode */ }
+  }, [activeScene]);
+
+  // Persist active mode across refreshes (paired with INITIAL_TWEAKS lazy-init).
+  useEffectApp(() => {
+    try { localStorage.setItem('voxa.mode', t.mode); } catch { /* quota / private mode */ }
+  }, [t.mode]);
 
   // Load cloud + annotations whenever the active scene or mode changes.
   useEffectApp(() => {
@@ -124,9 +156,75 @@ export default function App() {
     setCuboidDirty(false);
   }, [activeScene]);
 
+  // Auto-save: debounce cuboid edits to the backend so a refresh never loses
+  // unconfirmed work. Refs let the debounced save read the LATEST scene id
+  // even after a scene switch interleaves with the timer, and let the
+  // beforeunload flush below send whatever's pending without rebuilding the
+  // closure chain.
+  const activeSceneRef = useRefApp(activeScene);
+  useEffectApp(() => { activeSceneRef.current = activeScene; }, [activeScene]);
+  const autosaveTimerRef = useRefApp(null);
+  const pendingSaveRef = useRefApp(null);  // { scene, instances } | null
+
   const onCuboidChange = useCallbackApp((instances) => {
     setGtInstances(instances);
     setCuboidDirty(true);
+    const sceneAtChange = activeSceneRef.current;
+    if (!sceneAtChange) return;
+    pendingSaveRef.current = { scene: sceneAtChange, instances };
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(async () => {
+      autosaveTimerRef.current = null;
+      const pending = pendingSaveRef.current;
+      pendingSaveRef.current = null;
+      if (!pending || pending.scene !== activeSceneRef.current) return;
+      try {
+        await VoxaAPI.putAnnotation(pending.scene, 'gt', { instances: pending.instances });
+        setSavedAt(new Date().toLocaleTimeString());
+        setCuboidDirty(false);
+      } catch (err) {
+        console.error('autosave failed:', err);
+      }
+    }, 600);
+  }, []);
+
+  // Cancel any pending autosave when the scene changes; the load effect will
+  // re-fetch persisted annotations for the new scene.
+  useEffectApp(() => {
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [activeScene]);
+
+  // Flush any pending autosave when the user closes/refreshes the tab.
+  // `keepalive: true` lets the PUT complete past the navigation so a fast
+  // Ctrl+Enter → refresh doesn't lose the just-confirmed state.
+  useEffectApp(() => {
+    const onBeforeUnload = () => {
+      const pending = pendingSaveRef.current;
+      if (!pending) return;
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+      pendingSaveRef.current = null;
+      try {
+        fetch(`/api/annotations/gt/${pending.scene}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scene: pending.scene, kind: 'gt',
+            instances: pending.instances, meta: {},
+          }),
+          keepalive: true,
+        });
+      } catch { /* best effort */ }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 
   // Cmd/Ctrl+Z / Shift+Z → segment undo / redo (only when segState active).
@@ -251,7 +349,7 @@ export default function App() {
         )}
         {t.mode === 'label' && (
           <LabelMode key="l" cloud={cloud} theme={theme} viewerRef={viewerRef}
-            classes={classes} instances={gtInstances} sceneName={activeScene}
+            classes={classes} instances={gtInstances}
             cloudBBox={cloud?.bbox}
             navMode={navMode} onNavModeChange={setNavMode}
             onChange={onCuboidChange} onSave={saveGt}

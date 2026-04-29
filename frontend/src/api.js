@@ -56,13 +56,15 @@ export const VoxaAPI = {
     return decodeLoadResponse(await r.json());
   },
   async getAnnotation(scene, kind) {
-    const r = await fetch(`/api/annotations/${encodeURIComponent(scene)}/${kind}`);
+    // Tier-prefixed ids contain `/` which Starlette decodes during routing,
+    // so the route puts `kind` first and matches `scene` greedily as a path.
+    const r = await fetch(`/api/annotations/${kind}/${scene}`);
     if (!r.ok) return { scene, kind, instances: [], meta: {} };
     return r.json();
   },
   async putAnnotation(scene, kind, doc) {
     const body = { scene, kind, instances: doc.instances || [], meta: doc.meta || {} };
-    const r = await fetch(`/api/annotations/${encodeURIComponent(scene)}/${kind}`, {
+    const r = await fetch(`/api/annotations/${kind}/${scene}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

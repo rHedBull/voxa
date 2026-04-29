@@ -540,6 +540,19 @@ kbd {
 .inst-edit-btn.is-confirmed:hover { color: #34d399; }
 .theme-light .inst-edit-btn:hover { background: rgba(0,0,0,0.04); }
 
+.locked-chip {
+  display: inline-flex; align-items: center; height: 22px;
+  padding: 0 8px; border-radius: 5px;
+  background: var(--bg-elev-2); color: var(--text-faint);
+  border: 1px solid var(--border);
+  font-size: 10.5px; font-weight: 500; letter-spacing: 0;
+}
+.locked-banner {
+  padding: 5px 8px; border-radius: 5px;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  color: var(--text-faint); font-size: 11px; text-align: center;
+}
+
 .side-hd-actions { display: flex; gap: 6px; align-items: center; }
 .hide-labeled-btn {
   appearance: none; cursor: pointer;
