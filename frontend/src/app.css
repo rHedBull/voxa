@@ -507,25 +507,45 @@ kbd {
 .inst-item { display: flex; flex-direction: column; }
 .inst-item.editing > .inst-row { border-radius: 7px 7px 0 0; }
 .inst-row {
-  display: grid; grid-template-columns: 8px 1fr 22px;
-  gap: 8px; align-items: center;
-  padding: 8px 8px; border-radius: 7px;
+  display: grid; grid-template-columns: 8px 1fr auto auto auto;
+  gap: 6px; align-items: center;
+  padding: 3px 8px; border-radius: 6px;
   cursor: pointer;
 }
+.inst-item.editing > .inst-row { padding: 6px 8px; }
 .inst-row:hover { background: var(--bg-elev-2); }
 .inst-row.selected { background: var(--accent-bg); box-shadow: inset 0 0 0 1px var(--accent); }
+.inst-row.confirmed .inst-text b { color: var(--text-dim); }
+.inst-row.confirmed .inst-text em { color: var(--text-faint); }
+.inst-row.confirmed .inst-dot { box-shadow: inset 0 0 0 2px var(--bg-elev-2); }
 .inst-dot { width: 8px; height: 8px; border-radius: 50%; }
-.inst-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow: hidden; }
+.inst-text { display: flex; flex-direction: row; align-items: baseline;
+             gap: 6px; min-width: 0; overflow: hidden; }
 .inst-text b { font-size: 12px; font-weight: 500; color: var(--text);
+               line-height: 1.4;
                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.inst-text em { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+.inst-text em { font-style: normal; font-size: 10.5px; color: var(--text-faint);
+                line-height: 1.4; white-space: nowrap; flex-shrink: 0; }
 .inst-edit-btn {
   appearance: none; border: 0; background: transparent;
-  width: 22px; height: 22px; border-radius: 5px; cursor: pointer;
+  width: 20px; height: 20px; border-radius: 5px; cursor: pointer;
   color: var(--text-faint); font-size: 12px; line-height: 1;
 }
 .inst-edit-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.inst-edit-btn.is-confirmed { color: #10b981; }
+.inst-edit-btn.is-confirmed:hover { color: #34d399; }
 .theme-light .inst-edit-btn:hover { background: rgba(0,0,0,0.04); }
+
+.side-hd-actions { display: flex; gap: 6px; align-items: center; }
+.hide-labeled-btn {
+  appearance: none; cursor: pointer;
+  background: var(--bg-elev-2); color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 2px 7px; border-radius: 4px;
+  font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none;
+  line-height: 1.4;
+}
+.hide-labeled-btn:hover { color: var(--text); border-color: var(--text-faint); }
 
 .inst-edit-panel {
   display: flex; flex-direction: column; gap: 8px;

@@ -328,6 +328,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     showDiff = false,           // when true, tint diff points red using diffMask
     transformMode = null,       // 'translate' | 'rotate' | 'scale' | null — gizmo for selected cuboid
     onCuboidTransform = null,   // (id, { center, size, rotation }) => void; called on gizmo drag
+    highlightCuboid = null,     // { center, size, rotation, color } — points inside this oriented box are tinted
+    hideCuboids = null,         // [{ center, size, rotation }] — points inside any cuboid have NaN'd positions
   } = props;
 
   const mountRef = useRef(null);
@@ -397,6 +399,23 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
 
     const cuboidGroup = new THREE.Group();
     scene.add(cuboidGroup);
+
+    // Highlight overlay: a second Points object that re-renders only the
+    // points falling inside the selected cuboid, in yellow and at a larger
+    // size. Position buffer is sized to the active cloud (capped) and the
+    // draw range shrinks to the actual count each update.
+    const highlightGeom = new THREE.BufferGeometry();
+    const highlightMat = new THREE.PointsMaterial({
+      size: pointSize * 2.4,
+      color: 0xfacc15, // tailwind yellow-400
+      sizeAttenuation: true,
+      transparent: false,
+      depthWrite: true,
+    });
+    const highlightPoints = new THREE.Points(highlightGeom, highlightMat);
+    highlightPoints.frustumCulled = false;
+    highlightPoints.visible = false;
+    scene.add(highlightPoints);
 
     // Gizmo anchor. Persistent Object3D the TransformControls is attached to —
     // we sync its position/rotation/scale from the selected instance, and
@@ -526,6 +545,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       floor, grid, axes, mount,
       pickSubs, moveSubs,
       transformAnchor, transformControls,
+      highlightGeom, highlightMat, highlightPoints,
     };
 
     return () => {
@@ -540,6 +560,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
       pointsGeom.dispose();
       pointsMat.dispose();
+      highlightGeom.dispose();
+      highlightMat.dispose();
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
@@ -573,6 +595,18 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       new THREE.BufferAttribute(cloud.colors.slice(), 3));
     s.pointsGeom.computeBoundingSphere();
     s.points.userData.subsampleIdx = cloud.subsampleIdx ?? null;
+
+    // Pre-size the highlight overlay buffer to match the rendered cloud.
+    // Each update only fills the leading subset and uses setDrawRange.
+    if (s.highlightGeom) {
+      const N = cloud.positions.length / 3;
+      const buf = new Float32Array(N * 3);
+      const attr = new THREE.BufferAttribute(buf, 3);
+      attr.setUsage(THREE.DynamicDrawUsage);
+      s.highlightGeom.setAttribute('position', attr);
+      s.highlightGeom.setDrawRange(0, 0);
+      s.highlightPoints.visible = false;
+    }
 
     // Apply the recenter offset to the mesh group so a co-located mesh
     // overlays the cloud. The group's rotation already brings GLB Z-up
@@ -636,12 +670,66 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const s = stateRef.current;
     if (!s.pointsMat) return;
     s.pointsMat.size = pointSize;
+    if (s.highlightMat) s.highlightMat.size = pointSize * 2.4;
     s.scene.background = new THREE.Color(background);
     s.floor.material.color = new THREE.Color(floorColor);
     s.floor.visible = showFloor;
     s.grid.visible = showFloor;
     s.axes.visible = showAxes;
   }, [pointSize, background, floorColor, showFloor, showAxes]);
+
+  // ── Hide-cuboid positions ───────────────────────────────────────────────
+  // For each cuboid in `hideCuboids`, write NaN over the positions of any
+  // points that fall inside. The GPU rasterizer drops NaN-position points,
+  // so they vanish. The raycaster's distance test on NaN is also never true,
+  // so hidden points are not pickable. On re-runs we always restore from
+  // cloud.positions first so toggling Show/Hide is a clean reset.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.pointsGeom || !cloud) return;
+    const posAttr = s.pointsGeom.getAttribute('position');
+    if (!posAttr) return;
+    const out = posAttr.array;
+    out.set(cloud.positions);
+
+    if (hideCuboids && hideCuboids.length > 0) {
+      const N = out.length;
+      for (const cub of hideCuboids) {
+        const cx = cub.center[0], cy = cub.center[1], cz = cub.center[2];
+        const hx = cub.size[0] / 2, hy = cub.size[1] / 2, hz = cub.size[2] / 2;
+        const rx = cub.rotation?.[0] || 0;
+        const ry = cub.rotation?.[1] || 0;
+        const rz = cub.rotation?.[2] || 0;
+        const isAA = rx === 0 && ry === 0 && rz === 0;
+        if (isAA) {
+          for (let p = 0; p < N; p += 3) {
+            const dx = out[p] - cx, dy = out[p + 1] - cy, dz = out[p + 2] - cz;
+            if (dx > -hx && dx < hx && dy > -hy && dy < hy && dz > -hz && dz < hz) {
+              out[p] = NaN; out[p + 1] = NaN; out[p + 2] = NaN;
+            }
+          }
+        } else {
+          const mtx = new THREE.Matrix4().makeRotationFromEuler(
+            new THREE.Euler(rx, ry, rz, 'XYZ')
+          ).invert();
+          const e = mtx.elements;
+          const e0 = e[0], e1 = e[1], e2 = e[2];
+          const e4 = e[4], e5 = e[5], e6 = e[6];
+          const e8 = e[8], e9 = e[9], e10 = e[10];
+          for (let p = 0; p < N; p += 3) {
+            const dx = out[p] - cx, dy = out[p + 1] - cy, dz = out[p + 2] - cz;
+            const lx = e0 * dx + e4 * dy + e8 * dz;
+            const ly = e1 * dx + e5 * dy + e9 * dz;
+            const lz = e2 * dx + e6 * dy + e10 * dz;
+            if (lx > -hx && lx < hx && ly > -hy && ly < hy && lz > -hz && lz < hz) {
+              out[p] = NaN; out[p + 1] = NaN; out[p + 2] = NaN;
+            }
+          }
+        }
+      }
+    }
+    posAttr.needsUpdate = true;
+  }, [hideCuboids, cloud]);
 
   // ── Per-point color recompute ───────────────────────────────────────────
   useEffect(() => {
@@ -753,6 +841,77 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
 
     colorAttr.needsUpdate = true;
   }, [colorMode, cloud, showDiff, diffMask]);
+
+  // ── Selected-cuboid highlight overlay ───────────────────────────────────
+  // Re-populates a separate Points buffer with the cloud points that fall
+  // inside the selected cuboid (oriented AABB). Runs on every gizmo drag
+  // since highlightCuboid is a fresh object whenever any of its fields
+  // change. Inside-test is the same math as the IoU but in JS.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.highlightGeom || !s.highlightPoints) return;
+    const hAttr = s.highlightGeom.getAttribute('position');
+    if (!hAttr) {
+      s.highlightPoints.visible = false;
+      return;
+    }
+    if (!highlightCuboid) {
+      s.highlightGeom.setDrawRange(0, 0);
+      s.highlightPoints.visible = false;
+      return;
+    }
+    const posAttr = s.pointsGeom?.getAttribute('position');
+    if (!posAttr) {
+      s.highlightPoints.visible = false;
+      return;
+    }
+
+    const { center, size, rotation } = highlightCuboid;
+    const cx = center[0], cy = center[1], cz = center[2];
+    const hx = size[0] / 2, hy = size[1] / 2, hz = size[2] / 2;
+    const rx = rotation?.[0] || 0, ry = rotation?.[1] || 0, rz = rotation?.[2] || 0;
+    const isAA = rx === 0 && ry === 0 && rz === 0;
+    const pos = posAttr.array;
+    const out = hAttr.array;
+    const N = pos.length;
+    let m = 0;
+
+    if (isAA) {
+      for (let p = 0; p < N; p += 3) {
+        const dx = pos[p] - cx, dy = pos[p + 1] - cy, dz = pos[p + 2] - cz;
+        if (dx > -hx && dx < hx && dy > -hy && dy < hy && dz > -hz && dz < hz) {
+          out[m++] = pos[p];
+          out[m++] = pos[p + 1];
+          out[m++] = pos[p + 2];
+        }
+      }
+    } else {
+      // Inverse rotation matrix; XYZ Euler order matches cuboid line meshes.
+      const mtx = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(rx, ry, rz, 'XYZ')
+      ).invert();
+      const e = mtx.elements;
+      const e0 = e[0], e1 = e[1], e2 = e[2];
+      const e4 = e[4], e5 = e[5], e6 = e[6];
+      const e8 = e[8], e9 = e[9], e10 = e[10];
+      for (let p = 0; p < N; p += 3) {
+        const dx = pos[p] - cx, dy = pos[p + 1] - cy, dz = pos[p + 2] - cz;
+        const lx = e0 * dx + e4 * dy + e8  * dz;
+        const ly = e1 * dx + e5 * dy + e9  * dz;
+        const lz = e2 * dx + e6 * dy + e10 * dz;
+        if (lx > -hx && lx < hx && ly > -hy && ly < hy && lz > -hz && lz < hz) {
+          out[m++] = pos[p];
+          out[m++] = pos[p + 1];
+          out[m++] = pos[p + 2];
+        }
+      }
+    }
+
+    const count = m / 3;
+    s.highlightGeom.setDrawRange(0, count);
+    hAttr.needsUpdate = true;
+    s.highlightPoints.visible = count > 0;
+  }, [highlightCuboid, cloud]);
 
   // ── Mesh load/show ──────────────────────────────────────────────────────
   // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —

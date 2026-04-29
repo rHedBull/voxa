@@ -134,6 +134,7 @@ class Cuboid(BaseModel):
     rotation: list[float] = [0.0, 0.0, 0.0]   # euler xyz radians
     conf: float = 1.0
     source: str = "manual"   # 'manual' | 'auto' | 'fit'
+    confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
 
 
 class AnnotationDoc(BaseModel):

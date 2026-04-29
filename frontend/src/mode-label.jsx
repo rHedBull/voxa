@@ -22,6 +22,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const [instFilter, setInstFilter] = useStateLabel('');
   // Which instance row is currently expanded for inline edit.
   const [editingId, setEditingId] = useStateLabel(null);
+  // When true, points inside any confirmed cuboid are hidden from the main
+  // viewport (NaN'd in the position buffer). Default on so the labeling
+  // workflow naturally reveals what's left to label.
+  const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
 
   const diffMask = useMemoLabel(() => {
     if (!showDiff || !segState) return null;
@@ -40,9 +44,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     }
   }, [classes, activeClass]);
 
-  const visibleIds = useMemoLabel(() => (
-    instances.filter((i) => !hiddenClasses.has(i.cls)).map((i) => i.id)
-  ), [instances, hiddenClasses]);
+  // Only the selected cuboid renders in the viewer — keeps the scene readable
+  // when there are dozens/hundreds of prelabel instances. Hidden classes still
+  // hide everything in their class.
+  const visibleIds = useMemoLabel(() => {
+    if (!selectedId) return [];
+    const sel = instances.find((i) => i.id === selectedId);
+    if (!sel || hiddenClasses.has(sel.cls)) return [];
+    return [selectedId];
+  }, [instances, hiddenClasses, selectedId]);
 
   const counts = useMemoLabel(() => {
     const c = {};
@@ -52,6 +62,51 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const selected = instances.find((i) => i.id === selectedId);
   const activeClassDef = classes.find((c) => c.id === activeClass);
+
+  // Pass-through for the viewer to highlight points inside the currently
+  // selected cuboid. Updates as the box is dragged because `selected` is
+  // re-derived from `instances` on every render.
+  const highlightCuboid = useMemoLabel(() => {
+    if (!selected) return null;
+    const cls = classes.find((c) => c.id === selected.cls);
+    return {
+      center: selected.center,
+      size: selected.size,
+      rotation: selected.rotation || [0, 0, 0],
+      color: cls?.color || selected.color,
+    };
+  }, [selected, classes]);
+
+  // Stable string key for the confirmed subset. Used to short-circuit
+  // hideCuboids' identity on gizmo drags of UNCONFIRMED instances (which
+  // mutate `instances` every tick but leave the confirmed subset alone).
+  const confirmedKey = useMemoLabel(() => {
+    let s = '';
+    for (const i of instances) {
+      if (!i.confirmed) continue;
+      const c = i.center, sz = i.size, r = i.rotation || [0, 0, 0];
+      s += `${i.id}|${c[0]},${c[1]},${c[2]}|${sz[0]},${sz[1]},${sz[2]}|${r[0]},${r[1]},${r[2]};`;
+    }
+    return s;
+  }, [instances]);
+
+  const confirmedCount = useMemoLabel(
+    () => instances.reduce((n, i) => n + (i.confirmed ? 1 : 0), 0),
+    [instances],
+  );
+
+  const hideCuboids = useMemoLabel(() => {
+    if (!hideConfirmed || !confirmedKey) return [];
+    return instances
+      .filter((i) => i.confirmed)
+      .map((i) => ({
+        center: i.center,
+        size: i.size,
+        rotation: i.rotation || [0, 0, 0],
+      }));
+    // confirmedKey transitively covers `instances`; eslint can't see that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmedKey, hideConfirmed]);
 
   const filteredInstances = useMemoLabel(() => {
     const q = instFilter.trim().toLowerCase();
@@ -76,6 +131,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         { keys: ['Y'], desc: 'Scale gizmo' },
         { keys: ['F'], desc: 'Frame selection' },
         { keys: ['⌫'], desc: 'Delete selected' },
+        { keys: ['Ctrl', '↵'], desc: 'Confirm selected (hides interior pts)' },
         { keys: ['⌘', 'S'], desc: 'Save annotations' },
       ],
     },
@@ -105,7 +161,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     {
       title: 'Mouse',
       items: [
-        { keys: ['Click'], desc: 'Select cuboid in right list' },
+        { keys: ['Dbl-click'], desc: 'Select cuboid in right list (shows box)' },
+        { keys: ['✎'], desc: 'Edit button selects + opens panel' },
         { keys: ['Drag', 'gizmo'], desc: 'Move / rotate / scale selected' },
       ],
     },
@@ -176,6 +233,37 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const fitted = await VoxaAPI.autoFit(cmin, cmax, inst.cls, cls?.color || inst.color, inst.label);
     updateInstance(inst.id, { center: fitted.center, size: fitted.size });
   };
+  const focusInstance = (inst) => {
+    if (!inst) return;
+    viewerRef.current?.frame(
+      new THREE.Vector3(...inst.center),
+      Math.max(...inst.size) / 2,
+    );
+  };
+  // Toggle confirmed state. When transitioning to confirmed, clear the
+  // selection so the cuboid edges + gizmo disappear alongside the (now
+  // hidden) interior points — the visual signal that the instance is "done".
+  const toggleConfirm = (id) => {
+    const target = instances.find((i) => i.id === id);
+    if (!target) return;
+    const willConfirm = !target.confirmed;
+    onChange(instances.map((i) => i.id === id ? { ...i, confirmed: willConfirm } : i));
+    if (willConfirm) {
+      if (selectedId === id) setSelectedId(null);
+      if (editingId === id) setEditingId(null);
+    }
+  };
+  const toggleConfirmSelected = useCallbackLabel(() => {
+    if (!selectedId) return;
+    const target = instances.find((i) => i.id === selectedId);
+    if (!target) return;
+    const willConfirm = !target.confirmed;
+    onChange(instances.map((i) => i.id === selectedId ? { ...i, confirmed: willConfirm } : i));
+    if (willConfirm) {
+      setSelectedId(null);
+      if (editingId === selectedId) setEditingId(null);
+    }
+  }, [selectedId, editingId, instances, onChange]);
 
   // Gizmo drag callback. Patches the targeted instance by id (not by selectedId)
   // since the viewer dispatches based on its own gizmoTargetIdRef snapshot.
@@ -258,6 +346,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       if (activeTool !== 'cuboid') return;
+      // Ctrl/Cmd+Enter: confirm/unconfirm the selected instance. Runs before
+      // class-hotkey lookup so Enter never doubles as a class hotkey.
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        toggleConfirmSelected();
+        return;
+      }
       if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
@@ -359,6 +454,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           showDiff={showDiff}
           transformMode={activeTool === 'cuboid' ? transformMode : null}
           onCuboidTransform={onCuboidTransform}
+          highlightCuboid={highlightCuboid}
+          hideCuboids={hideCuboids}
         />
 
         <div className="vp-hud-top">
@@ -375,12 +472,16 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         </div>
 
         <ViewportToolbar side="left">
-          <SegmentToolStrip
-            activeTool={activeTool}
-            onChange={setActiveTool}
-            hasSegState={!!segState}
-          />
-          <div className="tool-sep" />
+          {segState && (
+            <>
+              <SegmentToolStrip
+                activeTool={activeTool}
+                onChange={setActiveTool}
+                hasSegState={!!segState}
+              />
+              <div className="tool-sep" />
+            </>
+          )}
           {activeTool === 'cuboid' && (
             <>
               <ToolButton mini icon="⇄" label="Move (G)"
@@ -392,9 +493,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               <ToolButton mini icon="⇲" label="Scale (Y)"
                 onClick={() => setTransformMode('scale')}
                 active={transformMode === 'scale'} />
-              <div className="tool-sep" />
-              <ToolButton mini icon="✦" label="Auto-fit" onClick={autoFitSelected} />
-              <ToolButton mini icon="⌫" label="Delete" onClick={deleteSelected} />
+              {selected && (
+                <>
+                  <div className="tool-sep" />
+                  <ToolButton mini icon="◎" label="Focus selection (F)"
+                    onClick={() => focusInstance(selected)} />
+                  <ToolButton mini icon="✦" label="Auto-fit selection" onClick={autoFitSelected} />
+                  <ToolButton mini icon="⌫" label="Delete selection" onClick={deleteSelected} />
+                </>
+              )}
             </>
           )}
           {segState?.isFromPrelabel && (
@@ -435,9 +542,20 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       <aside className="side-r">
         <div className="side-hd">
           <span>Instances</span>
-          <span className="badge-soft">
-            {instFilter ? `${filteredInstances.length} / ${instances.length}` : instances.length}
-          </span>
+          <div className="side-hd-actions">
+            {confirmedCount > 0 && (
+              <button className="hide-labeled-btn"
+                onClick={() => setHideConfirmed((v) => !v)}
+                title={hideConfirmed
+                  ? `Show ${confirmedCount} labeled instance${confirmedCount === 1 ? '' : 's'}`
+                  : `Hide ${confirmedCount} labeled instance${confirmedCount === 1 ? '' : 's'}`}>
+                {hideConfirmed ? '◌' : '●'} {confirmedCount} done
+              </button>
+            )}
+            <span className="badge-soft">
+              {instFilter ? `${filteredInstances.length} / ${instances.length}` : instances.length}
+            </span>
+          </div>
         </div>
         <div className="inst-filter">
           <input className="ins-input"
@@ -463,19 +581,37 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             const isEditing = inst.id === editingId;
             return (
               <div key={inst.id} className={'inst-item' + (isEditing ? ' editing' : '')}>
-                <div className={'inst-row' + (isSel ? ' selected' : '')}
-                  onClick={() => setSelectedId(inst.id)}>
+                <div className={'inst-row' + (isSel ? ' selected' : '') + (inst.confirmed ? ' confirmed' : '')}
+                  onDoubleClick={() => setSelectedId(inst.id)}
+                  title="Double-click to select (shows bounding box)">
                   <span className="inst-dot" style={{ background: cls?.color || inst.color }} />
                   <div className="inst-text">
                     <b>{inst.label}</b>
                     <em>{cls?.label || inst.cls}</em>
                   </div>
+                  <button className={'inst-edit-btn' + (inst.confirmed ? ' is-confirmed' : '')}
+                    onClick={(e) => { e.stopPropagation(); toggleConfirm(inst.id); }}
+                    title={inst.confirmed ? 'Reopen (mark as unlabeled)' : 'Confirm (Ctrl+Enter)'}>
+                    {inst.confirmed ? '✓' : '○'}
+                  </button>
                   <button className="inst-edit-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setEditingId(isEditing ? null : inst.id);
+                      setSelectedId(inst.id);
+                      focusInstance(inst);
                     }}
-                    title={isEditing ? 'Close' : 'Edit'}>{isEditing ? '×' : '✎'}</button>
+                    title="Focus camera on this instance">◎</button>
+                  <button className="inst-edit-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isEditing) {
+                        setEditingId(null);
+                      } else {
+                        setSelectedId(inst.id);
+                        setEditingId(inst.id);
+                      }
+                    }}
+                    title={isEditing ? 'Close' : 'Edit (selects + opens panel)'}>{isEditing ? '×' : '✎'}</button>
                 </div>
                 {isEditing && (
                   <div className="inst-edit-panel">
@@ -501,7 +637,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                       </div>
                     </div>
                     <div className="ins-actions">
+                      <button className="ghost-btn" onClick={() => focusInstance(inst)}>◎ Focus</button>
                       <button className="ghost-btn" onClick={() => autoFitInstance(inst)}>↻ Auto-fit</button>
+                      <button className="ghost-btn" onClick={() => toggleConfirm(inst.id)}
+                        title={inst.confirmed ? 'Reopen' : 'Confirm (Ctrl+Enter)'}>
+                        {inst.confirmed ? '✓ Reopen' : '✓ Confirm'}
+                      </button>
                       <button className="ghost-btn danger" onClick={() => deleteInstance(inst.id)}>Delete</button>
                     </div>
                   </div>
