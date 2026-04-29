@@ -30,6 +30,121 @@ const INITIAL_TWEAKS = (() => {
   return TWEAK_DEFAULTS;
 })();
 
+// Build one unconfirmed cuboid per predicted instance from the per-point
+// (positions, instance_ids, class_ids) arrays. Used to seed the labeler with
+// recommendations from the merge model so the user can review & confirm.
+//
+// Pipeline per instance:
+//   1. Gather points; drop if too few or extent too large (room-spanning planes).
+//   2. Compute a 2D OBB around the vertical (Y) axis via XZ-plane PCA — much
+//      tighter than world-AABB on rotated pipes / tanks while staying simple
+//      (single Euler around Y, no full 3D eigendecomp).
+//   3. Floor each dimension to a min thickness so flat surfaces stay clickable.
+const REC_MIN_POINTS = 30;          // noise instances under this drop out
+const REC_MAX_EXTENT = 25;          // any axis (m) — bigger = whole-scan plane
+const REC_MIN_DIM = 0.05;           // viz floor (5cm) so degenerate boxes stay selectable
+
+function buildRecommendationCuboids(cloud) {
+  if (!cloud?.fullPositions || !cloud?.fullInstanceIds || !cloud?.fullClassIds) return [];
+  const positions = cloud.fullPositions;
+  const insts = cloud.fullInstanceIds;
+  const classes = cloud.fullClassIds;
+  const palette = cloud.classPalette || [];
+  const paletteById = {};
+  for (const c of palette) paletteById[c.id] = c;
+
+  // Pass 1: bucket point indices per instance + first-class fingerprint.
+  const buckets = new Map();
+  const n = insts.length;
+  for (let i = 0; i < n; i++) {
+    const id = insts[i];
+    if (id < 0) continue;
+    let b = buckets.get(id);
+    if (!b) {
+      b = { idx: [], classId: classes[i] };
+      buckets.set(id, b);
+    }
+    b.idx.push(i);
+  }
+
+  const cuboids = [];
+  for (const [id, b] of buckets) {
+    const m = b.idx.length;
+    if (m < REC_MIN_POINTS) continue;
+
+    // Pass 2: world AABB + XZ centroid, Y min/max.
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let cx = 0, cz = 0;
+    for (let k = 0; k < m; k++) {
+      const i3 = b.idx[k] * 3;
+      const x = positions[i3], y = positions[i3 + 1], z = positions[i3 + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      cx += x; cz += z;
+    }
+    cx /= m; cz /= m;
+
+    // Filter room-spanning planes: drop if any axis exceeds max-extent.
+    if ((maxX - minX) > REC_MAX_EXTENT
+        || (maxY - minY) > REC_MAX_EXTENT
+        || (maxZ - minZ) > REC_MAX_EXTENT) continue;
+
+    // Pass 3: 2D covariance in (X, Z) around centroid → principal axis angle.
+    let cxx = 0, cxz = 0, czz = 0;
+    for (let k = 0; k < m; k++) {
+      const i3 = b.idx[k] * 3;
+      const dx = positions[i3] - cx;
+      const dz = positions[i3 + 2] - cz;
+      cxx += dx * dx;
+      cxz += dx * dz;
+      czz += dz * dz;
+    }
+    const alpha = 0.5 * Math.atan2(2 * cxz, cxx - czz); // major-axis angle from +X (CCW from +Y)
+    const ca = Math.cos(alpha), sa = Math.sin(alpha);
+
+    // Pass 4: AABB in rotated frame (u along major, v perpendicular, y unchanged).
+    let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+    for (let k = 0; k < m; k++) {
+      const i3 = b.idx[k] * 3;
+      const dx = positions[i3] - cx;
+      const dz = positions[i3 + 2] - cz;
+      const u = dx * ca + dz * sa;
+      const v = -dx * sa + dz * ca;
+      if (u < uMin) uMin = u; if (u > uMax) uMax = u;
+      if (v < vMin) vMin = v; if (v > vMax) vMax = v;
+    }
+    const uC = (uMin + uMax) / 2;
+    const vC = (vMin + vMax) / 2;
+    // Center in world: undo the in-plane rotation.
+    const centerX = cx + uC * ca - vC * sa;
+    const centerY = (minY + maxY) / 2;
+    const centerZ = cz + uC * sa + vC * ca;
+    const sizeU = Math.max(uMax - uMin, REC_MIN_DIM);
+    const sizeV = Math.max(vMax - vMin, REC_MIN_DIM);
+    const sizeY = Math.max(maxY - minY, REC_MIN_DIM);
+    // Three.js positive Y-rotation maps local +X → (cos θ, 0, -sin θ); we want
+    // local +X to align with world (cos α, 0, sin α), so θ = -α.
+    const rotY = -alpha;
+
+    const cls = paletteById[b.classId];
+    cuboids.push({
+      id: `rec_${id}`,
+      cls: cls?.label || 'unknown',
+      label: '',
+      color: cls?.color || '#5b8def',
+      center: [centerX, centerY, centerZ],
+      size: [sizeU, sizeY, sizeV],
+      rotation: [0, rotY, 0],
+      conf: 1.0,
+      source: 'recommendation',
+      confirmed: false,
+    });
+  }
+  return cuboids;
+}
+
 const MODE_META = {
   inspect: {
     label: 'Inspect',
@@ -80,6 +195,14 @@ function MainApp() {
   // Camera nav mode is shared across the three modes so toggling Inspect →
   // Label preserves whether the user was orbiting or walking.
   const [navMode, setNavMode] = useStateApp('orbit');
+  // When true, /api/load skips the GT branch and surfaces the model
+  // recommendation from prelabel/ instead. Persists across refreshes.
+  const [preferPrelabel, setPreferPrelabel] = useStateApp(() => {
+    try { return localStorage.getItem('voxa.preferPrelabel') === '1'; } catch { return false; }
+  });
+  useEffectApp(() => {
+    try { localStorage.setItem('voxa.preferPrelabel', preferPrelabel ? '1' : '0'); } catch { /* quota */ }
+  }, [preferPrelabel]);
 
   // Initial config + scene list. If a persisted scene id no longer exists in
   // the list, fall back to the first scene rather than firing a 404 load.
@@ -166,42 +289,52 @@ function MainApp() {
     setLoadError(null);
     const activeSceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
     const wantFullLabels = t.mode === 'label' && activeSceneObj?.tier === 'annotated';
-    VoxaAPI.load(activeScene, { wantFullLabels })
-      .then((c) => {
-        if (cancel) return;
-        setCloud(c);
-        setCuboidDirty(false);
-        if (c.fullClassIds && c.fullInstanceIds) {
-          if (c.isFromPrelabel) {
-            prelabelRef.current = {
-              classFull: c.fullClassIds.slice(),
-              instanceFull: c.fullInstanceIds.slice(),
-            };
-          } else {
-            prelabelRef.current = { classFull: null, instanceFull: null };
-          }
-          setSegState(initSegState({
-            classFull: c.fullClassIds,
-            instanceFull: c.fullInstanceIds,
-            isFromPrelabel: c.isFromPrelabel,
-          }));
+    Promise.all([
+      VoxaAPI.load(activeScene, { wantFullLabels, preferPrelabel }),
+      VoxaAPI.getAnnotation(activeScene, 'gt'),
+    ]).then(([c, gtDoc]) => {
+      if (cancel) return;
+      setCloud(c);
+      setCuboidDirty(false);
+      if (c.fullClassIds && c.fullInstanceIds) {
+        if (c.isFromPrelabel) {
+          prelabelRef.current = {
+            classFull: c.fullClassIds.slice(),
+            instanceFull: c.fullInstanceIds.slice(),
+          };
         } else {
           prelabelRef.current = { classFull: null, instanceFull: null };
-          setSegState(null);
         }
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (cancel) return;
-        setLoadError(String(e.message || e));
-        setLoading(false);
-      });
-    VoxaAPI.getAnnotation(activeScene, 'gt')
-      .then((d) => !cancel && setGtInstances(d.instances || []));
+        setSegState(initSegState({
+          classFull: c.fullClassIds,
+          instanceFull: c.fullInstanceIds,
+          isFromPrelabel: c.isFromPrelabel,
+        }));
+      } else {
+        prelabelRef.current = { classFull: null, instanceFull: null };
+        setSegState(null);
+      }
+
+      // Seed unconfirmed cuboid recommendations when the load came from a
+      // model prelabel and either (a) the user has no authored cuboids yet
+      // or (b) they explicitly opted in via the Recommendation toggle.
+      // Authored cuboids are otherwise preserved untouched.
+      const existingGt = gtDoc.instances || [];
+      const seeded = (c.isFromPrelabel && (preferPrelabel || existingGt.length === 0))
+        ? buildRecommendationCuboids(c)
+        : existingGt;
+      setGtInstances(seeded);
+
+      setLoading(false);
+    }).catch((e) => {
+      if (cancel) return;
+      setLoadError(String(e.message || e));
+      setLoading(false);
+    });
     VoxaAPI.getAnnotation(activeScene, 'pred')
       .then((d) => !cancel && setPredInstances(d.instances || []));
     return () => { cancel = true; };
-  }, [activeScene, t.mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeScene, t.mode, preferPrelabel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const theme = t.theme === 'dark'
     ? { bg: '#0a0b0e', floor: '#15171c' }
@@ -418,6 +551,7 @@ function MainApp() {
             onChange={onCuboidChange} onSave={saveGt}
             segState={segState} setSegState={setSegState}
             prelabelRef={prelabelRef}
+            preferPrelabel={preferPrelabel} onPreferPrelabelChange={setPreferPrelabel}
             onCameraChange={onMainCameraChange}
             hasMesh={!!cloud?.meshUrl} />
         )}

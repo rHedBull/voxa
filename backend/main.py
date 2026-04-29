@@ -95,6 +95,7 @@ class LoadRequest(BaseModel):
     name: str                              # tier-prefixed id or bare legacy name
     max_points: int = MAX_POINTS_DEFAULT
     want_full_labels: bool = False
+    prefer_prelabel: bool = False          # if True, skip GT and surface model recommendation
 
 
 class LoadResponse(BaseModel):
@@ -147,7 +148,7 @@ class Cuboid(BaseModel):
     size: list[float]     # [w,h,d]
     rotation: list[float] = [0.0, 0.0, 0.0]   # euler xyz radians
     conf: float = 1.0
-    source: str = "manual"   # 'manual' | 'auto' | 'fit'
+    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'recommendation'
     confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
 
 
@@ -409,7 +410,8 @@ def _scene_is_z_up(src: SceneSource) -> bool:
     return bool(src.extras.get("is_z_up", True))
 
 
-def _load_scene_source(src: SceneSource, max_points: int):
+def _load_scene_source(src: SceneSource, max_points: int, *,
+                       prefer_prelabel: bool = False):
     """Dispatch to the right loader.
 
     Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances,
@@ -420,7 +422,7 @@ def _load_scene_source(src: SceneSource, max_points: int):
     loaded count already matches the on-disk count.
     """
     if src.tier == "annotated":
-        a = load_annotated(src, LIDAR_ROOT)
+        a = load_annotated(src, LIDAR_ROOT, prefer_prelabel=prefer_prelabel)
         n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
         palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
         return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
@@ -443,7 +445,7 @@ def load_scene(req: LoadRequest):
     src = _resolve(req.name)
     (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled,
      is_from_prelabel, n_source_total) = (
-        _load_scene_source(src, req.max_points)
+        _load_scene_source(src, req.max_points, prefer_prelabel=req.prefer_prelabel)
     )
 
     # LAS / lidar archive scans are Z-up; rotate into Three.js Y-up before
@@ -659,7 +661,7 @@ def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest):
     return {"saved": str(p), "count": len(doc.instances)}
 
 
-@app.post("/api/compare/{scene}", response_model=CompareResponse)
+@app.post("/api/compare/{scene:path}", response_model=CompareResponse)
 def compare(scene: str, req: CompareRequest | None = None):
     iou_thr = (req.iou_threshold if req else 0.3)
     gt_doc = get_annotation(scene, "gt")

@@ -16,7 +16,7 @@ function formatPointCount(n) {
   return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
 }
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, preferPrelabel, onPreferPrelabelChange, onCameraChange, hasMesh }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -556,8 +556,21 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 value={`${formatPointCount(labelStats.left)} / ${formatPointCount(labelStats.total)}`}
                 mono />
             )}
+            {cloud?.isFromPrelabel && (
+              <HUDChip label="Source" value="Recommendation" accent />
+            )}
           </div>
           <div className="hud-group">
+            {onPreferPrelabelChange && (
+              <button
+                className={'hud-chip-btn' + (preferPrelabel ? ' active' : '')}
+                onClick={() => onPreferPrelabelChange(!preferPrelabel)}
+                title={preferPrelabel
+                  ? 'Showing model recommendation; click to switch back to ground truth'
+                  : 'Replace ground truth with model recommendation as starting point'}>
+                {preferPrelabel ? '◉ Recommendation' : '○ Recommendation'}
+              </button>
+            )}
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
             <button className="hud-chip-btn"

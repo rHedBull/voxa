@@ -110,14 +110,20 @@ def _build_palette(class_id_to_name: dict[int, str],
     return palette
 
 
-def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedScene:
-    """Load an annotated/<scan>/ scene with its label arrays + class palette."""
+def load_annotated(src: SceneSource, lidar_root: Optional[Path],
+                   *, prefer_prelabel: bool = False) -> AnnotatedScene:
+    """Load an annotated/<scan>/ scene with its label arrays + class palette.
+
+    `prefer_prelabel=True` skips the `labels/` GT branch so the model
+    recommendation in `prelabel/` (or fresh inference) surfaces in the
+    UI even on scenes that already have authored GT.
+    """
     pc, _mesh = load_ply(src.source_path)
 
     labels: Optional[LabelArrays] = None
     n_classes = 0
     n_instances = 0
-    if src.extras.get("gt_class_path") and src.extras.get("gt_segment_path"):
+    if not prefer_prelabel and src.extras.get("gt_class_path") and src.extras.get("gt_segment_path"):
         class_path = Path(src.extras["gt_class_path"])
         segment_path = Path(src.extras["gt_segment_path"])
         try:

@@ -168,6 +168,7 @@ kbd {
 }
 .hud-chip-btn:hover:not(:disabled) { border-color: var(--text-dim); }
 .hud-chip-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.hud-chip-btn.active { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
 .hud-chip .hud-lbl { color: var(--text-faint); font-weight: 500; white-space: nowrap; }
 .hud-chip .hud-val { color: var(--text); font-weight: 500; white-space: nowrap; }
 .hud-chip .hud-val.mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; }

@@ -107,6 +107,48 @@ def test_load_unlabeled_returns_all_minus_one_arrays(lidar_client):
     assert not body["class_palette"]
 
 
+def test_load_prefer_prelabel_skips_gt(lidar_client, tmp_path, monkeypatch):
+    """With prefer_prelabel=True, the loader skips authored GT and surfaces
+    the prelabel/ recommendation instead — even when GT exists."""
+    import main
+
+    lidar = tmp_path / "lidar-pref"
+    scan = lidar / "annotated" / "withpre"
+    _write_ply(scan / "source" / "scan.ply", n=8)
+    (scan / "labels").mkdir(parents=True, exist_ok=True)
+    # Authored GT: 8 points all class 0, instance 0.
+    np.save(scan / "labels" / "gt_class_ids.npy",
+            np.zeros(8, dtype=np.int32))
+    np.save(scan / "labels" / "gt_segment_ids.npy",
+            np.zeros(8, dtype=np.int32))
+    (scan / "meta.json").write_text(json.dumps({"scan_name": "withpre", "n_points": 8}))
+    # Prelabel: different segmentation — class 1, two distinct instances 5 & 7.
+    (scan / "prelabel").mkdir(parents=True, exist_ok=True)
+    np.save(scan / "prelabel" / "ransac_instance_ids.npy",
+            np.array([5, 5, 5, 5, 7, 7, 7, 7], dtype=np.int32))
+    (scan / "prelabel" / "ransac_segment_summary.json").write_text(json.dumps({
+        "segments": [{"id": 5, "class_id": 1, "label": "tank"},
+                     {"id": 7, "class_id": 1, "label": "tank"}],
+    }))
+
+    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+
+    # Default load → GT wins, is_from_prelabel=False.
+    gt_body = lidar_client.post("/api/load",
+                                json={"name": "annotated/withpre", "max_points": 100}).json()
+    gt_inst = np.frombuffer(base64.b64decode(gt_body["instance_ids"]), dtype=np.int32)
+    assert gt_body["is_from_prelabel"] is False
+    assert gt_inst.tolist() == [0] * 8
+
+    # prefer_prelabel=True → GT skipped, prelabel surfaces.
+    pre_body = lidar_client.post("/api/load",
+                                 json={"name": "annotated/withpre", "max_points": 100,
+                                       "prefer_prelabel": True}).json()
+    pre_inst = np.frombuffer(base64.b64decode(pre_body["instance_ids"]), dtype=np.int32)
+    assert pre_body["is_from_prelabel"] is True
+    assert pre_inst.tolist() == [5, 5, 5, 5, 7, 7, 7, 7]
+
+
 def test_recenter_zero_for_already_centered_scene(lidar_client):
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/demo", "max_points": 100}).json()
