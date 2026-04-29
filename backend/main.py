@@ -194,7 +194,10 @@ class CompareResponse(BaseModel):
     precision: float
     recall: float
     f1: float
-    iou_mean: float
+    iou_mean: float                 # mean IoU over the 1:1 TPs (conditional on match)
+    coverage_loose: float           # fraction of GT with best-pred IoU ≥ 0.1 (any pred)
+    coverage_strict: float          # fraction of GT with best-pred IoU ≥ 0.3 (any pred)
+    best_iou_mean: float            # mean of best-pred IoU per GT (overall recommendation tightness)
     tp: int
     fp: int
     fn: int
@@ -715,11 +718,34 @@ def compare(scene: str, req: CompareRequest | None = None):
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
     iou_mean = float(np.mean(ious)) if ious else 0.0
 
+    # Coverage / best-IoU: for each GT, best IoU against any pred regardless
+    # of greedy 1:1 matching. Better fits the aided-labeling question of
+    # "did the model find a usable starting point for this object?"
+    best_per_gt: list[float] = []
+    for g in gt:
+        best = 0.0
+        for p in pr:
+            if p.cls != g.cls:
+                continue
+            iou = _iou_aabb(g, p)
+            if iou > best:
+                best = iou
+        best_per_gt.append(best)
+    if best_per_gt:
+        coverage_loose = sum(1 for v in best_per_gt if v >= 0.1) / len(best_per_gt)
+        coverage_strict = sum(1 for v in best_per_gt if v >= 0.3) / len(best_per_gt)
+        best_iou_mean = float(np.mean(best_per_gt))
+    else:
+        coverage_loose = coverage_strict = best_iou_mean = 0.0
+
     return CompareResponse(
         precision=round(precision, 3),
         recall=round(recall, 3),
         f1=round(f1, 3),
         iou_mean=round(iou_mean, 3),
+        coverage_loose=round(coverage_loose, 3),
+        coverage_strict=round(coverage_strict, 3),
+        best_iou_mean=round(best_iou_mean, 3),
         tp=tp, fp=fp, fn=fn,
         rows=rows, gt=gt, pred=pr,
     )

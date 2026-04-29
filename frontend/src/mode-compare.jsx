@@ -3,11 +3,12 @@
 
 import { useState as useStateCmp, useRef as useRefCmp,
          useEffect as useEffectCmp } from 'react';
+import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI } from './api.js';
 
-function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef, stats }) {
+function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef }) {
   return (
     <div className="cmp-panel">
       <div className="cmp-hd">
@@ -21,14 +22,6 @@ function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef, stats 
       <div className="cmp-vp">
         <Viewer ref={viewerRef} {...viewerProps} />
       </div>
-      <div className="cmp-stats">
-        {stats.map((s, i) => (
-          <div key={i} className="cmp-stat">
-            <span className="cmp-stat-lbl">{s.label}</span>
-            <b className="mono">{s.value}</b>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -38,16 +31,16 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
   const rightRef = useRefCmp();
   const [syncCameras, setSyncCameras] = useStateCmp(true);
   const [diff, setDiff] = useStateCmp(null);
-  const [loading, setLoading] = useStateCmp(false);
+  const [selectedRowKey, setSelectedRowKey] = useStateCmp(null);
 
   useEffectCmp(() => {
     if (!sceneName) return;
-    setLoading(true);
-    VoxaAPI.compare(sceneName).then((d) => {
-      setDiff(d);
-      setLoading(false);
-    });
+    VoxaAPI.compare(sceneName).then(setDiff);
   }, [sceneName, gtInstances, predInstances]);
+
+  // Clear selection when the underlying diff changes (scene swap, new prediction
+  // load) — the old row key may not exist in the new rows.
+  useEffectCmp(() => { setSelectedRowKey(null); }, [sceneName]);
 
   const onLeftMove = () => {
     if (!syncCameras) return;
@@ -60,14 +53,37 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
     if (s) leftRef.current?.setCameraState(s);
   };
 
-  const meanConf = predInstances.length
-    ? (predInstances.reduce((a, p) => a + (p.conf || 0), 0) / predInstances.length).toFixed(2)
-    : '—';
+  // Selected-row → which instance ids are visible per side. Empty list means
+  // hide all cuboids on that side. By design, no row selected → no boxes
+  // anywhere; users opt-in via double-click.
+  const rowKey = (r, i) => (r.gt_id || r.pred_id || `row-${i}`) + '-' + i;
+  const selectedRow = selectedRowKey && diff?.rows
+    ? diff.rows.find((r, i) => rowKey(r, i) === selectedRowKey)
+    : null;
+  const gtVisible = selectedRow?.gt_id ? [selectedRow.gt_id] : [];
+  const predVisible = selectedRow?.pred_id ? [selectedRow.pred_id] : [];
+
+  // Frame the cameras on a row's box(es). Selects the row first so the box is
+  // visible even if the user clicked Focus without double-clicking the row.
+  const focusRow = (r, i) => {
+    setSelectedRowKey(rowKey(r, i));
+    const frame = (ref, inst) => {
+      if (!inst) return;
+      ref.current?.frame(
+        new THREE.Vector3(...inst.center),
+        Math.sqrt(inst.size.reduce((a, v) => a + v * v, 0)) / 2,
+      );
+    };
+    frame(leftRef,  r.gt_id   ? gtInstances.find((x) => x.id === r.gt_id)   : null);
+    frame(rightRef, r.pred_id ? predInstances.find((x) => x.id === r.pred_id) : null);
+  };
 
   const helpSections = [
     {
       title: 'Compare',
       items: [
+        { keys: ['Dbl-click row'], desc: 'Select row → show its box(es); again to deselect' },
+        { keys: ['◎'], desc: 'Per-row button: select + frame camera on that box' },
         { keys: ['Sync'], desc: 'Both viewports share camera while on' },
         { keys: ['Drag'], desc: 'Either side; the other follows when synced' },
       ],
@@ -152,15 +168,11 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
           badgeColor="#10b981"
           viewerRef={leftRef}
           viewerProps={{
-            cloud, instances: gtInstances, showCuboids: true, cuboidStyle: 'solid',
+            cloud, instances: gtInstances, visibleInstanceIds: gtVisible,
+            showCuboids: true, cuboidStyle: 'solid',
             background: theme.bg, floorColor: theme.floor, navMode,
             onCameraChange: onLeftMove,
           }}
-          stats={[
-            { label: 'Instances', value: gtInstances.length },
-            { label: 'Classes', value: new Set(gtInstances.map((i) => i.cls)).size },
-            { label: 'Scene', value: sceneName || '—' },
-          ]}
         />
         <ComparePanel
           title="Prediction"
@@ -168,39 +180,47 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
           badgeColor="#5b8def"
           viewerRef={rightRef}
           viewerProps={{
-            cloud, instances: predInstances, showCuboids: true, cuboidStyle: 'dashed',
+            cloud, instances: predInstances, visibleInstanceIds: predVisible,
+            showCuboids: true, cuboidStyle: 'dashed',
             background: theme.bg, floorColor: theme.floor, navMode,
             onCameraChange: onRightMove,
           }}
-          stats={[
-            { label: 'Predictions', value: predInstances.length },
-            { label: 'Mean conf', value: meanConf },
-            { label: 'Status', value: loading ? 'computing…' : 'ready' },
-          ]}
         />
       </div>
 
       <div className="cmp-table">
         <div className="cmp-table-hd">
-          <div>Instance</div>
+          <div>GT id</div>
+          <div>Pred id</div>
           <div>Class</div>
           <div>Status</div>
           <div>IoU</div>
           <div>Δ position</div>
           <div>Δ size</div>
           <div>Conf</div>
+          <div />
         </div>
         {diff?.rows?.map((r, i) => {
-          const id = r.gt_id || r.pred_id || `row-${i}`;
+          const key = rowKey(r, i);
+          const sel = key === selectedRowKey;
           return (
-            <div key={id + '-' + i} className="cmp-table-row">
-              <div className="mono">{id}</div>
+            <div
+              key={key}
+              className={'cmp-table-row' + (sel ? ' selected' : '')}
+              onDoubleClick={() => setSelectedRowKey(sel ? null : key)}
+              title={sel ? 'Double-click to deselect' : 'Double-click to show this row\'s box'}>
+              <div className="mono">{r.gt_id ?? '—'}</div>
+              <div className="mono">{r.pred_id ?? '—'}</div>
               <div>{r.cls}</div>
               <div><span className={'status-pill ' + r.status.toLowerCase()}>{r.status}</span></div>
               <div className="mono">{r.iou != null ? r.iou.toFixed(3) : '—'}</div>
               <div className="mono">{r.dpos != null ? r.dpos.toFixed(3) : '—'}</div>
               <div className="mono">{r.dsize != null ? `${(r.dsize * 100).toFixed(1)}%` : '—'}</div>
               <div className="mono">{r.conf != null ? r.conf.toFixed(2) : '—'}</div>
+              <button
+                className="inst-edit-btn"
+                onClick={(e) => { e.stopPropagation(); focusRow(r, i); }}
+                title="Select & frame camera on this box">◎</button>
             </div>
           );
         })}

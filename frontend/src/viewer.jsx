@@ -72,7 +72,7 @@ function attachOrbit(camera, dom, target, onChange) {
     camera.lookAt(state.target);
     if (!state.silent) onChange && onChange(state);
   };
-  apply();
+  state.silent = true; apply(); state.silent = false;
 
   const onDown = (e) => {
     if (!state.enabled) return;
@@ -118,7 +118,9 @@ function attachOrbit(camera, dom, target, onChange) {
   return {
     setFromState(s) {
       // Programmatic update — silence the onChange so synced viewports don't
-      // ping-pong each other into a stack overflow.
+      // ping-pong each other into a stack overflow. Shape-check guards against
+      // cross-mode sync (walk-state arriving here during a navMode flip).
+      if (!s || !s.spherical || !s.target) return;
       state.silent = true;
       state.spherical = { ...s.spherical };
       state.target.copy(s.target);
@@ -184,7 +186,7 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
     );
     if (!state.silent) onChange && onChange(state);
   };
-  apply();
+  state.silent = true; apply(); state.silent = false;
 
   // Drag with any mouse button (left, middle, right) rotates look. Right
   // button needs the contextmenu listener to keep the OS menu from popping.
@@ -268,6 +270,9 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
 
   return {
     setFromState(s) {
+      // Shape-check guards against cross-mode sync (orbit-state arriving here
+      // during a navMode flip).
+      if (!s || !s.position || s.yaw == null || s.pitch == null) return;
       state.silent = true;
       camera.position.copy(s.position);
       state.yaw = s.yaw; state.pitch = s.pitch;

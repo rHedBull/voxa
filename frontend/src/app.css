@@ -709,15 +709,6 @@ kbd {
 }
 .cmp-cam { margin-left: auto; }
 .cmp-vp { flex: 1; min-height: 0; position: relative; }
-.cmp-stats {
-  display: flex; gap: 14px; padding: 8px 12px;
-  border-top: 1px solid var(--border); background: var(--bg-elev);
-  flex-shrink: 0;
-}
-.cmp-stat { display: flex; flex-direction: column; gap: 2px; }
-.cmp-stat-lbl { font-size: 10px; color: var(--text-faint);
-                letter-spacing: 0.04em; text-transform: uppercase; }
-.cmp-stat b { font-size: 12px; font-weight: 600; }
 
 .cmp-table {
   height: 40%;
@@ -728,7 +719,7 @@ kbd {
 }
 .cmp-table-hd, .cmp-table-row {
   display: grid;
-  grid-template-columns: 140px 100px 80px 70px 90px 90px 70px;
+  grid-template-columns: 120px 120px 100px 80px 70px 90px 90px 70px 36px;
   gap: 0; padding: 0 14px; align-items: center;
 }
 .cmp-table-hd {
@@ -741,8 +732,15 @@ kbd {
 }
 .cmp-table-row {
   height: 32px; border-bottom: 1px solid var(--border);
+  cursor: pointer; user-select: none;
 }
 .cmp-table-row:hover { background: var(--bg-elev); }
+.cmp-table-row.selected {
+  background: oklch(0.65 0.15 250 / 0.18);
+  box-shadow: inset 2px 0 0 var(--accent, #5b8def);
+}
+.cmp-table-row.selected:hover { background: oklch(0.65 0.15 250 / 0.24); }
+.cmp-table-row .inst-edit-btn { justify-self: end; }
 .status-pill {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 28px; height: 18px; padding: 0 6px; border-radius: 4px;
