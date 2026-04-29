@@ -4,7 +4,7 @@ import { useEffect as useEffectInspect,
          useState as useStateInspect,
          useMemo as useMemoInspect } from 'react';
 import { Viewer } from './viewer.jsx';
-import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
+import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 
 export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMode, onNavModeChange }) {
   const [pointSize, setPointSize] = useStateInspect(0.012);
@@ -46,6 +46,51 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
     if (cloud && !channels[colorMode]) setColorMode('rgb');
   }, [cloud, channels, colorMode]);
 
+  const helpSections = useMemoInspect(() => ([
+    {
+      title: 'Camera',
+      items: navMode === 'walk'
+        ? [
+            { keys: ['W', 'A', 'S', 'D'], desc: 'Move (XZ plane)' },
+            { keys: ['Q', 'E'], desc: 'Down / up' },
+            { keys: ['Shift'], desc: 'Hold to sprint' },
+            { keys: ['Drag'], desc: 'Look around' },
+            { keys: ['Scroll'], desc: 'Step forward / back' },
+          ]
+        : [
+            { keys: ['Drag'], desc: 'Orbit' },
+            { keys: ['Shift', 'Drag'], desc: 'Pan' },
+            { keys: ['Right', 'Drag'], desc: 'Pan' },
+            { keys: ['Scroll'], desc: 'Zoom' },
+          ],
+    },
+    {
+      title: 'Camera presets',
+      items: [
+        { keys: ['iso'], desc: 'Isometric' },
+        { keys: ['top'], desc: 'Top-down' },
+        { keys: ['front'], desc: 'Front' },
+        { keys: ['side'], desc: 'Side' },
+      ],
+    },
+    {
+      title: 'Display',
+      items: [
+        { keys: ['RGB'], desc: 'Per-point color from the source' },
+        { keys: ['Height'], desc: 'Y-axis gradient' },
+        { keys: ['Class'], desc: 'Per-point class palette (annotated scans)' },
+        { keys: ['Instance'], desc: 'Per-point instance hash hue' },
+      ],
+    },
+    {
+      title: 'Other',
+      items: [
+        { keys: ['?'], desc: 'Toggle this panel' },
+        { keys: ['Esc'], desc: 'Close panel' },
+      ],
+    },
+  ]), [navMode]);
+
   return (
     <div className="mode-root inspect">
       <div className="vp-stack">
@@ -76,6 +121,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
           <div className="hud-group">
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
+            <HelpButton sections={helpSections} />
           </div>
         </div>
 

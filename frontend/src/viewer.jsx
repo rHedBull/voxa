@@ -13,6 +13,7 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 // Converts a pointer event + bounding rect to normalized device coords [-1,1].
 // Exported for unit testing.
@@ -54,6 +55,7 @@ function attachOrbit(camera, dom, target, onChange) {
     spherical: { r: 0, phi: 0, theta: 0 },
     target: target.clone(),
     silent: false,   // when true, apply() skips the onChange callback
+    enabled: true,   // when false, ignore mouse + wheel (gizmo is dragging)
   };
   const off = camera.position.clone().sub(target);
   state.spherical.r = off.length();
@@ -73,6 +75,7 @@ function attachOrbit(camera, dom, target, onChange) {
   apply();
 
   const onDown = (e) => {
+    if (!state.enabled) return;
     state.dragging = true;
     state.mode = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';
     state.lx = e.clientX; state.ly = e.clientY;
@@ -98,6 +101,7 @@ function attachOrbit(camera, dom, target, onChange) {
   };
   const onUp = () => { state.dragging = false; state.mode = null; };
   const onWheel = (e) => {
+    if (!state.enabled) return;
     e.preventDefault();
     state.spherical.r = Math.max(0.1, Math.min(2000,
       state.spherical.r * (1 + Math.sign(e.deltaY) * 0.08)));
@@ -122,6 +126,10 @@ function attachOrbit(camera, dom, target, onChange) {
       state.silent = false;
     },
     getState() { return { spherical: { ...state.spherical }, target: state.target.clone() }; },
+    setEnabled(on) {
+      state.enabled = !!on;
+      if (!on) { state.dragging = false; state.mode = null; }
+    },
     frame(center, radius) {
       state.target.copy(center);
       state.spherical.r = Math.max(0.4, radius * 2.4);
@@ -157,6 +165,7 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
     keys: { w: false, a: false, s: false, d: false, q: false, e: false, shift: false },
     dragging: false, lx: 0, ly: 0,
     silent: false,
+    enabled: true,
   };
   // Seed yaw/pitch from the camera's current look direction so toggling
   // doesn't snap the view.
@@ -180,6 +189,7 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
   // Drag with any mouse button (left, middle, right) rotates look. Right
   // button needs the contextmenu listener to keep the OS menu from popping.
   const onDown = (e) => {
+    if (!state.enabled) return;
     state.dragging = true;
     state.lx = e.clientX; state.ly = e.clientY;
     e.preventDefault();
@@ -197,6 +207,7 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
   const onUp = () => { state.dragging = false; };
   const onCtx = (e) => e.preventDefault();
   const onWheel = (e) => {
+    if (!state.enabled) return;
     e.preventDefault();
     // Scroll in walk mode steps you forward/back in the horizontal plane.
     const fwd = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
@@ -266,6 +277,15 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
     getState() {
       return { position: camera.position.clone(), yaw: state.yaw, pitch: state.pitch };
     },
+    setEnabled(on) {
+      state.enabled = !!on;
+      if (!on) {
+        state.dragging = false;
+        // Release any held movement keys so the camera doesn't keep drifting
+        // while the gizmo has the input.
+        Object.keys(state.keys).forEach((k) => { state.keys[k] = false; });
+      }
+    },
     frame() { /* no-op in walk mode — user navigates manually */ },
     preset() { /* no-op in walk mode — orbit presets don't apply */ },
     dispose() {
@@ -306,6 +326,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     onCameraChange = null,
     diffMask = null,            // Uint8Array, length = num full-res points; 1 = changed vs prelabel
     showDiff = false,           // when true, tint diff points red using diffMask
+    transformMode = null,       // 'translate' | 'rotate' | 'scale' | null — gizmo for selected cuboid
+    onCuboidTransform = null,   // (id, { center, size, rotation }) => void; called on gizmo drag
   } = props;
 
   const mountRef = useRef(null);
@@ -314,6 +336,16 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
   // closure without recreating the controller every render.
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
+  // Same trick for the gizmo: TransformControls listeners are wired once at
+  // mount, but the callback identity changes per render.
+  const onCuboidTransformRef = useRef(onCuboidTransform);
+  onCuboidTransformRef.current = onCuboidTransform;
+  // ID of the cuboid the gizmo is currently attached to. Read inside the
+  // gizmo's objectChange listener so we know which instance to patch.
+  const gizmoTargetIdRef = useRef(null);
+  // Set true while the user is dragging the gizmo. Used to suppress the
+  // anchor-sync effect (which would otherwise overwrite the in-progress drag).
+  const gizmoDraggingRef = useRef(false);
 
   // ── Mount once ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -365,6 +397,48 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
 
     const cuboidGroup = new THREE.Group();
     scene.add(cuboidGroup);
+
+    // Gizmo anchor. Persistent Object3D the TransformControls is attached to —
+    // we sync its position/rotation/scale from the selected instance, and
+    // read them back on each gizmo drag tick. Decoupling the gizmo from the
+    // edge-line meshes (which get rebuilt every instances change) keeps the
+    // gizmo stable across re-renders.
+    const transformAnchor = new THREE.Object3D();
+    scene.add(transformAnchor);
+
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setSpace('local');
+    transformControls.setTranslationSnap(null);
+    transformControls.setRotationSnap(null);
+    transformControls.setScaleSnap(null);
+    transformControls.visible = false;
+    transformControls.enabled = false;
+    scene.add(transformControls);
+
+    // While the gizmo is being dragged, suspend orbit/walk pointer handling
+    // so camera and gizmo don't fight for the same drag.
+    transformControls.addEventListener('dragging-changed', (e) => {
+      gizmoDraggingRef.current = !!e.value;
+      const ctrl = stateRef.current?.controller;
+      if (ctrl?.setEnabled) ctrl.setEnabled(!e.value);
+    });
+
+    // Read transform off the anchor on every change tick and patch the
+    // selected instance. Scale is the size (anchor.scale === inst.size since
+    // we drive scale directly from inst.size on attach).
+    transformControls.addEventListener('objectChange', () => {
+      const id = gizmoTargetIdRef.current;
+      const cb = onCuboidTransformRef.current;
+      if (!id || !cb) return;
+      const c = transformAnchor.position;
+      const r = transformAnchor.rotation;
+      const sc = transformAnchor.scale;
+      cb(id, {
+        center: [c.x, c.y, c.z],
+        rotation: [r.x, r.y, r.z],
+        size: [Math.max(0.005, sc.x), Math.max(0.005, sc.y), Math.max(0.005, sc.z)],
+      });
+    });
 
     // Mesh container. The optional Z-up → Y-up rotation is applied when the
     // backend reports the mesh source is Z-up; the group also carries the
@@ -451,12 +525,17 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       cuboidGroup, meshGroup, meshUrlLoaded: null, meshLoadAbort: null,
       floor, grid, axes, mount,
       pickSubs, moveSubs,
+      transformAnchor, transformControls,
     };
 
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
       stateRef.current.controller?.dispose();
+      transformControls.detach();
+      transformControls.dispose();
+      scene.remove(transformControls);
+      scene.remove(transformAnchor);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
       pointsGeom.dispose();
@@ -803,6 +882,49 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       }
     });
   }, [instances, visibleInstanceIds, highlightedId, selectedId, showCuboids, cuboidStyle, cuboidOpacity]);
+
+  // ── Gizmo: attach to selected cuboid, sync transform from props ─────────
+  // - Skipped while the user is actively dragging (the anchor IS the truth
+  //   then, and onCuboidTransform is feeding incoming props).
+  // - Detaches the gizmo when nothing is selected, transformMode is null,
+  //   or when cuboids are hidden.
+  useEffect(() => {
+    const s = stateRef.current;
+    const tc = s.transformControls;
+    const anchor = s.transformAnchor;
+    if (!tc || !anchor) return;
+
+    const selected = selectedId ? instances.find((i) => i.id === selectedId) : null;
+    const wantGizmo = !!(selected && transformMode && showCuboids);
+
+    if (!wantGizmo) {
+      tc.detach();
+      tc.visible = false;
+      tc.enabled = false;
+      gizmoTargetIdRef.current = null;
+      return;
+    }
+
+    // Sync anchor only when the user is not currently dragging it. During
+    // drag, anchor changes drive the props, not the other way around.
+    if (!gizmoDraggingRef.current) {
+      anchor.position.set(...selected.center);
+      anchor.rotation.set(...(selected.rotation || [0, 0, 0]));
+      const sz = selected.size || [1, 1, 1];
+      anchor.scale.set(
+        Math.max(0.005, sz[0]),
+        Math.max(0.005, sz[1]),
+        Math.max(0.005, sz[2]),
+      );
+      anchor.updateMatrixWorld(true);
+    }
+
+    gizmoTargetIdRef.current = selected.id;
+    tc.setMode(transformMode);
+    if (tc.object !== anchor) tc.attach(anchor);
+    tc.visible = true;
+    tc.enabled = true;
+  }, [selectedId, instances, transformMode, showCuboids]);
 
   useImperativeHandle(ref, () => ({
     preset(name) {

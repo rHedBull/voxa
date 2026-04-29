@@ -116,8 +116,6 @@ export default function App() {
 
   useEffectApp(() => { document.body.className = themeClass; }, [themeClass]);
 
-  const meta = MODE_META[t.mode] || MODE_META.inspect;
-
   const saveGt = useCallbackApp(async (instances) => {
     if (!activeScene) return;
     setGtInstances(instances);
@@ -235,13 +233,6 @@ export default function App() {
           ⌘S Save
         </button>
       </header>
-
-      <div className="mode-banner">
-        <div className="stripe" style={{ background: meta.color }} />
-        <b>{meta.label} mode</b>
-        <span>·</span>
-        <span>{meta.sub}</span>
-      </div>
 
       {scenePickerOpen && (
         <ScenePicker

@@ -4,7 +4,7 @@
 import { useState as useStateCmp, useRef as useRefCmp,
          useEffect as useEffectCmp } from 'react';
 import { Viewer } from './viewer.jsx';
-import { CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
+import { CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI } from './api.js';
 
 function ComparePanel({ title, badge, badgeColor, viewerProps, viewerRef, stats }) {
@@ -64,6 +64,46 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
     ? (predInstances.reduce((a, p) => a + (p.conf || 0), 0) / predInstances.length).toFixed(2)
     : '—';
 
+  const helpSections = [
+    {
+      title: 'Compare',
+      items: [
+        { keys: ['Sync'], desc: 'Both viewports share camera while on' },
+        { keys: ['Drag'], desc: 'Either side; the other follows when synced' },
+      ],
+    },
+    {
+      title: 'Camera',
+      items: navMode === 'walk'
+        ? [
+            { keys: ['W', 'A', 'S', 'D'], desc: 'Move (XZ plane)' },
+            { keys: ['Q', 'E'], desc: 'Down / up' },
+            { keys: ['Shift'], desc: 'Hold to sprint' },
+            { keys: ['Drag'], desc: 'Look around' },
+          ]
+        : [
+            { keys: ['Drag'], desc: 'Orbit' },
+            { keys: ['Shift', 'Drag'], desc: 'Pan' },
+            { keys: ['Scroll'], desc: 'Zoom' },
+          ],
+    },
+    {
+      title: 'Diff metrics',
+      items: [
+        { keys: ['IoU'], desc: 'Axis-aligned overlap (rotation ignored)' },
+        { keys: ['F1'], desc: 'Harmonic mean of precision & recall' },
+        { keys: ['TP/FP/FN'], desc: 'Matched / spurious / missed instances' },
+      ],
+    },
+    {
+      title: 'Other',
+      items: [
+        { keys: ['?'], desc: 'Toggle this panel' },
+        { keys: ['Esc'], desc: 'Close panel' },
+      ],
+    },
+  ];
+
   return (
     <div className="mode-root compare">
       <div className="cmp-bar">
@@ -73,13 +113,13 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
         </div>
         <div className="cmp-bar-r">
           <div className="cmp-metric"><label>Precision</label>
-            <b className="mono">{diff ? diff.precision.toFixed(3) : '—'}</b></div>
+            <b className="mono">{diff?.precision != null ? diff.precision.toFixed(3) : '—'}</b></div>
           <div className="cmp-metric"><label>Recall</label>
-            <b className="mono">{diff ? diff.recall.toFixed(3) : '—'}</b></div>
+            <b className="mono">{diff?.recall != null ? diff.recall.toFixed(3) : '—'}</b></div>
           <div className="cmp-metric"><label>F1</label>
-            <b className="mono accent">{diff ? diff.f1.toFixed(3) : '—'}</b></div>
+            <b className="mono accent">{diff?.f1 != null ? diff.f1.toFixed(3) : '—'}</b></div>
           <div className="cmp-metric"><label>IoU<sub>μ</sub></label>
-            <b className="mono">{diff ? diff.iou_mean.toFixed(3) : '—'}</b></div>
+            <b className="mono">{diff?.iou_mean != null ? diff.iou_mean.toFixed(3) : '—'}</b></div>
           <div className="cmp-metric"><label>TP / FP / FN</label>
             <span className="diff-pills">
               <i style={{ background: 'oklch(0.65 0.15 150 / 0.2)', color: 'oklch(0.78 0.15 150)' }}>
@@ -98,6 +138,9 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
             <label>Sync cameras</label>
             <button className={'sw' + (syncCameras ? ' on' : '')}
               onClick={() => setSyncCameras(!syncCameras)}><i /></button>
+          </div>
+          <div className="cmp-toggle">
+            <HelpButton sections={helpSections} />
           </div>
         </div>
       </div>
@@ -147,7 +190,7 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
           <div>Δ size</div>
           <div>Conf</div>
         </div>
-        {diff?.rows.map((r, i) => {
+        {diff?.rows?.map((r, i) => {
           const id = r.gt_id || r.pred_id || `row-${i}`;
           return (
             <div key={id + '-' + i} className="cmp-table-row">
@@ -161,7 +204,7 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
             </div>
           );
         })}
-        {(!diff || diff.rows.length === 0) && (
+        {(!diff?.rows || diff.rows.length === 0) && (
           <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-faint)', fontSize: 12 }}>
             {sceneName
               ? 'No GT or prediction annotations for this scene yet.'

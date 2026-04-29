@@ -4,7 +4,7 @@ import { useState as useStateLabel, useMemo as useMemoLabel,
          useEffect as useEffectLabel, useCallback as useCallbackLabel } from 'react';
 import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
-import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
+import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
 import { SegmentToolStrip, PickTool, BrushTool } from './segment-tools.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
@@ -16,6 +16,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const [activeTool, setActiveTool] = useStateLabel('cuboid');
   const [colorMode] = useStateLabel('class');
   const [showDiff, setShowDiff] = useStateLabel(false);
+  // Gizmo mode for the selected cuboid. null = no gizmo (edges only).
+  const [transformMode, setTransformMode] = useStateLabel('translate');
+  // Free-text filter for the instance list (matches label + class name).
+  const [instFilter, setInstFilter] = useStateLabel('');
+  // Which instance row is currently expanded for inline edit.
+  const [editingId, setEditingId] = useStateLabel(null);
 
   const diffMask = useMemoLabel(() => {
     if (!showDiff || !segState) return null;
@@ -46,6 +52,71 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const selected = instances.find((i) => i.id === selectedId);
   const activeClassDef = classes.find((c) => c.id === activeClass);
+
+  const filteredInstances = useMemoLabel(() => {
+    const q = instFilter.trim().toLowerCase();
+    if (!q) return instances;
+    return instances.filter((inst) => {
+      const cls = classes.find((c) => c.id === inst.cls);
+      return (
+        (inst.label || '').toLowerCase().includes(q) ||
+        (cls?.label || inst.cls || '').toLowerCase().includes(q) ||
+        (inst.id || '').toLowerCase().includes(q)
+      );
+    });
+  }, [instances, classes, instFilter]);
+
+  const helpSections = useMemoLabel(() => ([
+    {
+      title: 'Cuboid',
+      items: [
+        { keys: ['A'], desc: 'Add cuboid for active class' },
+        { keys: ['G'], desc: 'Move (translate gizmo)' },
+        { keys: ['R'], desc: 'Rotate gizmo' },
+        { keys: ['Y'], desc: 'Scale gizmo' },
+        { keys: ['F'], desc: 'Frame selection' },
+        { keys: ['⌫'], desc: 'Delete selected' },
+        { keys: ['⌘', 'S'], desc: 'Save annotations' },
+      ],
+    },
+    {
+      title: 'Class assignment',
+      items: classes.length
+        ? classes.map((c) => ({ keys: [c.hotkey], desc: c.label }))
+        : [{ keys: ['—'], desc: 'No classes configured' }],
+    },
+    {
+      title: 'Camera',
+      items: navMode === 'walk'
+        ? [
+            { keys: ['W', 'A', 'S', 'D'], desc: 'Move (XZ plane)' },
+            { keys: ['Q', 'E'], desc: 'Down / up' },
+            { keys: ['Shift'], desc: 'Hold to sprint' },
+            { keys: ['Drag'], desc: 'Look around' },
+            { keys: ['Scroll'], desc: 'Step forward / back' },
+          ]
+        : [
+            { keys: ['Drag'], desc: 'Orbit' },
+            { keys: ['Shift', 'Drag'], desc: 'Pan' },
+            { keys: ['Right', 'Drag'], desc: 'Pan' },
+            { keys: ['Scroll'], desc: 'Zoom' },
+          ],
+    },
+    {
+      title: 'Mouse',
+      items: [
+        { keys: ['Click'], desc: 'Select cuboid in right list' },
+        { keys: ['Drag', 'gizmo'], desc: 'Move / rotate / scale selected' },
+      ],
+    },
+    {
+      title: 'Other',
+      items: [
+        { keys: ['?'], desc: 'Toggle this panel' },
+        { keys: ['Esc'], desc: 'Close panel' },
+      ],
+    },
+  ]), [classes, navMode]);
 
   const toggleClass = (cls) => {
     setHiddenClasses((s) => {
@@ -88,6 +159,30 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const next = instances.map((i) => i.id === selectedId ? { ...i, ...patch } : i);
     onChange(next);
   };
+
+  const updateInstance = (id, patch) => {
+    onChange(instances.map((i) => i.id === id ? { ...i, ...patch } : i));
+  };
+  const deleteInstance = (id) => {
+    onChange(instances.filter((i) => i.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    if (editingId === id) setEditingId(null);
+  };
+  const autoFitInstance = async (inst) => {
+    const half = inst.size.map((v) => v / 2);
+    const cmin = [inst.center[0] - half[0], inst.center[1] - half[1], inst.center[2] - half[2]];
+    const cmax = [inst.center[0] + half[0], inst.center[1] + half[1], inst.center[2] + half[2]];
+    const cls = classes.find((c) => c.id === inst.cls);
+    const fitted = await VoxaAPI.autoFit(cmin, cmax, inst.cls, cls?.color || inst.color, inst.label);
+    updateInstance(inst.id, { center: fitted.center, size: fitted.size });
+  };
+
+  // Gizmo drag callback. Patches the targeted instance by id (not by selectedId)
+  // since the viewer dispatches based on its own gizmoTargetIdRef snapshot.
+  const onCuboidTransform = useCallbackLabel((id, patch) => {
+    const next = instances.map((i) => i.id === id ? { ...i, ...patch } : i);
+    onChange(next);
+  }, [instances, onChange]);
 
   const deleteSelected = () => {
     if (!selectedId) return;
@@ -179,6 +274,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             Math.max(...selected.size) / 2,
           );
         }
+      } else if (e.key === 'g' || e.key === 'G') {
+        setTransformMode('translate');
+      } else if (e.key === 'r' || e.key === 'R') {
+        setTransformMode('rotate');
+      } else if (e.key === 'y' || e.key === 'Y') {
+        setTransformMode('scale');
       }
     };
     window.addEventListener('keydown', onKey);
@@ -256,6 +357,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           colorMode={colorMode}
           diffMask={diffMask}
           showDiff={showDiff}
+          transformMode={activeTool === 'cuboid' ? transformMode : null}
+          onCuboidTransform={onCuboidTransform}
         />
 
         <div className="vp-hud-top">
@@ -267,6 +370,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <div className="hud-group">
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
+            <HelpButton sections={helpSections} />
           </div>
         </div>
 
@@ -279,6 +383,16 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <div className="tool-sep" />
           {activeTool === 'cuboid' && (
             <>
+              <ToolButton mini icon="⇄" label="Move (G)"
+                onClick={() => setTransformMode('translate')}
+                active={transformMode === 'translate'} />
+              <ToolButton mini icon="↻" label="Rotate (R)"
+                onClick={() => setTransformMode('rotate')}
+                active={transformMode === 'rotate'} />
+              <ToolButton mini icon="⇲" label="Scale (Y)"
+                onClick={() => setTransformMode('scale')}
+                active={transformMode === 'scale'} />
+              <div className="tool-sep" />
               <ToolButton mini icon="✦" label="Auto-fit" onClick={autoFitSelected} />
               <ToolButton mini icon="⌫" label="Delete" onClick={deleteSelected} />
             </>
@@ -307,6 +421,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               <>
                 <span><kbd>A</kbd> add cuboid</span>
                 {classes.length > 0 && <span><kbd>{classes[0].hotkey}</kbd>–<kbd>{classes[classes.length - 1].hotkey}</kbd> assign class</span>}
+                <span><kbd>G</kbd>/<kbd>R</kbd>/<kbd>Y</kbd> move/rotate/scale</span>
                 <span><kbd>F</kbd> frame selection</span>
                 <span><kbd>⌫</kbd> delete</span>
                 <span><kbd>⌘S</kbd> save</span>
@@ -316,93 +431,86 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         </div>
       </div>
 
-      {/* Right: instance list + inspector */}
+      {/* Right: filterable instance list + slim inspector */}
       <aside className="side-r">
         <div className="side-hd">
           <span>Instances</span>
-          <span className="badge-soft">{instances.length}</span>
+          <span className="badge-soft">
+            {instFilter ? `${filteredInstances.length} / ${instances.length}` : instances.length}
+          </span>
+        </div>
+        <div className="inst-filter">
+          <input className="ins-input"
+            placeholder="Filter by label, class, or id"
+            value={instFilter}
+            onChange={(e) => setInstFilter(e.target.value)} />
+          {instFilter && (
+            <button className="inst-filter-clear"
+              onClick={() => setInstFilter('')}
+              title="Clear filter">×</button>
+          )}
         </div>
         <div className="inst-list">
           {instances.length === 0 && (
             <div className="sugg-empty">No instances yet. Press <kbd>A</kbd> to add.</div>
           )}
-          {instances.map((inst) => {
+          {instances.length > 0 && filteredInstances.length === 0 && (
+            <div className="sugg-empty">No matches for "{instFilter}".</div>
+          )}
+          {filteredInstances.map((inst) => {
             const cls = classes.find((c) => c.id === inst.cls);
             const isSel = inst.id === selectedId;
+            const isEditing = inst.id === editingId;
             return (
-              <div key={inst.id}
-                className={'inst-row' + (isSel ? ' selected' : '')}
-                onClick={() => setSelectedId(inst.id)}>
-                <span className="inst-dot" style={{ background: cls?.color || inst.color }} />
-                <div className="inst-text">
-                  <b>{inst.label}</b>
-                  <em><span className="mono">{inst.id}</span> · {cls?.label || inst.cls}</em>
+              <div key={inst.id} className={'inst-item' + (isEditing ? ' editing' : '')}>
+                <div className={'inst-row' + (isSel ? ' selected' : '')}
+                  onClick={() => setSelectedId(inst.id)}>
+                  <span className="inst-dot" style={{ background: cls?.color || inst.color }} />
+                  <div className="inst-text">
+                    <b>{inst.label}</b>
+                    <em>{cls?.label || inst.cls}</em>
+                  </div>
+                  <button className="inst-edit-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingId(isEditing ? null : inst.id);
+                    }}
+                    title={isEditing ? 'Close' : 'Edit'}>{isEditing ? '×' : '✎'}</button>
                 </div>
-                <div className="inst-conf" title={`Confidence ${inst.conf}`}>
-                  <i style={{ width: `${(inst.conf || 1) * 100}%`, background: cls?.color || inst.color }} />
-                </div>
+                {isEditing && (
+                  <div className="inst-edit-panel">
+                    <div className="ins-row">
+                      <label>Name</label>
+                      <input className="ins-input"
+                        value={inst.label}
+                        autoFocus
+                        onChange={(e) => updateInstance(inst.id, { label: e.target.value })} />
+                    </div>
+                    <div className="ins-row">
+                      <label>Class</label>
+                      <div className="class-pills">
+                        {classes.map((c) => (
+                          <button key={c.id}
+                            className={'class-pill' + (c.id === inst.cls ? ' active' : '')}
+                            onClick={() => updateInstance(inst.id, { cls: c.id, color: c.color })}
+                            title={`${c.label}${c.hotkey ? `  (${c.hotkey})` : ''}`}>
+                            <span className="class-swatch" style={{ background: c.color }} />
+                            <span>{c.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="ins-actions">
+                      <button className="ghost-btn" onClick={() => autoFitInstance(inst)}>↻ Auto-fit</button>
+                      <button className="ghost-btn danger" onClick={() => deleteInstance(inst.id)}>Delete</button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
-
-        {selected && (
-          <>
-            <div className="side-hd" style={{ marginTop: 14 }}>
-              <span>Inspector</span>
-              <span className="mono dim">{selected.id}</span>
-            </div>
-            <div className="inspector">
-              <div className="ins-row">
-                <label>Label</label>
-                <input className="ins-input" value={selected.label}
-                       onChange={(e) => updateSelected({ label: e.target.value })} />
-              </div>
-              <div className="ins-row">
-                <label>Class</label>
-                <div className="ins-class">
-                  <span className="class-swatch"
-                    style={{ background: classes.find((c) => c.id === selected.cls)?.color || selected.color }} />
-                  {classes.find((c) => c.id === selected.cls)?.label || selected.cls}
-                </div>
-              </div>
-              <NumGrid label3={['cx','cy','cz']} values={selected.center}
-                onChange={(i, v) => {
-                  const c = [...selected.center]; c[i] = v; updateSelected({ center: c });
-                }} />
-              <NumGrid label3={['w','h','d']} values={selected.size}
-                onChange={(i, v) => {
-                  const sz = [...selected.size]; sz[i] = Math.max(0.005, v); updateSelected({ size: sz });
-                }} />
-              <div className="ins-row" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <label style={{ width: 80 }}>Confidence</label>
-                <div className="conf-bar"><i style={{ width: `${(selected.conf || 1) * 100}%` }} /></div>
-                <span className="mono dim">{(selected.conf || 1).toFixed(2)}</span>
-              </div>
-              <div className="ins-actions">
-                <button className="ghost-btn" onClick={autoFitSelected}>↻ Auto-fit</button>
-                <button className="ghost-btn danger" onClick={deleteSelected}>Delete</button>
-              </div>
-            </div>
-          </>
-        )}
       </aside>
-    </div>
-  );
-}
-
-function NumGrid({ label3, values, onChange }) {
-  return (
-    <div className="ins-grid">
-      {label3.map((l, i) => (
-        <div key={l}>
-          <label>{l}</label>
-          <input className="ins-input mono" type="number" step="0.01"
-                 value={Number(values[i]).toFixed(3)}
-                 onChange={(e) => onChange(i, Number(e.target.value))}
-                 style={{ height: 22, padding: '0 6px', fontSize: 11 }} />
-        </div>
-      ))}
     </div>
   );
 }
