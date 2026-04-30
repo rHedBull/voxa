@@ -154,6 +154,18 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`segSave failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
+  async segPresegment() {
+    const r = await fetch('/api/segment/presegment', { method: 'POST' });
+    if (!r.ok) throw new Error(`segPresegment failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return {
+      nAssigned: j.n_assigned,
+      nSegments: j.n_segments,
+      fullClassIds: b64ToInt8(j.full_class_ids),
+      fullInstanceIds: b64ToInt32(j.full_instance_ids),
+      isFromPrelabel: !!j.is_from_prelabel,
+    };
+  },
 };
 
 function _decodeApplyResponse(j) {

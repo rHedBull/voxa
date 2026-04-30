@@ -900,6 +900,90 @@ def segment_redo():
     return _serialize_delta(out)
 
 
+def _voxa_class_name_to_id() -> dict[str, int]:
+    """Build {class-name-lower: int-id} from the configured classes.yaml.
+
+    Mirrors the enumeration order used by ``get_config()`` so id↔name
+    stays consistent with the palette the frontend renders.
+    """
+    if not CONFIG_PATH.exists():
+        return {}
+    raw = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    return {str(name).lower(): i
+            for i, name in enumerate((raw.get("classes") or {}).keys())}
+
+
+class PresegmentResponse(BaseModel):
+    n_assigned: int
+    n_segments: int
+    full_class_ids: str        # b64 Int8
+    full_instance_ids: str     # b64 Int32
+    is_from_prelabel: bool = True
+
+
+@app.post("/api/segment/presegment", response_model=PresegmentResponse)
+def segment_presegment():
+    """Run RANSAC presegmentation on the active scene's full-resolution
+    points, replace the SegmentSession in place, and return the new
+    full arrays so the frontend can refresh its mirror.
+
+    Bootstraps a fresh all-unlabeled session from the loaded cloud if no
+    segment session exists yet (e.g. raw / legacy scenes that load
+    without prelabels). Slow on real clouds (~10–60 s for 1 M points);
+    the endpoint blocks until done. Clears undo/redo since the cloud is
+    effectively re-initialised.
+    """
+    from presegment import presegment as _run_presegment
+    from segment_state import SegmentSession
+
+    seg = _state.get("seg")
+    if seg is not None:
+        positions = seg.positions
+    else:
+        pc = _state.get("pc")
+        if pc is None:
+            raise HTTPException(409, "No scene loaded — call /api/load first")
+        if len(pc) > MAX_LABEL_POINTS:
+            raise HTTPException(
+                413,
+                f"Cloud has {len(pc)} points; presegmentation is capped at "
+                f"VOXA_MAX_LABEL_POINTS={MAX_LABEL_POINTS}",
+            )
+        positions = pc.points
+
+    name_to_id = _voxa_class_name_to_id()
+    instance_ids, summary = _run_presegment(
+        np.asarray(positions, dtype=np.float64),
+        class_map=name_to_id,
+        log=lambda *_: None,  # silence inside HTTP handler; logs go to nowhere
+    )
+
+    n_points = int(positions.shape[0])
+    class_ids = np.full(n_points, -1, dtype=np.int8)
+    seg_to_class = {int(s["id"]): int(s.get("class_id", -1)) for s in summary}
+    for sid, cid in seg_to_class.items():
+        if cid >= 0:
+            class_ids[instance_ids == sid] = cid
+
+    # Replace the session — undo/redo is meaningless across a re-presegment.
+    _state["seg"] = SegmentSession(
+        class_ids=class_ids,
+        instance_ids=instance_ids.astype(np.int32),
+        positions=positions,
+        is_from_prelabel=True,
+    )
+    _state["seg"].dirty = True
+
+    labeled_mask = instance_ids >= 0
+    return PresegmentResponse(
+        n_assigned=int(labeled_mask.sum()),
+        n_segments=int(np.unique(instance_ids[labeled_mask]).size) if labeled_mask.any() else 0,
+        full_class_ids=_b64(class_ids.astype(np.int8)),
+        full_instance_ids=_b64(instance_ids.astype(np.int32)),
+        is_from_prelabel=True,
+    )
+
+
 @app.put("/api/segment/save")
 def segment_save():
     seg = _require_seg()

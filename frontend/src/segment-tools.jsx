@@ -1,7 +1,9 @@
 // segment-tools.jsx — tool strip + Pick tool + Brush tool for per-point segment editing.
 
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef, useMemo, useState } from 'react';
+import * as THREE from 'three';
 import { VoxaAPI } from './api.js';
+import { initSegState } from './segment-state.js';
 
 // ── Tool strip ──────────────────────────────────────────────────────────────
 // Three-button row: Cuboid / Pick / Brush.
@@ -33,6 +35,205 @@ export function SegmentToolStrip({ activeTool, onChange, hasSegState }) {
   );
 }
 
+// ── Presegment button ───────────────────────────────────────────────────────
+// One-shot action: re-runs the curvature + RANSAC presegmentation on the
+// active scene's full-resolution points and replaces segState. Slow on
+// large clouds (~10–60s), so the button shows a busy state while in
+// flight. Confirms before discarding unsaved edits.
+export function PresegmentButton({ segState, setSegState, prelabelRef, cloud,
+                                    setCloud, setColorMode }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const disabled = !cloud || busy;
+
+  async function run() {
+    if (!cloud) return;
+    if (segState?.dirty) {
+      const ok = window.confirm(
+        'Presegmenting will discard your unsaved edits. Continue?');
+      if (!ok) return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await VoxaAPI.segPresegment();
+      if (prelabelRef) {
+        prelabelRef.current = {
+          classFull: res.fullClassIds.slice(),
+          instanceFull: res.fullInstanceIds.slice(),
+        };
+      }
+      setSegState(initSegState({
+        classFull: res.fullClassIds,
+        instanceFull: res.fullInstanceIds,
+        isFromPrelabel: true,
+      }));
+      // Project the freshly-computed full arrays onto the subsampled
+      // cloud so the viewer's recolor effect (which reads cloud.classIds /
+      // cloud.instanceIds) reflects the presegmentation. Replacing cloud
+      // with a shallow copy triggers that effect cleanly.
+      if (setCloud) {
+        const subIdx = cloud.subsampleIdx;
+        const subN = (cloud.positions?.length || 0) / 3;
+        const subClass = new Int8Array(subN);
+        const subInst = new Int32Array(subN);
+        for (let p = 0; p < subN; p++) {
+          const f = subIdx ? subIdx[p] : p;
+          subClass[p] = res.fullClassIds[f];
+          subInst[p] = res.fullInstanceIds[f];
+        }
+        setCloud({
+          ...cloud,
+          classIds: subClass,
+          instanceIds: subInst,
+          isFromPrelabel: true,
+        });
+      }
+      // Wildly different colour per segment — ipl-style. The user can
+      // still toggle back to class colours via the existing "Color by"
+      // pills (in Inspect mode); Label mode keeps colorMode local.
+      if (setColorMode) setColorMode('instance');
+    } catch (e) {
+      setError(String(e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const title = busy
+    ? 'Running presegmentation…'
+    : error
+      ? `Presegment failed: ${error}`
+      : !cloud
+        ? 'Load a scene first'
+        : segState?.dirty
+          ? 'Re-run RANSAC presegmentation (discards unsaved edits)'
+          : 'Run RANSAC presegmentation';
+
+  return (
+    <button
+      type="button"
+      className={'tool-btn mini' + (busy ? ' busy' : '') + (error ? ' error' : '')}
+      disabled={disabled}
+      title={title}
+      onClick={run}
+    >
+      <span className="tool-ico" aria-hidden>{busy ? '…' : '⚙'}</span>
+    </button>
+  );
+}
+
+
+// ── Presegment list ─────────────────────────────────────────────────────────
+// Sidebar list of every per-point segment, one row per instance id from
+// segState.summary. The list is *only* a fast selector — it groups
+// points so the user doesn't have to lasso them in 3D. Click a row to
+// select that group, shift-click for multi-select. Confirmation lives
+// elsewhere (the Instances panel on the right): there is no parallel
+// confirm flow here on purpose.
+export function PresegmentList({ segState, setSegState, classes, viewerRef, cloud }) {
+  const segmentsAll = useMemo(() => {
+    if (!segState) return [];
+    const out = [];
+    for (const [id, info] of segState.summary.entries()) {
+      out.push({ id, classId: info.classId, nPoints: info.nPoints });
+    }
+    out.sort((a, b) => b.nPoints - a.nPoints);
+    return out;
+  }, [segState]);
+
+  const classesById = useMemo(() => {
+    const out = {};
+    classes.forEach((c, i) => { out[i] = c; out[c.id] = c; });
+    return out;
+  }, [classes]);
+
+  if (!segState) return null;
+
+  const onRowClick = (segId, evt) => {
+    setSegState((s) => {
+      if (!s) return s;
+      const next = new Set(s.selection);
+      const additive = evt.shiftKey || evt.ctrlKey || evt.metaKey;
+      if (additive) {
+        next.has(segId) ? next.delete(segId) : next.add(segId);
+      } else {
+        if (next.size === 1 && next.has(segId)) next.clear();
+        else { next.clear(); next.add(segId); }
+      }
+      return { ...s, selection: next };
+    });
+  };
+
+  const focusSegment = (segId) => {
+    if (!viewerRef?.current?.frame || !cloud) return;
+    const subIdx = cloud.subsampleIdx;
+    const pos = cloud.positions;
+    if (!pos) return;
+    const inst = segState.instanceFull;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let n = 0;
+    const subN = pos.length / 3;
+    for (let p = 0; p < subN; p++) {
+      const fullIdx = subIdx ? subIdx[p] : p;
+      if (inst[fullIdx] !== segId) continue;
+      const x = pos[p * 3], y = pos[p * 3 + 1], z = pos[p * 3 + 2];
+      if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
+      if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
+      n++;
+    }
+    if (n === 0) return;
+    // viewer.frame() calls THREE.Vector3.copy() on the center, which
+    // requires a Vector3-like object (not a plain array — copy() is a
+    // silent no-op on arrays and the camera ends up looking at NaN).
+    const center = new THREE.Vector3(
+      (minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+    const radius = Math.max(maxX - minX, maxY - minY, maxZ - minZ) * 0.6 + 0.05;
+    viewerRef.current.frame(center, radius);
+  };
+
+  const total = segmentsAll.length;
+
+  return (
+    <div className="preseg-panel">
+      <div className="side-hd" style={{ marginTop: 14 }}>
+        <span>Presegments</span>
+        <span className="badge-soft">{total}</span>
+      </div>
+      <div className="inst-list" style={{ maxHeight: '40vh', overflowY: 'auto' }}>
+        {total === 0 && (
+          <div className="sugg-empty" style={{ fontSize: '11px', padding: '6px 4px' }}>
+            No presegments. Click ⚙ to run RANSAC.
+          </div>
+        )}
+        {segmentsAll.map((seg) => {
+          const cls = classesById[seg.classId];
+          const isSel = segState.selection.has(seg.id);
+          const dot = cls?.color || '#6b7280';
+          return (
+            <div key={seg.id}
+              className={'inst-row' + (isSel ? ' selected' : '')}
+              onClick={(e) => onRowClick(seg.id, e)}
+              title={isSel ? 'Click again to deselect, shift-click for multi'
+                           : 'Click to select; shift-click to add'}>
+              <span className="inst-dot" style={{ background: dot }} />
+              <div className="inst-text">
+                <b>#{seg.id}</b>
+                <em>{cls?.label || (seg.classId < 0 ? 'unlabeled' : `cls ${seg.classId}`)} · {seg.nPoints.toLocaleString()}</em>
+              </div>
+              <button className="inst-edit-btn"
+                onClick={(e) => { e.stopPropagation(); focusSegment(seg.id); }}
+                title="Focus camera on segment">◎</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 // ── Pick tool ───────────────────────────────────────────────────────────────
 // Headless component — returns null. Registers pointer-pick callbacks on the
 // viewer and routes hotkeys to segment operations.
@@ -49,16 +250,15 @@ export function PickTool({ viewerRef, segState, onApply, classes }) {
     const unsub = viewer.onPointerPick((fullIndex, evt) => {
       const instId = segState.instanceFull[fullIndex];
       if (instId < 0) return;
-      // Shift = multi-select, plain click = replace selection with single segment.
+      // ctrl/cmd/shift = multi-select, plain click = replace.
       const next = new Set(segState.selection);
-      if (evt.shiftKey) {
+      const additive = evt.shiftKey || evt.ctrlKey || evt.metaKey;
+      if (additive) {
         next.has(instId) ? next.delete(instId) : next.add(instId);
       } else {
         if (next.size === 1 && next.has(instId)) next.clear();
         else { next.clear(); next.add(instId); }
       }
-      // Propagate selection update via a synthetic "selection-only" path.
-      // onApply handles actual mutations; selection is stored on segState.
       onApply('__select__', next);
     });
     return unsub;

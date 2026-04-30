@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
-import { SegmentToolStrip, PickTool, BrushTool } from './segment-tools.jsx';
+import { SegmentToolStrip, PickTool, BrushTool, PresegmentButton, PresegmentList } from './segment-tools.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
@@ -16,12 +16,14 @@ function formatPointCount(n) {
   return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
 }
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, preferPrelabel, onPreferPrelabelChange, onCameraChange, hasMesh }) {
+export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
   const [activeTool, setActiveTool] = useStateLabel('cuboid');
-  const [colorMode] = useStateLabel('class');
+  // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
+  // run — wildly different hues per segment make the grouping legible.
+  const [colorMode, setColorMode] = useStateLabel('class');
   const [showDiff, setShowDiff] = useStateLabel(false);
   // Gizmo mode for the selected cuboid. null = no gizmo (edges only).
   const [transformMode, setTransformMode] = useStateLabel('translate');
@@ -58,6 +60,32 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       setActiveClass(classes[0].id);
     }
   }, [classes, activeClass]);
+
+  // Yellow overlay for selected presegments. Recompute the per-subrow
+  // mask whenever the selection or the underlying instance assignment
+  // changes, then push it to the viewer's segSelection buffer.
+  useEffectLabel(() => {
+    const v = viewerRef?.current;
+    if (!v?.setSelectedSegmentMask) return;
+    if (!segState || !cloud?.positions) {
+      v.setSelectedSegmentMask(null);
+      return;
+    }
+    const sel = segState.selection;
+    if (sel.size === 0) {
+      v.setSelectedSegmentMask(null);
+      return;
+    }
+    const inst = segState.instanceFull;
+    const subIdx = cloud.subsampleIdx;
+    const subN = cloud.positions.length / 3;
+    const mask = new Uint8Array(subN);
+    for (let p = 0; p < subN; p++) {
+      const f = subIdx ? subIdx[p] : p;
+      if (sel.has(inst[f])) mask[p] = 1;
+    }
+    v.setSelectedSegmentMask(mask);
+  }, [segState?.selection, segState?.instanceFull, cloud, viewerRef]);
 
   // Only the selected cuboid renders in the viewer — keeps the scene readable
   // when there are dozens/hundreds of prelabel instances. Hidden classes still
@@ -522,6 +550,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         <button className="ghost-btn" style={{ marginTop: 6 }} onClick={() => onSave(instances)}>
           ⌘S Save annotations
         </button>
+
+        <PresegmentList
+          segState={segState}
+          setSegState={setSegState}
+          classes={classes}
+          viewerRef={viewerRef}
+          cloud={cloud}
+        />
       </aside>
 
       {/* Center: viewport */}
@@ -556,21 +592,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 value={`${formatPointCount(labelStats.left)} / ${formatPointCount(labelStats.total)}`}
                 mono />
             )}
-            {cloud?.isFromPrelabel && (
-              <HUDChip label="Source" value="Recommendation" accent />
-            )}
           </div>
           <div className="hud-group">
-            {onPreferPrelabelChange && (
-              <button
-                className={'hud-chip-btn' + (preferPrelabel ? ' active' : '')}
-                onClick={() => onPreferPrelabelChange(!preferPrelabel)}
-                title={preferPrelabel
-                  ? 'Showing model recommendation; click to switch back to ground truth'
-                  : 'Replace ground truth with model recommendation as starting point'}>
-                {preferPrelabel ? '◉ Recommendation' : '○ Recommendation'}
-              </button>
-            )}
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
             <button className="hud-chip-btn"
@@ -590,16 +613,20 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         </div>
 
         <ViewportToolbar side="left">
-          {segState && (
-            <>
-              <SegmentToolStrip
-                activeTool={activeTool}
-                onChange={setActiveTool}
-                hasSegState={!!segState}
-              />
-              <div className="tool-sep" />
-            </>
-          )}
+          <SegmentToolStrip
+            activeTool={activeTool}
+            onChange={setActiveTool}
+            hasSegState={!!segState}
+          />
+          <PresegmentButton
+            segState={segState}
+            setSegState={setSegState}
+            prelabelRef={prelabelRef}
+            cloud={cloud}
+            setCloud={setCloud}
+            setColorMode={setColorMode}
+          />
+          <div className="tool-sep" />
           {activeTool === 'cuboid' && (
             <>
               {!isLocked && (

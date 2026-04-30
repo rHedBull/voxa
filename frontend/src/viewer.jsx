@@ -429,6 +429,22 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     highlightPoints.visible = false;
     scene.add(highlightPoints);
 
+    // Selected-segment overlay. Same yellow + 2.4× size as cuboid highlight,
+    // but driven independently by setSelectedSegmentMask() — populated when
+    // the user clicks rows in the Presegment list or picks segments in 3D.
+    const segSelectionGeom = new THREE.BufferGeometry();
+    const segSelectionMat = new THREE.PointsMaterial({
+      size: pointSize * 2.4,
+      color: 0xfacc15,
+      sizeAttenuation: true,
+      transparent: false,
+      depthWrite: true,
+    });
+    const segSelectionPoints = new THREE.Points(segSelectionGeom, segSelectionMat);
+    segSelectionPoints.frustumCulled = false;
+    segSelectionPoints.visible = false;
+    scene.add(segSelectionPoints);
+
     // Dense overlay: full-density points fetched for the AABB of the selected
     // cuboid. Drawn on top of the base cloud so small geometry (pipes, valves)
     // is legible even when the base is strided to ~1M for performance. Uses
@@ -575,6 +591,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       pickSubs, moveSubs,
       transformAnchor, transformControls,
       highlightGeom, highlightMat, highlightPoints,
+      segSelectionGeom, segSelectionMat, segSelectionPoints,
       denseGeom, denseMat, densePoints,
     };
 
@@ -592,6 +609,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       pointsMat.dispose();
       highlightGeom.dispose();
       highlightMat.dispose();
+      segSelectionGeom.dispose();
+      segSelectionMat.dispose();
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
@@ -636,6 +655,17 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       s.highlightGeom.setAttribute('position', attr);
       s.highlightGeom.setDrawRange(0, 0);
       s.highlightPoints.visible = false;
+    }
+
+    // Same for the segment-selection overlay (independent of cuboid highlight).
+    if (s.segSelectionGeom) {
+      const N = cloud.positions.length / 3;
+      const buf = new Float32Array(N * 3);
+      const attr = new THREE.BufferAttribute(buf, 3);
+      attr.setUsage(THREE.DynamicDrawUsage);
+      s.segSelectionGeom.setAttribute('position', attr);
+      s.segSelectionGeom.setDrawRange(0, 0);
+      s.segSelectionPoints.visible = false;
     }
 
     // Apply the recenter offset to the mesh group so a co-located mesh
@@ -1249,12 +1279,47 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         mesh.visible = true;
       }
     },
-    recolorByEdit({ affectedFullIndices, classFull, instanceFull, colorMode, palette }) {
+    /**
+     * Highlight the subsampled points whose subRow has mask[subRow] !== 0.
+     * Caller computes the mask from segState.selection + instanceFull
+     * + cloud.subsampleIdx — the viewer just blits matching positions
+     * into the yellow overlay buffer.
+     */
+    setSelectedSegmentMask(mask) {
+      const s = stateRef.current;
+      if (!s.segSelectionGeom || !s.pointsGeom) return;
+      const posAttr = s.pointsGeom.getAttribute('position');
+      const outAttr = s.segSelectionGeom.getAttribute('position');
+      if (!posAttr || !outAttr) return;
+      const pos = posAttr.array;
+      const out = outAttr.array;
+      const subN = pos.length / 3;
+      let m = 0;
+      if (mask && mask.length > 0) {
+        for (let p = 0; p < subN; p++) {
+          if (!mask[p]) continue;
+          const b = p * 3;
+          out[m++] = pos[b];
+          out[m++] = pos[b + 1];
+          out[m++] = pos[b + 2];
+        }
+      }
+      s.segSelectionGeom.setDrawRange(0, m / 3);
+      outAttr.needsUpdate = true;
+      s.segSelectionPoints.visible = m > 0;
+    },
+    recolorByEdit({ affectedFullIndices, classFull, instanceFull, colorMode, palette,
+                    dimInstances = null }) {
       const s = stateRef.current;
       if (!s.pointsGeom) return;
       const colorAttr = s.pointsGeom.getAttribute('color');
       if (!colorAttr) return;
 
+      // dimInstances: any Set-like. Points whose instance is in this set
+      // paint as a dim grey instead of their class/instance colour. Used
+      // for "hide confirmed" mode in the Presegment list.
+      const dimSet = dimInstances && typeof dimInstances.has === 'function' ? dimInstances : null;
+      const dim = [0.22, 0.23, 0.26];
       const subsampleIdx = s.points.userData.subsampleIdx;
       if (!subsampleIdx) {
         // No subsampling: sub row == full idx. Recolor directly.
@@ -1263,7 +1328,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         const tmp = new THREE.Color();
         for (const fullIdx of affectedFullIndices) {
           const base = fullIdx * 3;
-          if (colorMode === 'class' && paletteRgb && classFull) {
+          if (dimSet && instanceFull && dimSet.has(instanceFull[fullIdx])) {
+            colorAttr.array[base]     = dim[0];
+            colorAttr.array[base + 1] = dim[1];
+            colorAttr.array[base + 2] = dim[2];
+          } else if (colorMode === 'class' && paletteRgb && classFull) {
             const cid = classFull[fullIdx];
             const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
             colorAttr.array[base]     = rgb[0];
@@ -1303,7 +1372,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         const subRow = fullToSub[fullIdx];
         if (subRow === -1) continue;
         const base = subRow * 3;
-        if (colorMode === 'class' && paletteRgb && classFull) {
+        if (dimSet && instanceFull && dimSet.has(instanceFull[fullIdx])) {
+          colorAttr.array[base]     = dim[0];
+          colorAttr.array[base + 1] = dim[1];
+          colorAttr.array[base + 2] = dim[2];
+        } else if (colorMode === 'class' && paletteRgb && classFull) {
           const cid = classFull[fullIdx];
           const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
           colorAttr.array[base]     = rgb[0];
