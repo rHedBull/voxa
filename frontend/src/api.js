@@ -26,6 +26,9 @@ export function decodeLoadResponse(j) {
     isFromPrelabel: !!j.is_from_prelabel,
     segmentSummary: j.segment_summary || null,
     subsampleIdx: j.subsample_idx ? b64ToInt32(j.subsample_idx) : null,
+    segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
+    segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
+    segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
   };
 }
 
@@ -154,8 +157,12 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`segSave failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
-  async segPresegment() {
-    const r = await fetch('/api/segment/presegment', { method: 'POST' });
+  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true } = {}) {
+    const r = await fetch('/api/segment/presegment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, resolution, preserve_labeled: preserveLabeled }),
+    });
     if (!r.ok) throw new Error(`segPresegment failed: ${r.status} ${await r.text()}`);
     const j = await r.json();
     return {
@@ -164,6 +171,12 @@ export const VoxaAPI = {
       fullClassIds: b64ToInt8(j.full_class_ids),
       fullInstanceIds: b64ToInt32(j.full_instance_ids),
       isFromPrelabel: !!j.is_from_prelabel,
+      segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
+      segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
+      segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
+      hullVertices: j.hull_vertices ? b64ToFloat32(j.hull_vertices) : null,
+      hullFaces: j.hull_faces ? b64ToInt32(j.hull_faces) : null,
+      hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
     };
   },
 };

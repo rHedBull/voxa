@@ -16,7 +16,6 @@ import numpy as np
 import pytest
 
 pytest.importorskip("open3d")
-pytest.importorskip("sklearn")
 
 
 def _make_scene(rng: np.random.Generator) -> np.ndarray:
@@ -90,6 +89,57 @@ def test_presegment_409_when_no_session_and_no_cloud(client):
     main._state["pc"] = None
     r = client.post("/api/segment/presegment")
     assert r.status_code == 409
+
+
+def test_presegment_preserves_classified_points(client_with_synthetic_session):
+    """preserve_labeled=True keeps already-classified (class_id >= 0)
+    points untouched and only re-presegments the rest. New supervoxel
+    ids must not collide with the kept instance ids."""
+    import main
+    client = client_with_synthetic_session
+    seg = main._state["seg"]
+
+    # Mark the first 500 points as already labeled (class 7, instance 42).
+    seg.class_ids[:500] = 7
+    seg.instance_ids[:500] = 42
+    kept_inst_before = seg.instance_ids[:500].copy()
+    kept_cls_before = seg.class_ids[:500].copy()
+
+    r = client.post(
+        "/api/segment/presegment",
+        json={"resolution": 0.1, "preserve_labeled": True},
+    )
+    assert r.status_code == 200, r.text
+
+    seg = main._state["seg"]
+    np.testing.assert_array_equal(seg.instance_ids[:500], kept_inst_before)
+    np.testing.assert_array_equal(seg.class_ids[:500], kept_cls_before)
+    # New supervoxels must live above the kept instance id (42).
+    new_ids = seg.instance_ids[500:]
+    assigned = new_ids[new_ids >= 0]
+    assert assigned.size > 0
+    assert assigned.min() > 42
+
+
+def test_presegment_full_replace_when_preserve_false(client_with_synthetic_session):
+    """preserve_labeled=False replaces everything (legacy behavior)."""
+    import main
+    client = client_with_synthetic_session
+    seg = main._state["seg"]
+    seg.class_ids[:500] = 7
+    seg.instance_ids[:500] = 42
+
+    r = client.post(
+        "/api/segment/presegment",
+        json={"resolution": 0.1, "preserve_labeled": False},
+    )
+    assert r.status_code == 200, r.text
+
+    seg = main._state["seg"]
+    # Class ids reset (the synthetic scene has no name→id mapping that
+    # would re-classify supervoxels), instance ids start from 0.
+    assert (seg.class_ids == -1).all()
+    assert seg.instance_ids.min() >= 0
 
 
 def test_presegment_bootstraps_from_cloud_without_session():

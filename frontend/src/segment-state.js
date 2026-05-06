@@ -1,4 +1,7 @@
-export function initSegState({ classFull, instanceFull, isFromPrelabel = false }) {
+export function initSegState({
+  classFull, instanceFull, isFromPrelabel = false,
+  segBoxes = null, segHulls = null,
+}) {
   return {
     classFull,
     instanceFull,
@@ -8,6 +11,8 @@ export function initSegState({ classFull, instanceFull, isFromPrelabel = false }
     activeTool: 'cuboid',
     brush: { radius: 0.05, mode: 'create', destInstance: null, destClass: 0 },
     isFromPrelabel,
+    segBoxes,  // { segIds, segCenters, segSizes } — kept for fallback / metrics
+    segHulls,  // { vertices: Float32Array, faces: Int32Array, faceSeg: Int32Array }
   };
 }
 

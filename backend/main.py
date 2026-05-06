@@ -20,7 +20,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
 import yaml
@@ -124,6 +124,9 @@ class LoadResponse(BaseModel):
     is_from_prelabel: bool = False
     segment_summary: Optional[dict] = None   # { "<inst>": {class_id, n_points} }
     subsample_idx: Optional[str] = None      # b64 Int32, len==num_subsampled, maps sub row → full idx
+    seg_ids: Optional[str] = None            # b64 Int32 — segment ids (full-res, for voxel box overlay)
+    seg_centers: Optional[str] = None        # b64 Float32 (N×3) — bbox centres
+    seg_sizes: Optional[str] = None          # b64 Float32 (N×3) — bbox extents
 
 
 class LoadRegionRequest(BaseModel):
@@ -510,6 +513,12 @@ def load_scene(req: LoadRequest):
         else:
             summary = {}
         full_payload["segment_summary"] = summary
+        if (labels.instance_ids >= 0).any():
+            box_ids, box_centers, box_sizes = _compute_segment_boxes(
+                pc.points, labels.instance_ids)
+            full_payload["seg_ids"] = _b64(box_ids)
+            full_payload["seg_centers"] = _b64(box_centers)
+            full_payload["seg_sizes"] = _b64(box_sizes)
     seg_for_meta = _state.get("seg")
     full_payload["is_from_prelabel"] = bool(seg_for_meta.is_from_prelabel) if seg_for_meta is not None else False
 
@@ -913,25 +922,68 @@ def _voxa_class_name_to_id() -> dict[str, int]:
             for i, name in enumerate((raw.get("classes") or {}).keys())}
 
 
+def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> tuple:
+    """Compute per-segment bounding box as center + size (float32).
+
+    Returns (seg_ids int32[N], centers float32[N,3], sizes float32[N,3]).
+    Vectorised via argsort + reduceat: O(n log n) not O(n_seg × n_points).
+    """
+    pos = np.asarray(positions, dtype=np.float32)
+    mask = instance_ids >= 0
+    if not mask.any():
+        empty3 = np.empty((0, 3), dtype=np.float32)
+        return np.empty(0, dtype=np.int32), empty3, empty3
+    pos_v = pos[mask]
+    ids_v = instance_ids[mask]
+    order = np.argsort(ids_v, kind='stable')
+    ids_s = ids_v[order]
+    pos_s = pos_v[order]
+    unique_ids, starts = np.unique(ids_s, return_index=True)
+    mins = np.minimum.reduceat(pos_s, starts)
+    maxs = np.maximum.reduceat(pos_s, starts)
+    centers = ((mins + maxs) / 2).astype(np.float32)
+    sizes = np.maximum(maxs - mins, 0.01).astype(np.float32)
+    return unique_ids.astype(np.int32), centers, sizes
+
+
+class PresegmentRequest(BaseModel):
+    mode: Literal["voxel", "ransac", "model"] = "voxel"
+    resolution: float = 0.05      # voxel size in scene units (voxel mode only)
+    preserve_labeled: bool = True  # only re-presegment points with class_id < 0
+
+
 class PresegmentResponse(BaseModel):
     n_assigned: int
     n_segments: int
     full_class_ids: str        # b64 Int8
     full_instance_ids: str     # b64 Int32
     is_from_prelabel: bool = True
+    seg_ids: str = ""          # b64 Int32  — segment ids in order
+    seg_centers: str = ""      # b64 Float32 (N×3) — bbox centres
+    seg_sizes: str = ""        # b64 Float32 (N×3) — bbox extents
+    # Per-segment convex hulls, packed into one merged geometry. Frontend
+    # builds a single THREE.BufferGeometry from these (3d-labeler style).
+    hull_vertices: str = ""    # b64 Float32 (V×3)
+    hull_faces: str = ""       # b64 Int32   (F×3)  — global vertex indices
+    hull_face_seg: str = ""    # b64 Int32   (F,)   — segment id per face
 
 
 @app.post("/api/segment/presegment", response_model=PresegmentResponse)
-def segment_presegment():
-    """Run RANSAC presegmentation on the active scene's full-resolution
-    points, replace the SegmentSession in place, and return the new
-    full arrays so the frontend can refresh its mirror.
+def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
+    """Run voxel presegmentation on the active scene's full-resolution
+    points and return the new full arrays so the frontend can refresh
+    its mirror.
+
+    With ``preserve_labeled=True`` (default), only points whose
+    ``class_id < 0`` are re-presegmented; points already assigned to a
+    class keep their (class_id, instance_id) intact and the new
+    supervoxel ids are renumbered to start above the highest existing
+    instance id. With ``preserve_labeled=False`` the entire session is
+    replaced.
 
     Bootstraps a fresh all-unlabeled session from the loaded cloud if no
-    segment session exists yet (e.g. raw / legacy scenes that load
-    without prelabels). Slow on real clouds (~10–60 s for 1 M points);
-    the endpoint blocks until done. Clears undo/redo since the cloud is
-    effectively re-initialised.
+    segment session exists yet. Slow on real clouds (~10–60 s for 1 M
+    points); blocks until done. Clears undo/redo.
     """
     from presegment import presegment as _run_presegment
     from segment_state import SegmentSession
@@ -939,6 +991,8 @@ def segment_presegment():
     seg = _state.get("seg")
     if seg is not None:
         positions = seg.positions
+        existing_class = seg.class_ids.copy()
+        existing_inst = seg.instance_ids.copy()
     else:
         pc = _state.get("pc")
         if pc is None:
@@ -950,22 +1004,46 @@ def segment_presegment():
                 f"VOXA_MAX_LABEL_POINTS={MAX_LABEL_POINTS}",
             )
         positions = pc.points
-
-    name_to_id = _voxa_class_name_to_id()
-    instance_ids, summary = _run_presegment(
-        np.asarray(positions, dtype=np.float64),
-        class_map=name_to_id,
-        log=lambda *_: None,  # silence inside HTTP handler; logs go to nowhere
-    )
+        n_init = int(positions.shape[0])
+        existing_class = np.full(n_init, -1, dtype=np.int8)
+        existing_inst = np.full(n_init, -1, dtype=np.int32)
 
     n_points = int(positions.shape[0])
-    class_ids = np.full(n_points, -1, dtype=np.int8)
-    seg_to_class = {int(s["id"]): int(s.get("class_id", -1)) for s in summary}
+    name_to_id = _voxa_class_name_to_id()
+
+    keep_mask = (existing_class >= 0) if req.preserve_labeled else np.zeros(n_points, dtype=bool)
+    redo_mask = ~keep_mask
+
+    if redo_mask.any():
+        sub_positions = np.asarray(positions[redo_mask], dtype=np.float64)
+        sub_inst, sub_summary = _run_presegment(
+            sub_positions,
+            mode=req.mode,
+            class_map=name_to_id,
+            log=lambda *_: None,
+            resolution=float(req.resolution),
+        )
+    else:
+        sub_inst = np.empty(0, dtype=np.int32)
+        sub_summary = []
+
+    # Renumber new instance ids to live above the existing ones so we
+    # never collide with kept-labeled points.
+    id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
+    if id_offset and sub_inst.size:
+        sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
+
+    instance_ids = existing_inst.copy()
+    instance_ids[redo_mask] = sub_inst
+
+    class_ids = existing_class.copy()
+    # New supervoxels stay at class_id = -1 unless the summary mapped them.
+    class_ids[redo_mask] = -1
+    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
     for sid, cid in seg_to_class.items():
         if cid >= 0:
             class_ids[instance_ids == sid] = cid
 
-    # Replace the session — undo/redo is meaningless across a re-presegment.
     _state["seg"] = SegmentSession(
         class_ids=class_ids,
         instance_ids=instance_ids.astype(np.int32),
@@ -975,12 +1053,25 @@ def segment_presegment():
     _state["seg"].dirty = True
 
     labeled_mask = instance_ids >= 0
+    box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(positions), instance_ids)
+    from segment_hulls import compute_hulls as _compute_hulls
+    hull_v, hull_f, hull_seg = _compute_hulls(
+        np.asarray(positions),
+        instance_ids.astype(np.int32),
+        resolution=float(req.resolution),
+    )
     return PresegmentResponse(
         n_assigned=int(labeled_mask.sum()),
         n_segments=int(np.unique(instance_ids[labeled_mask]).size) if labeled_mask.any() else 0,
         full_class_ids=_b64(class_ids.astype(np.int8)),
         full_instance_ids=_b64(instance_ids.astype(np.int32)),
         is_from_prelabel=True,
+        seg_ids=_b64(box_ids),
+        seg_centers=_b64(box_centers),
+        seg_sizes=_b64(box_sizes),
+        hull_vertices=_b64(hull_v),
+        hull_faces=_b64(hull_f),
+        hull_face_seg=_b64(hull_seg),
     )
 
 

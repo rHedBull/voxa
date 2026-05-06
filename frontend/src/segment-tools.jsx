@@ -36,27 +36,50 @@ export function SegmentToolStrip({ activeTool, onChange, hasSegState }) {
 }
 
 // ── Presegment button ───────────────────────────────────────────────────────
-// One-shot action: re-runs the curvature + RANSAC presegmentation on the
-// active scene's full-resolution points and replaces segState. Slow on
-// large clouds (~10–60s), so the button shows a busy state while in
-// flight. Confirms before discarding unsaved edits.
-export function PresegmentButton({ segState, setSegState, prelabelRef, cloud,
-                                    setCloud, setColorMode }) {
+// Click ⚙ to open a small popover that picks the voxel resolution and
+// whether to preserve already-classified points, then re-runs the
+// supervoxel presegmentation on the active scene. Slow on large clouds
+// (~10–60s), so the button shows a busy state while in flight.
+export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, setCloud }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [resolution, setResolution] = useState(0.3);
+  const [preserveLabeled, setPreserveLabeled] = useState(true);
+  const [mode, setMode] = useState('voxel');
+  const popRef = useRef(null);
+  const btnRef = useRef(null);
   const disabled = !cloud || busy;
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e) {
+      if (popRef.current?.contains(e.target)) return;
+      if (btnRef.current?.contains(e.target)) return;
+      setOpen(false);
+    }
+    function onKey(e) { if (e.key === 'Escape') setOpen(false); }
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
 
   async function run() {
     if (!cloud) return;
-    if (segState?.dirty) {
+    // Only the destructive (full-replace) path can drop unsaved edits.
+    if (!preserveLabeled && segState?.dirty) {
       const ok = window.confirm(
-        'Presegmenting will discard your unsaved edits. Continue?');
+        'Presegmenting without preserve will discard your unsaved edits. Continue?');
       if (!ok) return;
     }
     setBusy(true);
     setError(null);
+    setOpen(false);
     try {
-      const res = await VoxaAPI.segPresegment();
+      const res = await VoxaAPI.segPresegment({ mode, resolution, preserveLabeled });
       if (prelabelRef) {
         prelabelRef.current = {
           classFull: res.fullClassIds.slice(),
@@ -67,6 +90,12 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud,
         classFull: res.fullClassIds,
         instanceFull: res.fullInstanceIds,
         isFromPrelabel: true,
+        segBoxes: (res.segIds && res.segCenters && res.segSizes)
+          ? { segIds: res.segIds, segCenters: res.segCenters, segSizes: res.segSizes }
+          : null,
+        segHulls: (res.hullVertices && res.hullFaces && res.hullFaceSeg)
+          ? { vertices: res.hullVertices, faces: res.hullFaces, faceSeg: res.hullFaceSeg }
+          : null,
       }));
       // Project the freshly-computed full arrays onto the subsampled
       // cloud so the viewer's recolor effect (which reads cloud.classIds /
@@ -89,10 +118,9 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud,
           isFromPrelabel: true,
         });
       }
-      // Wildly different colour per segment — ipl-style. The user can
-      // still toggle back to class colours via the existing "Color by"
-      // pills (in Inspect mode); Label mode keeps colorMode local.
-      if (setColorMode) setColorMode('instance');
+      // Point colouring while preseg is active is handled inside Viewer
+      // (it overrides ``colorMode`` to use the same segment-id hue as the
+      // hull mesh). Nothing to switch here.
     } catch (e) {
       setError(String(e.message || e));
     } finally {
@@ -106,20 +134,108 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud,
       ? `Presegment failed: ${error}`
       : !cloud
         ? 'Load a scene first'
-        : segState?.dirty
-          ? 'Re-run RANSAC presegmentation (discards unsaved edits)'
-          : 'Run RANSAC presegmentation';
+        : 'Configure & run voxel presegmentation';
 
   return (
-    <button
-      type="button"
-      className={'tool-btn mini' + (busy ? ' busy' : '') + (error ? ' error' : '')}
-      disabled={disabled}
-      title={title}
-      onClick={run}
-    >
-      <span className="tool-ico" aria-hidden>{busy ? '…' : '⚙'}</span>
-    </button>
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        ref={btnRef}
+        type="button"
+        className={'tool-btn mini' + (busy ? ' busy' : '') + (error ? ' error' : '') + (open ? ' active' : '')}
+        disabled={disabled}
+        title={title}
+        onClick={() => !disabled && setOpen((v) => !v)}
+      >
+        <span className="tool-ico" aria-hidden>{busy ? '…' : '⚙'}</span>
+      </button>
+      {open && (
+        <div
+          ref={popRef}
+          className="preseg-popover"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            zIndex: 1000,
+            minWidth: 220,
+            padding: 10,
+            background: 'var(--panel-bg, #1d1d1d)',
+            border: '1px solid var(--panel-border, #333)',
+            borderRadius: 6,
+            boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
+            display: 'flex', flexDirection: 'column', gap: 8,
+            fontSize: 12, color: 'var(--text, #ddd)',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ opacity: 0.7 }}>Mode</span>
+            {[
+              { id: 'voxel',  label: 'Voxel (uniform spatial)',         disabled: false },
+              { id: 'ransac', label: 'RANSAC (curvature primitives)',   disabled: false },
+              { id: 'model',  label: 'Model (learned merge — disabled)', disabled: true  },
+            ].map((opt) => (
+              <label
+                key={opt.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  opacity: opt.disabled ? 0.4 : 1,
+                  cursor: opt.disabled ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <input
+                  type="radio"
+                  name="preseg-mode"
+                  value={opt.id}
+                  checked={mode === opt.id}
+                  disabled={opt.disabled}
+                  onChange={() => setMode(opt.id)}
+                />
+                <span>{opt.label}</span>
+              </label>
+            ))}
+          </div>
+          <label
+            style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+              opacity: mode === 'voxel' ? 1 : 0.4,
+            }}
+          >
+            <span>Voxel resolution (m)</span>
+            <input
+              type="number"
+              step="0.05"
+              min="0.01"
+              max="5"
+              value={resolution}
+              disabled={mode !== 'voxel'}
+              onChange={(e) => setResolution(Math.max(0.01, parseFloat(e.target.value) || 0.05))}
+              style={{ width: 70, background: '#111', color: '#eee', border: '1px solid #444', borderRadius: 3, padding: '2px 4px' }}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={preserveLabeled}
+              onChange={(e) => setPreserveLabeled(e.target.checked)}
+            />
+            <span>Preserve classified points</span>
+          </label>
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
+            <button
+              type="button"
+              className="tool-btn mini"
+              onClick={() => setOpen(false)}
+            >Cancel</button>
+            <button
+              type="button"
+              className="tool-btn mini active"
+              onClick={run}
+            >Run</button>
+          </div>
+          {error && <div style={{ color: '#f88' }}>{error}</div>}
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -131,7 +247,10 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud,
 // select that group, shift-click for multi-select. Confirmation lives
 // elsewhere (the Instances panel on the right): there is no parallel
 // confirm flow here on purpose.
-export function PresegmentList({ segState, setSegState, classes, viewerRef, cloud }) {
+export function PresegmentList({
+  segState, setSegState, classes, viewerRef, cloud,
+  showSegHulls = true, setShowSegHulls = null,
+}) {
   const segmentsAll = useMemo(() => {
     if (!segState) return [];
     const out = [];
@@ -197,14 +316,27 @@ export function PresegmentList({ segState, setSegState, classes, viewerRef, clou
 
   return (
     <div className="preseg-panel">
-      <div className="side-hd" style={{ marginTop: 14 }}>
+      <div className="side-hd" style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
         <span>Presegments</span>
         <span className="badge-soft">{total}</span>
+        {setShowSegHulls && (
+          <button
+            type="button"
+            className={'tool-btn mini' + (showSegHulls ? ' active' : '')}
+            onClick={() => setShowSegHulls(!showSegHulls)}
+            title={showSegHulls
+              ? 'Hide hull overlay (points stay coloured by segment)'
+              : 'Show hull overlay'}
+            style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 11 }}
+          >
+            {showSegHulls ? '👁 Hulls' : '◌ Hulls'}
+          </button>
+        )}
       </div>
       <div className="inst-list" style={{ maxHeight: '40vh', overflowY: 'auto' }}>
         {total === 0 && (
           <div className="sugg-empty" style={{ fontSize: '11px', padding: '6px 4px' }}>
-            No presegments. Click ⚙ to run RANSAC.
+            No presegments. Click ⚙ to choose a mode and run.
           </div>
         )}
         {segmentsAll.map((seg) => {

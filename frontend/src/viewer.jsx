@@ -24,6 +24,15 @@ export function evtToNdc(evt, rect) {
   };
 }
 
+// Inline HSL→RGB without THREE.Color allocation — used in the hot box-overlay loop.
+function _hue2rgb(p, q, t) {
+  if (t < 0) t += 1; if (t > 1) t -= 1;
+  if (t < 1/6) return p + (q - p) * 6 * t;
+  if (t < 1/2) return q;
+  if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+  return p;
+}
+
 // Resolve a class palette (list of {id, color, label}) into a dense RGB lookup
 // indexed by class id. Out-of-range ids fall through to the unlabeled grey.
 function buildPaletteRGB(palette) {
@@ -338,6 +347,9 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     hideConfirmedPoints = true, // when true, points inside any confirmedCuboid are NaN'd in the position buffer
     onLabelStats = null,        // ({ total, labeled, left }) => void — reported after each confirmed-set change
     denseOverlay = null,        // { positions: Float32Array, colors: Float32Array | null } — full-density points to show inside the selected cuboid; takes precedence over the base cloud where they overlap
+    segBoxes = null,            // { segIds, segCenters, segSizes, selection } — fallback bbox overlay per presegment
+    segHulls = null,            // { vertices, faces, faceSeg, selection } — merged convex-hull overlay per presegment
+    showSegHulls = true,        // hide the hull mesh when false; points still get segment-coloured
   } = props;
 
   const mountRef = useRef(null);
@@ -462,6 +474,42 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     densePoints.visible = false;
     scene.add(densePoints);
 
+    // Instanced box overlay — one box per presegment, sized to its bounding box.
+    // InstancedMesh is allocated to MAX_SEGS capacity; actual count is set via .count.
+    const MAX_SEGS = 100000;
+    const boxGeom = new THREE.BoxGeometry(1, 1, 1);
+    const boxMat = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const boxMesh = new THREE.InstancedMesh(boxGeom, boxMat, MAX_SEGS);
+    boxMesh.count = 0;
+    boxMesh.frustumCulled = false;
+    boxMesh.visible = false;
+    // Pre-allocate instanceColor so the box-overlay loop can write directly
+    // to the underlying Float32Array without per-iteration setColorAt overhead.
+    boxMesh.instanceColor = new THREE.InstancedBufferAttribute(
+      new Float32Array(MAX_SEGS * 3), 3);
+    scene.add(boxMesh);
+
+    // Merged hull overlay — single BufferGeometry built from all segment
+    // convex hulls (3d-labeler style). Replaces boxMesh visually when the
+    // backend ships hull data; boxMesh stays as the click-pick fallback.
+    const hullGeom = new THREE.BufferGeometry();
+    const hullMat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.25,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const hullMesh = new THREE.Mesh(hullGeom, hullMat);
+    hullMesh.frustumCulled = false;
+    hullMesh.visible = false;
+    scene.add(hullMesh);
+
     // Gizmo anchor. Persistent Object3D the TransformControls is attached to —
     // we sync its position/rotation/scale from the selected instance, and
     // read them back on each gizmo drag tick. Decoupling the gizmo from the
@@ -544,14 +592,46 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     // Pointer-pick subscriber list: { cb } entries added by onPointerPick/onPointerMove.
     const pickSubs = [];
     const moveSubs = [];
+    // Hull-pick subscriber list: cb(segId, evt) — fires when a hull face is clicked.
+    const hullPickSubs = [];
 
     const raycaster = new THREE.Raycaster();
 
     const onPointerDown = (e) => {
-      if (pickSubs.length === 0) return;
       const rect = renderer.domElement.getBoundingClientRect();
       const ndc = evtToNdc(e, rect);
       raycaster.setFromCamera(ndc, camera);
+
+      // Hull hit check (fires hullPickSubs when a segment hull face is clicked).
+      const hm = stateRef.current?.hullMesh;
+      if (hm?.visible && hullPickSubs.length > 0) {
+        const hullHits = raycaster.intersectObject(hm);
+        if (hullHits.length > 0) {
+          const faceIdx = hullHits[0].faceIndex;
+          const faceSeg = stateRef.current.hullFaceSeg;
+          if (faceIdx !== undefined && faceSeg) {
+            const segId = faceSeg[faceIdx];
+            hullPickSubs.forEach(({ cb }) => cb(segId, e));
+            return;
+          }
+        }
+      }
+      // Box hit check (fallback when hulls aren't available).
+      const bm = stateRef.current?.boxMesh;
+      if (bm?.visible && hullPickSubs.length > 0) {
+        const boxHits = raycaster.intersectObject(bm);
+        if (boxHits.length > 0) {
+          const instIdx = boxHits[0].instanceId;
+          const segIds = stateRef.current.boxSegIds;
+          if (instIdx !== undefined && segIds) {
+            const segId = segIds[instIdx];
+            hullPickSubs.forEach(({ cb }) => cb(segId, e));
+            return;
+          }
+        }
+      }
+
+      if (pickSubs.length === 0) return;
       const m = stateRef.current?.points;
       if (!m) return;
       raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
@@ -588,11 +668,13 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       controller: null,
       cuboidGroup, meshGroup, meshUrlLoaded: null, meshLoadAbort: null,
       floor, grid, axes, mount,
-      pickSubs, moveSubs,
+      pickSubs, moveSubs, hullPickSubs,
       transformAnchor, transformControls,
       highlightGeom, highlightMat, highlightPoints,
       segSelectionGeom, segSelectionMat, segSelectionPoints,
       denseGeom, denseMat, densePoints,
+      boxGeom, boxMat, boxMesh, boxSegIds: null,
+      hullGeom, hullMat, hullMesh, hullFaceSeg: null,
     };
 
     return () => {
@@ -611,6 +693,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       highlightMat.dispose();
       segSelectionGeom.dispose();
       segSelectionMat.dispose();
+      boxGeom.dispose();
+      boxMat.dispose();
+      hullGeom.dispose();
+      hullMat.dispose();
+      renderer.forceContextLoss();
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
@@ -816,7 +903,33 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     if (!colorAttr || !cloud) return;
     const orig = cloud.colors;
 
-    if (colorMode === 'height' && cloud.bbox) {
+    // While a presegmentation is active, points get the same segment-id hue
+    // the hull mesh uses, regardless of the global ``colorMode`` setting.
+    // The user is grouping points, not labelling them, so class/RGB modes
+    // would just hide the grouping. Same _hue2rgb math as the hull effect
+    // so points and hulls are exact colour matches.
+    const segActive = !!(segHulls && segHulls.faces && segHulls.faces.length && cloud.instanceIds);
+    if (segActive) {
+      const ids = cloud.instanceIds;
+      const sel = segHulls.selection;
+      const G = 0.6180339887;
+      const arr = colorAttr.array;
+      for (let i = 0, p = 0; i < arr.length; i += 3, p++) {
+        const iid = ids[p];
+        if (iid < 0) {
+          arr[i] = 0.42; arr[i + 1] = 0.44; arr[i + 2] = 0.48;
+          continue;
+        }
+        const hue = ((iid * G) % 1 + 1) % 1;
+        const isSel = sel && sel.has(iid);
+        const l = isSel ? 0.82 : 0.52;
+        const pp = l <= 0.5 ? l * 1.7 : l + 0.7 - l * 0.7;
+        const q = 2 * l - pp;
+        arr[i]     = _hue2rgb(q, pp, hue + 1 / 3);
+        arr[i + 1] = _hue2rgb(q, pp, hue);
+        arr[i + 2] = _hue2rgb(q, pp, hue - 1 / 3);
+      }
+    } else if (colorMode === 'height' && cloud.bbox) {
       // Per-point gradient by Y, normalized to the cloud's own Y range.
       const yMin = cloud.bbox.min[1];
       const yMax = cloud.bbox.max[1];
@@ -916,7 +1029,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     }
 
     colorAttr.needsUpdate = true;
-  }, [colorMode, cloud, showDiff, diffMask]);
+  }, [colorMode, cloud, showDiff, diffMask, segHulls]);
 
   // ── Selected-cuboid highlight overlay ───────────────────────────────────
   // Re-populates a separate Points buffer with the cloud points that fall
@@ -1020,6 +1133,106 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     s.denseGeom.setDrawRange(0, n);
     s.densePoints.visible = true;
   }, [denseOverlay]);
+
+  // ── Instanced-box overlay (fallback) ────────────────────────────────────
+  // One box per presegment sized to its axis-aligned bbox. InstancedMesh
+  // renders all boxes in a single draw call. Selected segments are brighter.
+  // Suppressed when ``segHulls`` is present — hulls give a tighter fit.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.boxMesh) return;
+    const hullsActive = !!(segHulls && segHulls.faces && segHulls.faces.length);
+    if (hullsActive || !segBoxes || !segBoxes.segIds || segBoxes.segIds.length === 0) {
+      s.boxMesh.count = 0;
+      s.boxMesh.visible = false;
+      s.boxSegIds = null;
+      return;
+    }
+
+    const { segIds, segCenters, segSizes, selection } = segBoxes;
+    const n = segIds.length;
+    const GOLDEN = 0.6180339887;
+    const matArr = s.boxMesh.instanceMatrix.array;
+    const colArr = s.boxMesh.instanceColor.array;
+
+    for (let i = 0; i < n; i++) {
+      const sid = segIds[i];
+      const cx = segCenters[i * 3], cy = segCenters[i * 3 + 1], cz = segCenters[i * 3 + 2];
+      const sx = segSizes[i * 3],   sy = segSizes[i * 3 + 1],   sz = segSizes[i * 3 + 2];
+      // Write scale+translate matrix directly (Three.js column-major Float32Array).
+      const m = i * 16;
+      matArr[m]      = sx; matArr[m+1]  = 0;  matArr[m+2]  = 0;  matArr[m+3]  = 0;
+      matArr[m+4]    = 0;  matArr[m+5]  = sy; matArr[m+6]  = 0;  matArr[m+7]  = 0;
+      matArr[m+8]    = 0;  matArr[m+9]  = 0;  matArr[m+10] = sz; matArr[m+11] = 0;
+      matArr[m+12]   = cx; matArr[m+13] = cy; matArr[m+14] = cz; matArr[m+15] = 1;
+      // Inline HSL→RGB (avoids per-iter THREE.Color allocation + method call overhead).
+      const isSel = selection && selection.has(sid);
+      const hue = ((sid * GOLDEN) % 1 + 1) % 1;
+      const l = isSel ? 0.82 : 0.52;
+      const p = l <= 0.5 ? l * 1.7 : l + 0.7 - l * 0.7;
+      const q = 2 * l - p;
+      const c = i * 3;
+      colArr[c]   = _hue2rgb(q, p, hue + 1/3);
+      colArr[c+1] = _hue2rgb(q, p, hue);
+      colArr[c+2] = _hue2rgb(q, p, hue - 1/3);
+    }
+
+    s.boxMesh.count = n;
+    s.boxMesh.instanceMatrix.needsUpdate = true;
+    s.boxMesh.instanceColor.needsUpdate = true;
+    s.boxSegIds = segIds;
+    s.boxMesh.visible = true;
+  }, [segBoxes, segHulls]);
+
+  // ── Merged hull overlay ──────────────────────────────────────────────────
+  // Per-segment convex hulls packed into a single BufferGeometry with vertex
+  // colors. Mirrors 3d-labeler's `SupervoxelHulls` component: one mesh, one
+  // draw call, translucent / double-sided / no depth-write so points stay
+  // visible behind the hulls. Per-vertex hue cycles via golden-ratio HSL;
+  // selected segments are brightened by lifting the lightness term.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.hullMesh) return;
+    if (!segHulls || !segHulls.faces || segHulls.faces.length === 0) {
+      s.hullMesh.visible = false;
+      s.hullFaceSeg = null;
+      return;
+    }
+
+    const { vertices, faces, faceSeg, selection } = segHulls;
+    const nVerts = vertices.length / 3;
+    const colors = new Float32Array(nVerts * 3);
+    const GOLDEN = 0.6180339887;
+
+    // Per-face → per-vertex color: the same vertex can belong to multiple
+    // faces of the same hull, so writing color per-vertex (using the first
+    // face that touches it) is sufficient. We walk faces once and stamp.
+    for (let f = 0; f < faceSeg.length; f++) {
+      const sid = faceSeg[f];
+      const isSel = selection && selection.has(sid);
+      const hue = ((sid * GOLDEN) % 1 + 1) % 1;
+      const l = isSel ? 0.82 : 0.52;
+      const p = l <= 0.5 ? l * 1.7 : l + 0.7 - l * 0.7;
+      const q = 2 * l - p;
+      const r = _hue2rgb(q, p, hue + 1/3);
+      const g = _hue2rgb(q, p, hue);
+      const b = _hue2rgb(q, p, hue - 1/3);
+      const v0 = faces[f * 3], v1 = faces[f * 3 + 1], v2 = faces[f * 3 + 2];
+      colors[v0 * 3] = r; colors[v0 * 3 + 1] = g; colors[v0 * 3 + 2] = b;
+      colors[v1 * 3] = r; colors[v1 * 3 + 1] = g; colors[v1 * 3 + 2] = b;
+      colors[v2 * 3] = r; colors[v2 * 3 + 1] = g; colors[v2 * 3 + 2] = b;
+    }
+
+    const geom = s.hullMesh.geometry;
+    geom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geom.setIndex(new THREE.BufferAttribute(faces, 1));
+    geom.computeVertexNormals();
+    geom.computeBoundingSphere();
+
+    s.hullFaceSeg = faceSeg;
+    s.hullMesh.visible = !!showSegHulls;
+  }, [segHulls, showSegHulls]);
 
   // ── Mesh load/show ──────────────────────────────────────────────────────
   // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —
@@ -1244,6 +1457,16 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       return () => {
         const i = s.moveSubs.indexOf(entry);
         if (i !== -1) s.moveSubs.splice(i, 1);
+      };
+    },
+    onHullPick(cb) {
+      const s = stateRef.current;
+      if (!s) return () => {};
+      const entry = { cb };
+      s.hullPickSubs.push(entry);
+      return () => {
+        const i = s.hullPickSubs.indexOf(entry);
+        if (i !== -1) s.hullPickSubs.splice(i, 1);
       };
     },
     attachBrushGizmo({ radius, color }) {

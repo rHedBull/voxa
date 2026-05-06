@@ -186,6 +186,9 @@ function MainApp() {
           classFull: c.fullClassIds,
           instanceFull: c.fullInstanceIds,
           isFromPrelabel: c.isFromPrelabel,
+          segBoxes: (c.segIds && c.segCenters && c.segSizes)
+            ? { segIds: c.segIds, segCenters: c.segCenters, segSizes: c.segSizes }
+            : null,
         }));
       } else {
         prelabelRef.current = { classFull: null, instanceFull: null };

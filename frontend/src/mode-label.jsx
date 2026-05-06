@@ -23,7 +23,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   const [activeTool, setActiveTool] = useStateLabel('cuboid');
   // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
   // run — wildly different hues per segment make the grouping legible.
-  const [colorMode, setColorMode] = useStateLabel('class');
+  const [colorMode] = useStateLabel('class');
   const [showDiff, setShowDiff] = useStateLabel(false);
   // Gizmo mode for the selected cuboid. null = no gizmo (edges only).
   const [transformMode, setTransformMode] = useStateLabel('translate');
@@ -35,6 +35,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   // viewport (NaN'd in the position buffer). Default on so the labeling
   // workflow naturally reveals what's left to label.
   const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
+  const [showSegHulls, setShowSegHulls] = useStateLabel(true);
   const [sideRCollapsed, setSideRCollapsed] = useStateLabel(() => {
     try { return localStorage.getItem('voxa.label.sideRCollapsed') === '1'; }
     catch { return false; }
@@ -86,6 +87,47 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     }
     v.setSelectedSegmentMask(mask);
   }, [segState?.selection, segState?.instanceFull, cloud, viewerRef]);
+
+  // Ctrl+click in the 3D viewport selects the presegment under the cursor.
+  // Active in all tool modes except 'pick' (which handles its own clicks).
+  useEffectLabel(() => {
+    if (!segState || activeTool === 'pick') return;
+    const viewer = viewerRef?.current;
+    if (!viewer?.onPointerPick) return;
+    return viewer.onPointerPick((fullIndex, evt) => {
+      if (!evt.ctrlKey && !evt.metaKey) return;
+      const instId = segState.instanceFull[fullIndex];
+      if (instId < 0) return;
+      setSegState((s) => {
+        if (!s) return s;
+        const next = new Set(s.selection);
+        next.has(instId) ? next.delete(instId) : next.add(instId);
+        return { ...s, selection: next };
+      });
+    });
+  }, [segState, activeTool, viewerRef, setSegState]);
+
+  // Hull-click selection: clicking directly on a hull face (Ctrl or plain click)
+  // selects the segment. Works in all tool modes.
+  useEffectLabel(() => {
+    if (!segState) return;
+    const viewer = viewerRef?.current;
+    if (!viewer?.onHullPick) return;
+    return viewer.onHullPick((segId, evt) => {
+      setSegState((s) => {
+        if (!s) return s;
+        const next = new Set(s.selection);
+        const additive = evt.shiftKey || evt.ctrlKey || evt.metaKey;
+        if (additive) {
+          next.has(segId) ? next.delete(segId) : next.add(segId);
+        } else {
+          if (next.size === 1 && next.has(segId)) next.clear();
+          else { next.clear(); next.add(segId); }
+        }
+        return { ...s, selection: next };
+      });
+    });
+  }, [segState, viewerRef, setSegState]);
 
   // Only the selected cuboid renders in the viewer — keeps the scene readable
   // when there are dozens/hundreds of prelabel instances. Hidden classes still
@@ -557,6 +599,8 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           classes={classes}
           viewerRef={viewerRef}
           cloud={cloud}
+          showSegHulls={showSegHulls}
+          setShowSegHulls={setShowSegHulls}
         />
       </aside>
 
@@ -573,6 +617,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           floorColor={theme.floor}
           navMode={navMode}
           colorMode={colorMode}
+          pointSize={0.012}
           diffMask={diffMask}
           showDiff={showDiff}
           transformMode={activeTool === 'cuboid' && !isLocked ? transformMode : null}
@@ -583,6 +628,13 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           hideConfirmedPoints={hideConfirmed}
           onLabelStats={setLabelStats}
           onCameraChange={onCameraChange}
+          segBoxes={segState?.segBoxes
+            ? { ...segState.segBoxes, selection: segState.selection }
+            : null}
+          segHulls={segState?.segHulls
+            ? { ...segState.segHulls, selection: segState.selection }
+            : null}
+          showSegHulls={showSegHulls}
         />
 
         <div className="vp-hud-top">
@@ -624,7 +676,6 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
             prelabelRef={prelabelRef}
             cloud={cloud}
             setCloud={setCloud}
-            setColorMode={setColorMode}
           />
           <div className="tool-sep" />
           {activeTool === 'cuboid' && (
