@@ -442,7 +442,21 @@ function MainApp() {
         <ScenePicker
           scenes={scenes}
           activeScene={activeScene}
-          onPick={(name) => { setActiveScene(name); setScenePickerOpen(false); }}
+          onPick={(name) => {
+            // Switching scenes drops the in-memory cloud, the per-point
+            // segState (presegments + selection), and resets selection in
+            // the instance list. Saved-to-disk annotations survive, but any
+            // unsaved labels and the active selection do not — so warn.
+            if (name && activeScene && name !== activeScene) {
+              const ok = window.confirm(
+                'Switch scene?\n\n'
+                + 'Any unsaved instances, selections, and presegmentation '
+                + 'state for the current scene may be lost.');
+              if (!ok) return;
+            }
+            setActiveScene(name);
+            setScenePickerOpen(false);
+          }}
           onClose={() => setScenePickerOpen(false)}
         />
       )}
