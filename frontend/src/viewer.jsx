@@ -128,11 +128,17 @@ function attachOrbit(camera, dom, target, onChange) {
     setFromState(s) {
       // Programmatic update — silence the onChange so synced viewports don't
       // ping-pong each other into a stack overflow. Shape-check guards against
-      // cross-mode sync (walk-state arriving here during a navMode flip).
+      // cross-mode sync (walk-state arriving here during a navMode flip) and
+      // malformed cross-window payloads (e.g. Vector3 lost across structured
+      // clone) — applying NaN coords would warp the camera off the cloud.
       if (!s || !s.spherical || !s.target) return;
+      const sp = s.spherical;
+      if (!Number.isFinite(sp.r) || !Number.isFinite(sp.phi) || !Number.isFinite(sp.theta)) return;
+      const t = s.target;
+      if (!Number.isFinite(t.x) || !Number.isFinite(t.y) || !Number.isFinite(t.z)) return;
       state.silent = true;
-      state.spherical = { ...s.spherical };
-      state.target.copy(s.target);
+      state.spherical = { r: sp.r, phi: sp.phi, theta: sp.theta };
+      state.target.set(t.x, t.y, t.z);
       apply();
       state.silent = false;
     },
@@ -280,10 +286,13 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
   return {
     setFromState(s) {
       // Shape-check guards against cross-mode sync (orbit-state arriving here
-      // during a navMode flip).
+      // during a navMode flip) and malformed cross-window payloads.
       if (!s || !s.position || s.yaw == null || s.pitch == null) return;
+      const p = s.position;
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return;
+      if (!Number.isFinite(s.yaw) || !Number.isFinite(s.pitch)) return;
       state.silent = true;
-      camera.position.copy(s.position);
+      camera.position.set(p.x, p.y, p.z);
       state.yaw = s.yaw; state.pitch = s.pitch;
       apply();
       state.silent = false;

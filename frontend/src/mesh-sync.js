@@ -19,9 +19,24 @@ export function postState(ch, state) {
 
 export function postCamera(ch, camera) {
   if (!ch || !camera) return;
-  // Vector3 / Spherical clones from getState() are plain {x,y,z} / numeric
-  // bags after structured-clone; no special serialization needed.
-  ch.postMessage({ type: 'camera', camera });
+  // THREE.Vector3 instances DO NOT survive structured-clone with their
+  // x/y/z values intact (they round-trip as `{}`), so we hand-serialize
+  // any Vector3-shaped fields. Without this, the receiver's
+  // `target.copy(payload.target)` reads undefined coords and nukes the
+  // camera position to NaN.
+  const v3 = (v) => v && typeof v === 'object'
+    ? { x: +v.x || 0, y: +v.y || 0, z: +v.z || 0 } : v;
+  const out = { type: 'camera', camera: {} };
+  if (camera.spherical) {
+    out.camera.spherical = {
+      r: +camera.spherical.r, phi: +camera.spherical.phi, theta: +camera.spherical.theta,
+    };
+  }
+  if (camera.target) out.camera.target = v3(camera.target);
+  if (camera.position) out.camera.position = v3(camera.position);
+  if (camera.yaw != null) out.camera.yaw = +camera.yaw;
+  if (camera.pitch != null) out.camera.pitch = +camera.pitch;
+  ch.postMessage(out);
 }
 
 export function postRequestState(ch) {
