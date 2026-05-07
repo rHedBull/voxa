@@ -523,6 +523,9 @@ def load_scene(req: LoadRequest):
         prev_seg is not None
         and prev_scene == src.scene_id
         and len(prev_seg.positions) == len(pc)
+        # Switching GT↔prelabel reseats the source of truth; carrying
+        # over the prior session would silently keep the old mode.
+        and bool(prev_seg.is_from_prelabel) == bool(is_from_prelabel)
     )
 
     _state.update(
