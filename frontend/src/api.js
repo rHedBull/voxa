@@ -153,7 +153,7 @@ export const VoxaAPI = {
     return _decodeApplyResponse(await r.json());
   },
   async segSave() {
-    const r = await fetch('/api/segment/save', { method: 'POST' });
+    const r = await fetch('/api/segment/save', { method: 'PUT' });
     if (!r.ok) throw new Error(`segSave failed: ${r.status} ${await r.text()}`);
     return r.json();
   },

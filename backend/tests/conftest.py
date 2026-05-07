@@ -17,6 +17,9 @@ import pytest
 from plyfile import PlyData, PlyElement
 
 os.environ["VOXA_DATA_DIR"] = tempfile.mkdtemp(prefix="voxa-test-")
+# Tests use 8-point fixtures; the production default of 10 would filter
+# every segment to (-1,-1) and break label/save round-trips.
+os.environ.setdefault("VOXA_MIN_SEGMENT_POINTS", "1")
 
 
 @pytest.fixture(autouse=True)

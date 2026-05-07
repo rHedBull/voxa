@@ -114,3 +114,33 @@ def test_save_writes_labels_to_disk(client_with_loaded_annotated_scene, scan_dir
     assert j["n_labeled_points"] == 6
     arr = np.load(scan_dir_for_loaded_scene / "labels" / "gt_class_ids.npy")
     assert int(arr[1]) == 2 and int(arr[2]) == 2
+
+
+def test_save_drops_unclassified_preseg(client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
+    """A preseg-style point (inst≥0, class=-1) would violate invariant 3.
+    The save endpoint must coerce those points to (-1, -1) and persist the
+    rest, so partial labeling sessions can be saved without classifying
+    every preseg first."""
+    import main
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    # Reset to a known state, then plant exactly one unclassified preseg
+    # point alongside one fully-classified point.
+    seg.class_ids[:] = -1
+    seg.instance_ids[:] = -1
+    seg.class_ids[0] = -1; seg.instance_ids[0] = 99   # unclassified preseg
+    seg.class_ids[1] = 2;  seg.instance_ids[1] = 100  # classified
+
+    r = client.put("/api/segment/save")
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["n_dropped_preseg"] == 1
+    assert j["n_labeled_points"] == 1  # only the classified point remains
+    # The unclassified point was reset on disk and in-memory.
+    arr_inst = np.load(scan_dir_for_loaded_scene / "labels" / "gt_segment_ids.npy")
+    arr_cls  = np.load(scan_dir_for_loaded_scene / "labels" / "gt_class_ids.npy")
+    assert int(arr_inst[0]) == -1
+    assert int(seg.instance_ids[0]) == -1
+    # Classified point survived intact.
+    assert int(arr_inst[1]) == 100
+    assert int(arr_cls[1]) == 2

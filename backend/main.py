@@ -1210,6 +1210,15 @@ def segment_save():
         os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
         not in ("1", "true", "yes", "on")
     )
+    # Drop unclassified preseg points (inst≥0, class=-1) so a save during
+    # partial labeling succeeds: invariant 3 requires class==-1 ⟺ inst==-1,
+    # and the preseg suggestion isn't authoritative until the user picks a
+    # class for it. Mutating in place keeps in-memory state consistent with
+    # what's about to land on disk.
+    unclassified = (seg.instance_ids >= 0) & (seg.class_ids == -1)
+    n_dropped = int(unclassified.sum())
+    if n_dropped:
+        seg.instance_ids[unclassified] = np.int32(-1)
     try:
         from segment_io import save_labels
         save_labels(
@@ -1229,6 +1238,7 @@ def segment_save():
         "ok": True,
         "n_labeled_points": n_labeled_points,
         "n_segments": n_segments,
+        "n_dropped_preseg": n_dropped,
     }
 
 

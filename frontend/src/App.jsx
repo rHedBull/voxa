@@ -333,6 +333,49 @@ function MainApp() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 
+  // Auto-save segment (per-point) edits ~600 ms after a change so closing
+  // the tab without Ctrl+S no longer drops the work. The endpoint reads the
+  // server-side seg session, so the request body is empty; we just need to
+  // fire it and clear the dirty flag on success.
+  const segAutosaveTimerRef = useRefApp(null);
+  useEffectApp(() => {
+    if (!segState?.dirty) return;
+    if (segAutosaveTimerRef.current) clearTimeout(segAutosaveTimerRef.current);
+    segAutosaveTimerRef.current = setTimeout(async () => {
+      segAutosaveTimerRef.current = null;
+      try {
+        await VoxaAPI.segSave();
+        setSegState((s) => (s ? { ...s, dirty: false } : s));
+        setSavedAt(new Date().toLocaleTimeString());
+      } catch (err) {
+        console.error('seg autosave failed:', err);
+      }
+    }, 600);
+    return () => {
+      if (segAutosaveTimerRef.current) {
+        clearTimeout(segAutosaveTimerRef.current);
+        segAutosaveTimerRef.current = null;
+      }
+    };
+  }, [segState?.dirty]);
+
+  // beforeunload: best-effort flush of pending segment edits. The save is
+  // server-resident, so a keepalive PUT is enough — no payload to ferry.
+  useEffectApp(() => {
+    const onBeforeUnload = () => {
+      if (!segState?.dirty) return;
+      if (segAutosaveTimerRef.current) {
+        clearTimeout(segAutosaveTimerRef.current);
+        segAutosaveTimerRef.current = null;
+      }
+      try {
+        fetch('/api/segment/save', { method: 'PUT', keepalive: true });
+      } catch { /* best effort */ }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [segState?.dirty]);
+
   // Cmd/Ctrl+Z / Shift+Z → segment undo / redo (only when segState active).
   useEffectApp(() => {
     const onKey = async (e) => {

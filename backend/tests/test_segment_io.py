@@ -143,6 +143,61 @@ def test_save_labels_snapshots_existing_labels_before_overwrite(tmp_path):
     assert saved_meta["segments"][0]["class_id"] == 0
 
 
+def _write_classes_json(lidar_root: Path, version: int, classes: list[dict]):
+    lidar_root.mkdir(parents=True, exist_ok=True)
+    (lidar_root / "classes.json").write_text(json.dumps({
+        "version": version, "unlabeled_id": -1, "classes": classes,
+    }))
+
+
+def _write_meta(scan_dir: Path, version: int):
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    (scan_dir / "meta.json").write_text(json.dumps({"class_map_version": version}))
+
+
+def test_save_labels_enriches_segment_metadata_with_label_from_classes_json(tmp_path):
+    lidar_root = tmp_path / "lidar"
+    scan_dir = lidar_root / "annotated" / "demo"
+    _write_classes_json(lidar_root, 2, [
+        {"id": 0, "name": "pipe"}, {"id": 1, "name": "tank"},
+    ])
+    save_labels(scan_dir,
+                np.array([0, 1], dtype=np.int8),
+                np.array([0, 1], dtype=np.int32),
+                write_history=False)
+
+    meta = json.loads((scan_dir / "labels" / "gt_segment_metadata.json").read_text())
+    assert meta["class_map_version"] == 2
+    by_id = {s["gt_id"]: s for s in meta["segments"]}
+    assert by_id[0]["label"] == "pipe"
+    assert by_id[1]["label"] == "tank"
+
+
+def test_save_labels_rejects_unknown_class_id_when_registry_present(tmp_path):
+    import pytest
+    lidar_root = tmp_path / "lidar"
+    scan_dir = lidar_root / "annotated" / "demo"
+    _write_classes_json(lidar_root, 1, [{"id": 0, "name": "pipe"}])
+    with pytest.raises(ValueError, match="invariant 5"):
+        save_labels(scan_dir,
+                    np.array([7], dtype=np.int8),
+                    np.array([0], dtype=np.int32),
+                    write_history=False)
+
+
+def test_save_labels_rejects_class_map_version_mismatch(tmp_path):
+    import pytest
+    lidar_root = tmp_path / "lidar"
+    scan_dir = lidar_root / "annotated" / "demo"
+    _write_classes_json(lidar_root, 2, [{"id": 0, "name": "pipe"}])
+    _write_meta(scan_dir, version=1)
+    with pytest.raises(ValueError, match="invariant 6"):
+        save_labels(scan_dir,
+                    np.array([0], dtype=np.int8),
+                    np.array([0], dtype=np.int32),
+                    write_history=False)
+
+
 def test_prune_history_keeps_only_timestamped_dirs(tmp_path):
     hist = tmp_path / "annotation_history"
     hist.mkdir()
