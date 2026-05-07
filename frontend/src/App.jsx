@@ -169,11 +169,44 @@ function MainApp() {
     Promise.all([
       VoxaAPI.load(activeScene, { wantFullLabels }),
       VoxaAPI.getAnnotation(activeScene, 'gt'),
-    ]).then(([c, gtDoc]) => {
+      // After /api/load, the backend may already have an in-memory seg
+      // session (kept across page refreshes as long as the process is up).
+      // Pull it so the user doesn't have to re-run preseg every reload.
+      // Errors here are non-fatal — fall back to the cloud-load labels.
+      VoxaAPI.segState().catch(() => null),
+    ]).then(([c, gtDoc, segLive]) => {
       if (cancel) return;
       setCloud(c);
       setCuboidDirty(false);
-      if (c.fullClassIds && c.fullInstanceIds) {
+      if (segLive) {
+        // Live seg session wins — includes hulls + any unsaved preseg edits.
+        prelabelRef.current = c.isFromPrelabel
+          ? { classFull: segLive.fullClassIds.slice(), instanceFull: segLive.fullInstanceIds.slice() }
+          : { classFull: null, instanceFull: null };
+        setSegState(initSegState({
+          classFull: segLive.fullClassIds,
+          instanceFull: segLive.fullInstanceIds,
+          isFromPrelabel: !!c.isFromPrelabel,
+          segBoxes: (segLive.segIds && segLive.segCenters && segLive.segSizes)
+            ? { segIds: segLive.segIds, segCenters: segLive.segCenters, segSizes: segLive.segSizes }
+            : null,
+          segHulls: (segLive.hullVertices && segLive.hullFaces && segLive.hullFaceSeg)
+            ? { vertices: segLive.hullVertices, faces: segLive.hullFaces, faceSeg: segLive.hullFaceSeg }
+            : null,
+        }));
+        // Project full-res labels onto the subsampled cloud so points pick
+        // up segment colours immediately.
+        const subIdx = c.subsampleIdx;
+        const subN = (c.positions?.length || 0) / 3;
+        const subClass = new Int8Array(subN);
+        const subInst = new Int32Array(subN);
+        for (let p = 0; p < subN; p++) {
+          const f = subIdx ? subIdx[p] : p;
+          subClass[p] = segLive.fullClassIds[f];
+          subInst[p]  = segLive.fullInstanceIds[f];
+        }
+        setCloud({ ...c, classIds: subClass, instanceIds: subInst, isFromPrelabel: !!c.isFromPrelabel });
+      } else if (c.fullClassIds && c.fullInstanceIds) {
         if (c.isFromPrelabel) {
           prelabelRef.current = {
             classFull: c.fullClassIds.slice(),

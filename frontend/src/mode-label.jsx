@@ -114,16 +114,11 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     const viewer = viewerRef?.current;
     if (!viewer?.onHullPick) return;
     return viewer.onHullPick((segId, evt) => {
+      if (!(evt.ctrlKey || evt.metaKey || evt.shiftKey)) return;
       setSegState((s) => {
         if (!s) return s;
         const next = new Set(s.selection);
-        const additive = evt.shiftKey || evt.ctrlKey || evt.metaKey;
-        if (additive) {
-          next.has(segId) ? next.delete(segId) : next.add(segId);
-        } else {
-          if (next.size === 1 && next.has(segId)) next.clear();
-          else { next.clear(); next.add(segId); }
-        }
+        next.has(segId) ? next.delete(segId) : next.add(segId);
         return { ...s, selection: next };
       });
     });
@@ -404,6 +399,94 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
       if (editingId === id) setEditingId(null);
     }
   };
+  // Ctrl+Enter on a presegment selection: collapse the selected segments
+  // into one new instance. The backend reassigns the union of their
+  // points to a fresh instance id (target_class = active class), and we
+  // wrap a cuboid around them so the new instance shows up on the right.
+  // Selection is cleared so the user can immediately start the next group.
+  const confirmSegmentSelection = useCallbackLabel(async () => {
+    if (!segState || segState.selection.size === 0) return;
+    if (!activeClassDef) return;
+    const inst = segState.instanceFull;
+    const sel = segState.selection;
+    const idx = [];
+    for (let p = 0; p < inst.length; p++) {
+      if (sel.has(inst[p])) idx.push(p);
+    }
+    if (idx.length === 0) return;
+    const indices = new Int32Array(idx);
+
+    let r;
+    try {
+      r = await VoxaAPI.segApply('reassign', {
+        indices,
+        payload: { target_inst: -1, target_class: activeClassDef.id },
+      });
+    } catch (err) {
+      console.error('confirm reassign failed:', err);
+      return;
+    }
+
+    // Bbox over the subsampled cloud — the full-res positions live on
+    // the backend; the subsampled cloud is what the user sees, so the
+    // box that lands around the selection is what they'd expect.
+    const sub = cloud?.subsampleIdx;
+    const positions = cloud?.positions;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    if (positions) {
+      const subN = positions.length / 3;
+      for (let p = 0; p < subN; p++) {
+        const fullIdx = sub ? sub[p] : p;
+        if (!sel.has(inst[fullIdx])) continue;
+        const x = positions[p * 3], y = positions[p * 3 + 1], z = positions[p * 3 + 2];
+        if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
+        if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
+      }
+    }
+    if (!isFinite(minX)) {
+      // No subsampled coverage — selection is real on the backend, but we
+      // can't draw a bbox around it. Skip the cuboid; still apply the delta.
+      setSegState((s) => s ? {
+        ...applyDelta(s, {
+          indices: r.indices,
+          after_class: r.afterClass,
+          after_instance: r.afterInstance,
+        }),
+        selection: new Set(),
+      } : s);
+      return;
+    }
+
+    const newInst = {
+      id: newId(),
+      cls: activeClassDef.id,
+      label: `${activeClassDef.label} ${(counts[activeClassDef.id] || 0) + 1}`,
+      color: activeClassDef.color,
+      center: [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
+      size: [
+        Math.max(0.01, maxX - minX),
+        Math.max(0.01, maxY - minY),
+        Math.max(0.01, maxZ - minZ),
+      ],
+      rotation: [0, 0, 0],
+      conf: 1.0,
+      source: 'preseg',
+    };
+    onChange([...instances, newInst]);
+    setSelectedId(newInst.id);
+
+    setSegState((s) => {
+      if (!s) return s;
+      const next = applyDelta(s, {
+        indices: r.indices,
+        after_class: r.afterClass,
+        after_instance: r.afterInstance,
+      });
+      return { ...next, selection: new Set() };
+    });
+  }, [segState, activeClassDef, cloud, instances, counts, onChange, setSegState]);
+
   const toggleConfirmSelected = useCallbackLabel(() => {
     if (!selectedId) return;
     const target = instances.find((i) => i.id === selectedId);
@@ -496,14 +579,19 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-      if (activeTool !== 'cuboid') return;
-      // Ctrl/Cmd+Enter: confirm/unconfirm the selected instance. Runs before
-      // class-hotkey lookup so Enter never doubles as a class hotkey.
+      // Ctrl/Cmd+Enter is tool-agnostic: with a presegment selection it
+      // collapses the selection into a new instance; otherwise it toggles
+      // the confirmed flag on the active cuboid (the legacy behaviour).
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        toggleConfirmSelected();
+        if (segState && segState.selection.size > 0) {
+          confirmSegmentSelection();
+        } else if (activeTool === 'cuboid') {
+          toggleConfirmSelected();
+        }
         return;
       }
+      if (activeTool !== 'cuboid') return;
       if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
@@ -537,7 +625,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, confirmSegmentSelection]);
 
   return (
     <div className="mode-root label">

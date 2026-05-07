@@ -466,6 +466,19 @@ def load_scene(req: LoadRequest):
     pc, offset = _recenter(pc)
 
     sub, idx, sub_intensity, sub_labels = _safe_subsample(pc, req.max_points, intensity, labels)
+
+    # Preserve any live seg session (e.g. RANSAC presegmentation) across
+    # page reloads when the same scene is reloaded with a compatible point
+    # count. Without this guard, the user's preseg work is silently
+    # clobbered by the on-disk labels on every /api/load.
+    prev_scene = _state.get("scene")
+    prev_seg = _state.get("seg")
+    keep_prev_seg = (
+        prev_seg is not None
+        and prev_scene == src.scene_id
+        and len(prev_seg.positions) == len(pc)
+    )
+
     _state.update(
         scene=src.scene_id,
         pc=pc,
@@ -476,7 +489,10 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
     )
     from segment_state import SegmentSession
-    if labels is not None and len(pc) <= MAX_LABEL_POINTS:
+    if keep_prev_seg:
+        # Carry over the existing session as-is.
+        _state["seg"] = prev_seg
+    elif labels is not None and len(pc) <= MAX_LABEL_POINTS:
         _state["seg"] = SegmentSession(
             class_ids=labels.class_ids,
             instance_ids=labels.instance_ids,
@@ -1066,6 +1082,52 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
         full_class_ids=_b64(class_ids.astype(np.int8)),
         full_instance_ids=_b64(instance_ids.astype(np.int32)),
         is_from_prelabel=True,
+        seg_ids=_b64(box_ids),
+        seg_centers=_b64(box_centers),
+        seg_sizes=_b64(box_sizes),
+        hull_vertices=_b64(hull_v),
+        hull_faces=_b64(hull_f),
+        hull_face_seg=_b64(hull_seg),
+    )
+
+
+class SegmentStateResponse(BaseModel):
+    """Snapshot of the in-memory segment session, returned to the frontend
+    on page reload so the user doesn't have to re-run preseg every time
+    they refresh the tab. Hulls are recomputed on demand (cheap relative
+    to the original RANSAC run)."""
+    has_state: bool
+    n_assigned: int = 0
+    n_segments: int = 0
+    full_class_ids: str = ""
+    full_instance_ids: str = ""
+    seg_ids: str = ""
+    seg_centers: str = ""
+    seg_sizes: str = ""
+    hull_vertices: str = ""
+    hull_faces: str = ""
+    hull_face_seg: str = ""
+
+
+@app.get("/api/segment/state", response_model=SegmentStateResponse)
+def segment_state():
+    """Return the active segment session if there is one (no-op otherwise).
+    Used by the frontend to hydrate ``segState`` after a page reload."""
+    seg = _state.get("seg")
+    if seg is None:
+        return SegmentStateResponse(has_state=False)
+    instance_ids = seg.instance_ids.astype(np.int32, copy=False)
+    class_ids = seg.class_ids.astype(np.int8, copy=False)
+    labeled = instance_ids >= 0
+    box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(seg.positions), instance_ids)
+    from segment_hulls import compute_hulls as _compute_hulls
+    hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
+    return SegmentStateResponse(
+        has_state=True,
+        n_assigned=int(labeled.sum()),
+        n_segments=int(np.unique(instance_ids[labeled]).size) if labeled.any() else 0,
+        full_class_ids=_b64(class_ids),
+        full_instance_ids=_b64(instance_ids),
         seg_ids=_b64(box_ids),
         seg_centers=_b64(box_centers),
         seg_sizes=_b64(box_sizes),

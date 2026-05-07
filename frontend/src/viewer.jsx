@@ -598,6 +598,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const raycaster = new THREE.Raycaster();
 
     const onPointerDown = (e) => {
+      // Left button only — right/middle drags drive the camera and must
+      // not trigger pick/select callbacks (otherwise orbiting silently
+      // toggles whatever segment was under the cursor).
+      if (e.button !== 0) return;
       const rect = renderer.domElement.getBoundingClientRect();
       const ndc = evtToNdc(e, rect);
       raycaster.setFromCamera(ndc, camera);

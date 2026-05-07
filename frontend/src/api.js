@@ -157,6 +157,24 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`segSave failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
+  async segState() {
+    const r = await fetch('/api/segment/state');
+    if (!r.ok) throw new Error(`segState failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    if (!j.has_state) return null;
+    return {
+      nAssigned: j.n_assigned,
+      nSegments: j.n_segments,
+      fullClassIds: b64ToInt8(j.full_class_ids),
+      fullInstanceIds: b64ToInt32(j.full_instance_ids),
+      segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
+      segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
+      segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
+      hullVertices: j.hull_vertices ? b64ToFloat32(j.hull_vertices) : null,
+      hullFaces: j.hull_faces ? b64ToInt32(j.hull_faces) : null,
+      hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
+    };
+  },
   async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true } = {}) {
     const r = await fetch('/api/segment/presegment', {
       method: 'POST',

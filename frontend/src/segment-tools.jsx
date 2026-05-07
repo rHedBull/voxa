@@ -270,16 +270,11 @@ export function PresegmentList({
   if (!segState) return null;
 
   const onRowClick = (segId, evt) => {
+    if (!(evt.ctrlKey || evt.metaKey || evt.shiftKey)) return;
     setSegState((s) => {
       if (!s) return s;
       const next = new Set(s.selection);
-      const additive = evt.shiftKey || evt.ctrlKey || evt.metaKey;
-      if (additive) {
-        next.has(segId) ? next.delete(segId) : next.add(segId);
-      } else {
-        if (next.size === 1 && next.has(segId)) next.clear();
-        else { next.clear(); next.add(segId); }
-      }
+      next.has(segId) ? next.delete(segId) : next.add(segId);
       return { ...s, selection: next };
     });
   };
@@ -347,8 +342,8 @@ export function PresegmentList({
             <div key={seg.id}
               className={'inst-row' + (isSel ? ' selected' : '')}
               onClick={(e) => onRowClick(seg.id, e)}
-              title={isSel ? 'Click again to deselect, shift-click for multi'
-                           : 'Click to select; shift-click to add'}>
+              title={isSel ? 'Ctrl/Shift-click to deselect'
+                           : 'Ctrl/Shift-click to select'}>
               <span className="inst-dot" style={{ background: dot }} />
               <div className="inst-text">
                 <b>#{seg.id}</b>
