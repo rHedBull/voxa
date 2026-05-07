@@ -344,6 +344,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     onCuboidTransform = null,   // (id, { center, size, rotation }) => void; called on gizmo drag
     highlightCuboid = null,     // { center, size, rotation, color } — points inside this oriented box are tinted
     confirmedCuboids = null,    // [{ center, size, rotation }] — confirmed cuboids; always present (drives stats)
+    confirmedPointsetHideMask = null, // Uint8Array sub-cloud length: 1 = belongs to a confirmed pointset; NaN'd alongside confirmed-cuboid points
     hideConfirmedPoints = true, // when true, points inside any confirmedCuboid are NaN'd in the position buffer
     onLabelStats = null,        // ({ total, labeled, left }) => void — reported after each confirmed-set change
     denseOverlay = null,        // { positions: Float32Array, colors: Float32Array | null } — full-density points to show inside the selected cuboid; takes precedence over the base cloud where they overlap
@@ -847,9 +848,15 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const numPts = N / 3;
 
     let labeled = 0;
-    if (confirmedCuboids && confirmedCuboids.length > 0) {
+    const hasCuboids = confirmedCuboids && confirmedCuboids.length > 0;
+    const hasPointsetMask = confirmedPointsetHideMask
+      && confirmedPointsetHideMask.length === numPts;
+    if (hasCuboids || hasPointsetMask) {
       const mask = new Uint8Array(numPts);
-      for (const cub of confirmedCuboids) {
+      if (hasPointsetMask) {
+        for (let i = 0; i < numPts; i++) if (confirmedPointsetHideMask[i]) mask[i] = 1;
+      }
+      for (const cub of (confirmedCuboids || [])) {
         const cx = cub.center[0], cy = cub.center[1], cz = cub.center[2];
         const hx = cub.size[0] / 2, hy = cub.size[1] / 2, hz = cub.size[2] / 2;
         const rx = cub.rotation?.[0] || 0;
@@ -897,7 +904,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     }
     posAttr.needsUpdate = true;
     onLabelStatsRef.current?.({ total: numPts, labeled, left: numPts - labeled });
-  }, [confirmedCuboids, hideConfirmedPoints, cloud]);
+  }, [confirmedCuboids, confirmedPointsetHideMask, hideConfirmedPoints, cloud]);
 
   // ── Per-point color recompute ───────────────────────────────────────────
   useEffect(() => {

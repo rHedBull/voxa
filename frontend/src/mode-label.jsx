@@ -369,7 +369,9 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   const confirmedCuboids = useMemoLabel(() => {
     if (!confirmedKey) return [];
     return instances
-      .filter((i) => i.confirmed && i.kind !== 'pointset' && i.center && i.size)
+      // Confirmed-and-selected: temporarily un-hide so the user can re-inspect.
+      .filter((i) => i.confirmed && i.id !== selectedId
+        && i.kind !== 'pointset' && i.center && i.size)
       .map((i) => ({
         center: i.center,
         size: i.size,
@@ -377,7 +379,33 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
       }));
     // confirmedKey transitively covers `instances`; eslint can't see that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [confirmedKey]);
+  }, [confirmedKey, selectedId]);
+
+  // Hide mask for confirmed POINTSET instances (cuboid confirmed instances
+  // are handled by confirmedCuboids' inside-test in the Viewer). Points
+  // belonging to confirmed pointsets get NaN'd just like inside-cuboid points
+  // when hideConfirmed is on. Selected confirmed pointset is excluded so
+  // re-selecting it brings the points back.
+  const confirmedPointsetHideMask = useMemoLabel(() => {
+    if (!cloud?.positions) return null;
+    const inst = segState?.instanceFull;
+    if (!inst) return null;
+    const targets = new Set();
+    for (const i of instances) {
+      if (!i.confirmed) continue;
+      if (i.id === selectedId) continue;
+      if (Number.isFinite(i.segId)) targets.add(i.segId);
+    }
+    if (targets.size === 0) return null;
+    const subN = cloud.positions.length / 3;
+    const subIdx = cloud.subsampleIdx;
+    const mask = new Uint8Array(subN);
+    for (let p = 0; p < subN; p++) {
+      const f = subIdx ? subIdx[p] : p;
+      if (targets.has(inst[f])) mask[p] = 1;
+    }
+    return mask;
+  }, [instances, selectedId, cloud, segState?.instanceFull]);
 
   // Stats from Viewer's confirmed-mask pass: how many points fall inside any
   // confirmed cuboid (unique), regardless of show/hide toggle.
@@ -836,6 +864,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           selectionMask={selectionMask}
           denseOverlay={denseOverlay}
           confirmedCuboids={confirmedCuboids}
+          confirmedPointsetHideMask={confirmedPointsetHideMask}
           hideConfirmedPoints={hideConfirmed}
           onLabelStats={setLabelStats}
           onCameraChange={onCameraChange}
