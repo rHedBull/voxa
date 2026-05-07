@@ -587,9 +587,15 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   // to the right-side list as a *pointset* (no center/size — never drawn
   // as a cuboid) and the segments it absorbed disappear from the left
   // PresegmentList (filtered via promotedSegIds). Selection clears.
-  const confirmSegmentSelection = useCallbackLabel(async () => {
+  // Class picker modal state. When set, Ctrl+Enter on a selection deferred
+  // to a class choice instead of using activeClass; pressing the class
+  // hotkey picks that class and creates the (unconfirmed) pointset.
+  const [classPickerOpen, setClassPickerOpen] = useStateLabel(false);
+
+  const confirmSegmentSelection = useCallbackLabel(async (clsDef) => {
+    const targetCls = clsDef || activeClassDef;
     if (!segState || segState.selection.size === 0) return;
-    if (!activeClassDef) return;
+    if (!targetCls) return;
     const inst = segState.instanceFull;
     const sel = segState.selection;
     const idx = [];
@@ -603,7 +609,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     try {
       r = await VoxaAPI.segApply('reassign', {
         indices,
-        payload: { target_inst: -1, target_class: activeClassDef.id },
+        payload: { target_inst: -1, target_class: targetCls.id },
       });
     } catch (err) {
       console.error('confirm reassign failed:', err);
@@ -617,9 +623,9 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
         id: newId(),
         segId: newSegId,
         kind: 'pointset',
-        cls: activeClassDef.id,
-        label: `${activeClassDef.label} ${(counts[activeClassDef.id] || 0) + 1}`,
-        color: activeClassDef.color,
+        cls: targetCls.id,
+        label: `${targetCls.label} ${(counts[targetCls.id] || 0) + 1}`,
+        color: targetCls.color,
         source: 'preseg',
       };
       onChange([...instances, newInst]);
@@ -734,7 +740,10 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         if (segState && segState.selection.size > 0) {
-          confirmSegmentSelection();
+          // Open the class picker so the user can quick-pick the class for
+          // the new (unconfirmed) pointset instead of falling back on the
+          // activeClass. The picker has its own keydown handler.
+          setClassPickerOpen(true);
         } else if (activeTool === 'cuboid') {
           toggleConfirmSelected();
         }
@@ -778,6 +787,17 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
 
   return (
     <div className="mode-root label">
+      {classPickerOpen && (
+        <ClassPickerModal
+          classes={classes}
+          counts={counts}
+          onPick={(cls) => {
+            setClassPickerOpen(false);
+            confirmSegmentSelection(cls);
+          }}
+          onClose={() => setClassPickerOpen(false)}
+        />
+      )}
       {activeTool === 'pick' && segState && (
         <PickTool
           viewerRef={viewerRef}
@@ -1099,6 +1119,55 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
         </>
         )}
       </aside>
+    </div>
+  );
+}
+
+// Centered modal shown after Ctrl+Enter on a presegment selection. Lists all
+// classes with their hotkeys; pressing the hotkey (or clicking) commits the
+// selection as a new unconfirmed pointset instance with that class. Esc
+// dismisses without creating anything. Selection survives a cancel so the
+// user can pick again or hit Ctrl+Enter once more.
+function ClassPickerModal({ classes, counts, onPick, onClose }) {
+  useEffectLabel(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      const cls = classes.find((c) => c.hotkey === e.key);
+      if (cls) {
+        e.preventDefault();
+        e.stopPropagation();
+        onPick(cls);
+      }
+    };
+    // Capture phase so we beat the LabelMode global keydown that would
+    // otherwise also handle the hotkey (e.g. "1" → setActiveClass).
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [classes, onPick, onClose]);
+
+  return (
+    <div className="class-picker-overlay" onClick={onClose}>
+      <div className="class-picker-card" onClick={(e) => e.stopPropagation()}>
+        <div className="class-picker-title">Pick class for new instance</div>
+        <div className="class-picker-list">
+          {classes.map((c) => (
+            <button key={c.id}
+              className="class-picker-row"
+              onClick={() => onPick(c)}
+              title={`Press ${c.hotkey || '–'}`}>
+              <span className="class-swatch" style={{ background: c.color }} />
+              <span className="class-picker-label">{c.label}</span>
+              <span className="class-picker-count">{counts[c.id] || 0}</span>
+              <span className="class-picker-hk">{c.hotkey || '–'}</span>
+            </button>
+          ))}
+        </div>
+        <div className="class-picker-hint">Press a number to assign · Esc to cancel</div>
+      </div>
     </div>
   );
 }
