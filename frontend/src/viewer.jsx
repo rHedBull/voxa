@@ -1379,7 +1379,9 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     if (!tc || !anchor) return;
 
     const selected = selectedId ? instances.find((i) => i.id === selectedId) : null;
-    const wantGizmo = !!(selected && transformMode && showCuboids);
+    // Pointset instances have no cuboid → no gizmo, no anchor sync.
+    const isCuboid = selected && selected.kind !== 'pointset' && selected.center && selected.size;
+    const wantGizmo = !!(isCuboid && transformMode && showCuboids);
 
     if (!wantGizmo) {
       tc.detach();

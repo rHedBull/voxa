@@ -131,6 +131,9 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     if (!selectedId) return [];
     const sel = instances.find((i) => i.id === selectedId);
     if (!sel || hiddenClasses.has(sel.cls)) return [];
+    // Pointset instances never get a cuboid drawn — they're a group of
+    // points labeled with the same instance id and nothing more.
+    if (sel.kind === 'pointset') return [];
     return [selectedId];
   }, [instances, hiddenClasses, selectedId]);
 
@@ -139,6 +142,64 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     instances.forEach((i) => { c[i.cls] = (c[i.cls] || 0) + 1; });
     return c;
   }, [instances]);
+
+  // Set of segment ids absorbed into a right-side instance, so the left
+  // PresegmentList can hide them once they've been promoted.
+  const promotedSegIds = useMemoLabel(() => {
+    const s = new Set();
+    for (const i of instances) {
+      if (i.kind === 'pointset' && Number.isFinite(i.segId)) s.add(i.segId);
+    }
+    return s;
+  }, [instances]);
+
+  // Hulls and per-segment AABBs for promoted segIds shouldn't render —
+  // those points belong to a confirmed instance now, not a presegment.
+  // Drop their faces / box entries before handing the data to the viewer.
+  const segHullsFiltered = useMemoLabel(() => {
+    const h = segState?.segHulls;
+    if (!h) return null;
+    if (promotedSegIds.size === 0) return h;
+    const { vertices, faces, faceSeg } = h;
+    const keepFaces = [];
+    const keepSeg = [];
+    for (let f = 0; f < faceSeg.length; f++) {
+      if (promotedSegIds.has(faceSeg[f])) continue;
+      keepFaces.push(faces[f * 3], faces[f * 3 + 1], faces[f * 3 + 2]);
+      keepSeg.push(faceSeg[f]);
+    }
+    return {
+      vertices,
+      faces: new Uint32Array(keepFaces),
+      faceSeg: new Int32Array(keepSeg),
+    };
+  }, [segState?.segHulls, promotedSegIds]);
+
+  const segBoxesFiltered = useMemoLabel(() => {
+    const b = segState?.segBoxes;
+    if (!b) return null;
+    if (promotedSegIds.size === 0) return b;
+    const { segIds, segCenters, segSizes } = b;
+    const keepIdx = [];
+    for (let i = 0; i < segIds.length; i++) {
+      if (!promotedSegIds.has(segIds[i])) keepIdx.push(i);
+    }
+    if (keepIdx.length === segIds.length) return b;
+    const newIds = new Int32Array(keepIdx.length);
+    const newCenters = new Float32Array(keepIdx.length * 3);
+    const newSizes = new Float32Array(keepIdx.length * 3);
+    for (let k = 0; k < keepIdx.length; k++) {
+      const i = keepIdx[k];
+      newIds[k] = segIds[i];
+      newCenters[k * 3]     = segCenters[i * 3];
+      newCenters[k * 3 + 1] = segCenters[i * 3 + 1];
+      newCenters[k * 3 + 2] = segCenters[i * 3 + 2];
+      newSizes[k * 3]     = segSizes[i * 3];
+      newSizes[k * 3 + 1] = segSizes[i * 3 + 1];
+      newSizes[k * 3 + 2] = segSizes[i * 3 + 2];
+    }
+    return { segIds: newIds, segCenters: newCenters, segSizes: newSizes };
+  }, [segState?.segBoxes, promotedSegIds]);
 
   const selected = instances.find((i) => i.id === selectedId);
   const activeClassDef = classes.find((c) => c.id === activeClass);
@@ -164,6 +225,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   // the overlay so it can't visibly disconnect from the box.
   const selectedBoundsKey = useMemoLabel(() => {
     if (!selected) return null;
+    if (selected.kind === 'pointset' || !selected.center || !selected.size) return null;
     const c = selected.center, sz = selected.size, r = selected.rotation || [0, 0, 0];
     return `${selected.id}|${c[0]},${c[1]},${c[2]}|${sz[0]},${sz[1]},${sz[2]}|${r[0]},${r[1]},${r[2]}`;
   }, [selected]);
@@ -173,6 +235,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   useEffectLabel(() => {
     if (!denseTrigger) return;
     if (!selected) return;
+    if (!selected.center || !selected.size) return;
     const center = selected.center;
     const size = selected.size;
     const rot = selected.rotation || [0, 0, 0];
@@ -207,6 +270,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
 
   const highlightCuboid = useMemoLabel(() => {
     if (!selected) return null;
+    if (selected.kind === 'pointset' || !selected.center || !selected.size) return null;
     const cls = classes.find((c) => c.id === selected.cls);
     return {
       center: selected.center,
@@ -223,6 +287,9 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     let s = '';
     for (const i of instances) {
       if (!i.confirmed) continue;
+      // Pointset instances have no cuboid; skip them in confirmed-cuboid
+      // bookkeeping so the viewer's hide/labeled-stats logic stays cuboid-only.
+      if (i.kind === 'pointset' || !i.center || !i.size) continue;
       const c = i.center, sz = i.size, r = i.rotation || [0, 0, 0];
       s += `${i.id}|${c[0]},${c[1]},${c[2]}|${sz[0]},${sz[1]},${sz[2]}|${r[0]},${r[1]},${r[2]};`;
     }
@@ -240,7 +307,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   const confirmedCuboids = useMemoLabel(() => {
     if (!confirmedKey) return [];
     return instances
-      .filter((i) => i.confirmed)
+      .filter((i) => i.confirmed && i.kind !== 'pointset' && i.center && i.size)
       .map((i) => ({
         center: i.center,
         size: i.size,
@@ -381,6 +448,30 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   };
   const focusInstance = (inst) => {
     if (!inst) return;
+    // Pointset instance: derive bbox from the points labeled with segId.
+    if (inst.kind === 'pointset' && Number.isFinite(inst.segId)
+        && segState && cloud?.positions) {
+      const pos = cloud.positions;
+      const subIdx = cloud.subsampleIdx;
+      const instArr = segState.instanceFull;
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      const subN = pos.length / 3;
+      for (let p = 0; p < subN; p++) {
+        const f = subIdx ? subIdx[p] : p;
+        if (instArr[f] !== inst.segId) continue;
+        const x = pos[p * 3], y = pos[p * 3 + 1], z = pos[p * 3 + 2];
+        if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
+        if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
+      }
+      if (!isFinite(minX)) return;
+      const center = new THREE.Vector3(
+        (minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+      const radius = Math.max(maxX - minX, maxY - minY, maxZ - minZ) * 0.6 + 0.05;
+      viewerRef.current?.frame(center, radius);
+      return;
+    }
+    if (!inst.center || !inst.size) return;
     viewerRef.current?.frame(
       new THREE.Vector3(...inst.center),
       Math.max(...inst.size) / 2,
@@ -400,10 +491,12 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     }
   };
   // Ctrl+Enter on a presegment selection: collapse the selected segments
-  // into one new instance. The backend reassigns the union of their
-  // points to a fresh instance id (target_class = active class), and we
-  // wrap a cuboid around them so the new instance shows up on the right.
-  // Selection is cleared so the user can immediately start the next group.
+  // into one new point-set instance. The backend reassigns the union of
+  // their points to a fresh instance id (target_class = active class) and
+  // returns the allocated id in r.afterInstance. The instance is added
+  // to the right-side list as a *pointset* (no center/size — never drawn
+  // as a cuboid) and the segments it absorbed disappear from the left
+  // PresegmentList (filtered via promotedSegIds). Selection clears.
   const confirmSegmentSelection = useCallbackLabel(async () => {
     if (!segState || segState.selection.size === 0) return;
     if (!activeClassDef) return;
@@ -427,54 +520,20 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
       return;
     }
 
-    // Bbox over the subsampled cloud — the full-res positions live on
-    // the backend; the subsampled cloud is what the user sees, so the
-    // box that lands around the selection is what they'd expect.
-    const sub = cloud?.subsampleIdx;
-    const positions = cloud?.positions;
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    if (positions) {
-      const subN = positions.length / 3;
-      for (let p = 0; p < subN; p++) {
-        const fullIdx = sub ? sub[p] : p;
-        if (!sel.has(inst[fullIdx])) continue;
-        const x = positions[p * 3], y = positions[p * 3 + 1], z = positions[p * 3 + 2];
-        if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
-        if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
-      }
+    const newSegId = r.afterInstance && r.afterInstance.length > 0
+      ? r.afterInstance[0] : -1;
+    if (newSegId >= 0) {
+      const newInst = {
+        id: newId(),
+        segId: newSegId,
+        kind: 'pointset',
+        cls: activeClassDef.id,
+        label: `${activeClassDef.label} ${(counts[activeClassDef.id] || 0) + 1}`,
+        color: activeClassDef.color,
+        source: 'preseg',
+      };
+      onChange([...instances, newInst]);
     }
-    if (!isFinite(minX)) {
-      // No subsampled coverage — selection is real on the backend, but we
-      // can't draw a bbox around it. Skip the cuboid; still apply the delta.
-      setSegState((s) => s ? {
-        ...applyDelta(s, {
-          indices: r.indices,
-          after_class: r.afterClass,
-          after_instance: r.afterInstance,
-        }),
-        selection: new Set(),
-      } : s);
-      return;
-    }
-
-    const newInst = {
-      id: newId(),
-      cls: activeClassDef.id,
-      label: `${activeClassDef.label} ${(counts[activeClassDef.id] || 0) + 1}`,
-      color: activeClassDef.color,
-      center: [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
-      size: [
-        Math.max(0.01, maxX - minX),
-        Math.max(0.01, maxY - minY),
-        Math.max(0.01, maxZ - minZ),
-      ],
-      rotation: [0, 0, 0],
-      conf: 1.0,
-      source: 'preseg',
-    };
-    onChange([...instances, newInst]);
-    setSelectedId(newInst.id);
 
     setSegState((s) => {
       if (!s) return s;
@@ -485,7 +544,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
       });
       return { ...next, selection: new Set() };
     });
-  }, [segState, activeClassDef, cloud, instances, counts, onChange, setSegState]);
+  }, [segState, activeClassDef, instances, counts, onChange, setSegState]);
 
   const toggleConfirmSelected = useCallbackLabel(() => {
     if (!selectedId) return;
@@ -689,6 +748,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           cloud={cloud}
           showSegHulls={showSegHulls}
           setShowSegHulls={setShowSegHulls}
+          excludeSegIds={promotedSegIds}
         />
       </aside>
 
@@ -716,11 +776,11 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           hideConfirmedPoints={hideConfirmed}
           onLabelStats={setLabelStats}
           onCameraChange={onCameraChange}
-          segBoxes={segState?.segBoxes
-            ? { ...segState.segBoxes, selection: segState.selection }
+          segBoxes={segBoxesFiltered
+            ? { ...segBoxesFiltered, selection: segState.selection }
             : null}
-          segHulls={segState?.segHulls
-            ? { ...segState.segHulls, selection: segState.selection }
+          segHulls={segHullsFiltered
+            ? { ...segHullsFiltered, selection: segState.selection }
             : null}
           showSegHulls={showSegHulls}
         />
@@ -927,7 +987,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
                     </div>
                     <div className="ins-actions">
                       <button className="ghost-btn" onClick={() => focusInstance(inst)}>◎ Focus</button>
-                      {!inst.confirmed && (
+                      {!inst.confirmed && inst.kind !== 'pointset' && (
                         <button className="ghost-btn" onClick={() => autoFitInstance(inst)}>↻ Auto-fit</button>
                       )}
                       <button className="ghost-btn" onClick={() => toggleConfirm(inst.id)}

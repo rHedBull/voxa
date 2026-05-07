@@ -47,6 +47,10 @@ CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml
 FRONTEND_DIST = ROOT / "dist"
 MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "1000000"))
 MAX_LABEL_POINTS = int(os.environ.get("VOXA_MAX_LABEL_POINTS", "5000000"))
+# Drop segments smaller than this from on-disk labels. Defends against
+# broken prelabel files (e.g. one-point-per-instance arrays) that would
+# otherwise flood the UI with hundreds of thousands of micro-segments.
+MIN_SEGMENT_POINTS = int(os.environ.get("VOXA_MIN_SEGMENT_POINTS", "10"))
 LIDAR_ROOT = load_lidar_root_from_env()
 
 app = FastAPI(title="Voxa 3D scan studio")
@@ -399,6 +403,31 @@ def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
     )
 
 
+def _filter_tiny_segments(labels, min_points: int):
+    """Reset (class_id, instance_id) to (-1, -1) for any point belonging
+    to an instance with fewer than ``min_points`` points. Keeps the
+    arrays in-place-friendly: returns a fresh LabelArrays so the caller
+    can swap without mutating the loader's outputs."""
+    from lidar_io import LabelArrays
+    inst = np.asarray(labels.instance_ids, dtype=np.int32)
+    cls = np.asarray(labels.class_ids, dtype=np.int8)
+    if inst.size == 0 or min_points <= 1:
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    labeled = inst >= 0
+    if not labeled.any():
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    ids, counts = np.unique(inst[labeled], return_counts=True)
+    drop_ids = ids[counts < int(min_points)]
+    if drop_ids.size == 0:
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    drop_mask = np.isin(inst, drop_ids)
+    new_cls = cls.copy()
+    new_inst = inst.copy()
+    new_cls[drop_mask] = -1
+    new_inst[drop_mask] = -1
+    return LabelArrays(class_ids=new_cls, instance_ids=new_inst)
+
+
 def _scene_is_z_up(src: SceneSource) -> bool:
     """Decide whether the scene's source frame is Z-up (surveying / LAS).
 
@@ -464,6 +493,15 @@ def load_scene(req: LoadRequest):
 
     # Recenter for float32 stability (LAS UTM, etc).
     pc, offset = _recenter(pc)
+
+    # Drop segments below a sanity threshold. Some prelabel files in the
+    # wild are essentially `np.arange(n_points)` (every point its own
+    # instance) which floods the UI with hundreds of thousands of
+    # one-point segments and tanks rendering. Anything smaller than
+    # MIN_SEGMENT_POINTS is treated as unlabeled (class=-1, instance=-1)
+    # so the user starts from a clean slate.
+    if labels is not None:
+        labels = _filter_tiny_segments(labels, MIN_SEGMENT_POINTS)
 
     sub, idx, sub_intensity, sub_labels = _safe_subsample(pc, req.max_points, intensity, labels)
 
@@ -881,13 +919,29 @@ def _decode_indices_or_400(req: "ApplyRequest") -> np.ndarray:
     return np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
 
 
+def _coerce_class_id(v):
+    """Accept either int class id or string class name from the frontend.
+    The labels palette uses string ids ('pipe', 'beam', ...); the seg
+    state stores int8 class ids. Map names → ids via the configured
+    classes.yaml so both wire formats work."""
+    if v is None:
+        return None
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    name_to_id = _voxa_class_name_to_id()
+    key = str(v).lower()
+    if key not in name_to_id:
+        raise ValueError(f"unknown class name: {v!r}")
+    return name_to_id[key]
+
+
 @app.post("/api/segment/apply")
 def segment_apply(req: ApplyRequest):
     seg = _require_seg()
     try:
         if req.op == "set_class":
             idx = _decode_indices_or_400(req)
-            out = seg.apply_set_class(idx, class_id=int(req.payload["class_id"]))
+            out = seg.apply_set_class(idx, class_id=_coerce_class_id(req.payload["class_id"]))
         elif req.op == "merge":
             out = seg.apply_merge(
                 source_inst=int(req.payload["source_inst"]),
@@ -898,7 +952,7 @@ def segment_apply(req: ApplyRequest):
             out = seg.apply_reassign(
                 idx,
                 target_inst=req.payload.get("target_inst"),
-                target_class=req.payload.get("target_class"),
+                target_class=_coerce_class_id(req.payload.get("target_class")),
             )
         else:
             raise HTTPException(400, f"unknown op: {req.op}")

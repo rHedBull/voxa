@@ -166,15 +166,18 @@ function MainApp() {
     setLoadError(null);
     const activeSceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
     const wantFullLabels = t.mode === 'label' && activeSceneObj?.tier === 'annotated';
+    // Run /api/load first, then fetch /api/segment/state. They MUST be
+    // sequential: /api/load is what swaps the backend's in-memory seg
+    // session over to the new scene; if segState() races ahead it can
+    // come back with the previous scene's data (e.g. 482k smart_ais
+    // segments hydrated onto a 16k industrial_scan cloud).
     Promise.all([
       VoxaAPI.load(activeScene, { wantFullLabels }),
       VoxaAPI.getAnnotation(activeScene, 'gt'),
-      // After /api/load, the backend may already have an in-memory seg
-      // session (kept across page refreshes as long as the process is up).
-      // Pull it so the user doesn't have to re-run preseg every reload.
-      // Errors here are non-fatal — fall back to the cloud-load labels.
-      VoxaAPI.segState().catch(() => null),
-    ]).then(([c, gtDoc, segLive]) => {
+    ]).then(async ([c, gtDoc]) => {
+      const segLive = await VoxaAPI.segState().catch(() => null);
+      return [c, gtDoc, segLive];
+    }).then(([c, gtDoc, segLive]) => {
       if (cancel) return;
       setCloud(c);
       setCuboidDirty(false);

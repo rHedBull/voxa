@@ -250,16 +250,18 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
 export function PresegmentList({
   segState, setSegState, classes, viewerRef, cloud,
   showSegHulls = true, setShowSegHulls = null,
+  excludeSegIds = null,
 }) {
   const segmentsAll = useMemo(() => {
     if (!segState) return [];
     const out = [];
     for (const [id, info] of segState.summary.entries()) {
+      if (excludeSegIds && excludeSegIds.has(id)) continue;
       out.push({ id, classId: info.classId, nPoints: info.nPoints });
     }
     out.sort((a, b) => b.nPoints - a.nPoints);
     return out;
-  }, [segState]);
+  }, [segState, excludeSegIds]);
 
   const classesById = useMemo(() => {
     const out = {};
