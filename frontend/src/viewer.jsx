@@ -382,6 +382,19 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
+    // Survive context loss when a sibling tab/popup opens its own WebGL
+    // context (Brave under snap/AppArmor evicts older contexts aggressively).
+    // preventDefault on `lost` is required for the browser to fire `restored`
+    // afterwards; the continuous rAF loop redraws automatically once the
+    // GPU resources are re-uploaded by Three.js's internal handlers.
+    const onCtxLost = (e) => { e.preventDefault(); };
+    const onCtxRestored = () => {
+      try { renderer.setSize(renderer.domElement.clientWidth,
+                             renderer.domElement.clientHeight, false); }
+      catch { /* renderer disposed mid-restore */ }
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onCtxLost, false);
+    renderer.domElement.addEventListener('webglcontextrestored', onCtxRestored, false);
     // Linear tone mapping lets per-material color > 1 actually brighten
     // pixels instead of clamping. Used by the mesh-brightness slider.
     renderer.toneMapping = THREE.LinearToneMapping;
@@ -693,6 +706,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       scene.remove(transformAnchor);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      renderer.domElement.removeEventListener('webglcontextlost', onCtxLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', onCtxRestored);
       pointsGeom.dispose();
       pointsMat.dispose();
       highlightGeom.dispose();
@@ -1356,6 +1371,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       : new Set(instances.map((i) => i.id));
     instances.forEach((inst) => {
       if (!visible.has(inst.id)) return;
+      // Pointset instances carry no cuboid (size/center are null); skip
+      // them in the cuboid renderer. The mesh-companion window receives
+      // raw gtInstances and so hits this path with mixed kinds.
+      if (!inst.size || !inst.center) return;
       const isHi = inst.id === highlightedId || inst.id === selectedId;
       const box = new THREE.BoxGeometry(...inst.size);
       const edges = new THREE.EdgesGeometry(box);
