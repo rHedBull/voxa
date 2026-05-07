@@ -147,16 +147,21 @@ class LoadRegionResponse(BaseModel):
 
 
 class Cuboid(BaseModel):
+    # Despite the name, this model now covers both cuboid and pointset
+    # instances. Pointsets carry `kind="pointset"` + `segId`, and have
+    # null center/size. Compare-mode IoU skips pointset instances.
     id: str
     cls: str
     label: str = ""
     color: str = "#5b8def"
-    center: list[float]   # [x,y,z]
-    size: list[float]     # [w,h,d]
+    center: Optional[list[float]] = None   # [x,y,z]; null for pointset
+    size: Optional[list[float]] = None     # [w,h,d]; null for pointset
     rotation: list[float] = [0.0, 0.0, 0.0]   # euler xyz radians
     conf: float = 1.0
-    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'recommendation'
+    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'preseg' | 'recommendation'
     confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
+    kind: str = "cuboid"     # 'cuboid' | 'pointset'
+    segId: Optional[int] = None  # set for pointset (and preseg-promoted) instances; per-point membership key in segState.instanceFull
 
 
 class AnnotationDoc(BaseModel):
@@ -303,7 +308,10 @@ def _recenter(pc: PointCloud) -> tuple[PointCloud, list[float]]:
 
 def _iou_aabb(a: Cuboid, b: Cuboid) -> float:
     """Axis-aligned IoU. Cuboid rotation is ignored — adequate for scoring
-    industrial-pose annotations where rotation is usually small."""
+    industrial-pose annotations where rotation is usually small. Returns 0
+    if either instance lacks a box (e.g. pointset)."""
+    if a.center is None or a.size is None or b.center is None or b.size is None:
+        return 0.0
     a_min = np.array(a.center) - np.array(a.size) / 2
     a_max = np.array(a.center) + np.array(a.size) / 2
     b_min = np.array(b.center) - np.array(b.size) / 2
