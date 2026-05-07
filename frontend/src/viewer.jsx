@@ -350,6 +350,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     segBoxes = null,            // { segIds, segCenters, segSizes, selection } — fallback bbox overlay per presegment
     segHulls = null,            // { vertices, faces, faceSeg, selection } — merged convex-hull overlay per presegment
     showSegHulls = true,        // hide the hull mesh when false; points still get segment-coloured
+    selectionMask = null,       // Uint8Array sub-cloud length: 1 = belongs to selected instance; non-1 points are dimmed
   } = props;
 
   const mountRef = useRef(null);
@@ -1032,8 +1033,19 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       }
     }
 
+    if (selectionMask && selectionMask.length * 3 === colorAttr.array.length) {
+      const arr = colorAttr.array;
+      for (let p = 0; p < selectionMask.length; p++) {
+        if (selectionMask[p]) continue;
+        const i = p * 3;
+        arr[i]     = 0.22;
+        arr[i + 1] = 0.23;
+        arr[i + 2] = 0.26;
+      }
+    }
+
     colorAttr.needsUpdate = true;
-  }, [colorMode, cloud, showDiff, diffMask, segHulls]);
+  }, [colorMode, cloud, showDiff, diffMask, segHulls, selectionMask]);
 
   // ── Selected-cuboid highlight overlay ───────────────────────────────────
   // Re-populates a separate Points buffer with the cloud points that fall

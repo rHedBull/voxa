@@ -268,6 +268,68 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [denseTrigger]);
 
+  // Mask of sub-cloud points belonging to the selected instance. Viewer dims
+  // points where mask=0 so the selection visually pops from the rest of the
+  // cloud. Pointset instances use segState.instanceFull membership; cuboid
+  // instances test inside-OBB on subsampled positions. Recomputes whenever
+  // selection (or, for cuboids, the box) changes.
+  const selectionMask = useMemoLabel(() => {
+    if (!selected || !cloud?.positions) return null;
+    const subN = cloud.positions.length / 3;
+    const mask = new Uint8Array(subN);
+    // Prefer per-point membership whenever we have it. A pointset instance
+    // always has segId; cuboid instances may also have one if they were
+    // promoted from a presegment, in which case we still want point-accurate
+    // highlight rather than box-filtered.
+    if (Number.isFinite(selected.segId) && segState?.instanceFull) {
+      const subIdx = cloud.subsampleIdx;
+      const inst = segState.instanceFull;
+      const target = selected.segId;
+      for (let p = 0; p < subN; p++) {
+        const f = subIdx ? subIdx[p] : p;
+        if (inst[f] === target) mask[p] = 1;
+      }
+      return mask;
+    }
+    // Annotated SCHEMA scans expose per-point gt instance ids on the cloud
+    // itself. If the instance carries a matching gt instance id, use it.
+    if (Number.isFinite(selected.gtInstanceId) && cloud.instanceIds) {
+      const ids = cloud.instanceIds;
+      const target = selected.gtInstanceId;
+      for (let p = 0; p < subN; p++) {
+        if (ids[p] === target) mask[p] = 1;
+      }
+      return mask;
+    }
+    if (selected.kind !== 'pointset' && selected.center && selected.size) {
+      const pos = cloud.positions;
+      const cx = selected.center[0], cy = selected.center[1], cz = selected.center[2];
+      const sz = selected.size, r = selected.rotation || [0, 0, 0];
+      const hx = sz[0] / 2, hy = sz[1] / 2, hz = sz[2] / 2;
+      const isAA = !r[0] && !r[1] && !r[2];
+      if (isAA) {
+        for (let p = 0; p < subN; p++) {
+          const dx = pos[p * 3] - cx, dy = pos[p * 3 + 1] - cy, dz = pos[p * 3 + 2] - cz;
+          if (dx > -hx && dx < hx && dy > -hy && dy < hy && dz > -hz && dz < hz) mask[p] = 1;
+        }
+      } else {
+        const m = new THREE.Matrix4().makeRotationFromEuler(
+          new THREE.Euler(r[0], r[1], r[2], 'XYZ')
+        ).invert();
+        const e = m.elements;
+        for (let p = 0; p < subN; p++) {
+          const dx = pos[p * 3] - cx, dy = pos[p * 3 + 1] - cy, dz = pos[p * 3 + 2] - cz;
+          const lx = e[0] * dx + e[4] * dy + e[8]  * dz;
+          const ly = e[1] * dx + e[5] * dy + e[9]  * dz;
+          const lz = e[2] * dx + e[6] * dy + e[10] * dz;
+          if (lx > -hx && lx < hx && ly > -hy && ly < hy && lz > -hz && lz < hz) mask[p] = 1;
+        }
+      }
+      return mask;
+    }
+    return null;
+  }, [selected, cloud, segState?.instanceFull]);  // cloud carries instanceIds; selected.segId/gtInstanceId fold into `selected`
+
   const highlightCuboid = useMemoLabel(() => {
     if (!selected) return null;
     if (selected.kind === 'pointset' || !selected.center || !selected.size) return null;
@@ -771,6 +833,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           transformMode={activeTool === 'cuboid' && !isLocked ? transformMode : null}
           onCuboidTransform={onCuboidTransform}
           highlightCuboid={highlightCuboid}
+          selectionMask={selectionMask}
           denseOverlay={denseOverlay}
           confirmedCuboids={confirmedCuboids}
           hideConfirmedPoints={hideConfirmed}
