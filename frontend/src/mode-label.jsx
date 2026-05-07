@@ -1,7 +1,8 @@
 // mode-label.jsx — class palette (left), instance list (right), cuboid editing.
 
 import { useState as useStateLabel, useMemo as useMemoLabel,
-         useEffect as useEffectLabel, useCallback as useCallbackLabel } from 'react';
+         useEffect as useEffectLabel, useCallback as useCallbackLabel,
+         useRef as useRefLabel } from 'react';
 import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
@@ -17,6 +18,7 @@ function formatPointCount(n) {
 }
 
 export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
+  const meshPopupRef = useRefLabel(null);
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -909,8 +911,21 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
             <button className="hud-chip-btn"
-              onClick={() => window.open(window.location.pathname + '?mesh=1', 'voxa-mesh',
-                'popup=yes,width=960,height=720')}
+              onClick={() => {
+                // Reuse a tracked popup ref instead of relying on window.name
+                // dedupe. Some browsers (Brave with strict popup rules,
+                // Firefox under certain blockers) react to a denied popup
+                // by stamping the requested name onto the *calling* tab —
+                // every subsequent click then navigates the main app to
+                // ?mesh=1 instead of opening a popup.
+                const w = meshPopupRef.current;
+                if (w && !w.closed) { w.focus(); return; }
+                meshPopupRef.current = window.open(
+                  window.location.pathname + '?mesh=1',
+                  '_blank',
+                  'popup=yes,width=960,height=720',
+                );
+              }}
               disabled={!hasMesh}
               title={hasMesh
                 ? 'Open synced mesh-only companion window'
