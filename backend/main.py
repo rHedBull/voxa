@@ -1027,15 +1027,33 @@ def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> t
     return unique_ids.astype(np.int32), centers, sizes
 
 
+class RansacParams(BaseModel):
+    """Per-call overrides for ``presegment_ransac.RANSAC_DEFAULTS``. All
+    fields optional — unset fields fall back to the hardcoded defaults."""
+    plane_distance_threshold: Optional[float] = None
+    plane_min_inliers: Optional[float] = None
+    max_planes: Optional[float] = None
+    flat_thresh: Optional[float] = None
+    cylinder_ratio_thresh: Optional[float] = None
+    cyl_search_radius: Optional[float] = None
+    cyl_axis_thresh: Optional[float] = None
+    cyl_radius_ratio: Optional[float] = None
+    cyl_distance_threshold: Optional[float] = None
+    merge_axis_dot: Optional[float] = None
+    merge_radius_ratio: Optional[float] = None
+
+
 class PresegmentRequest(BaseModel):
     mode: Literal["voxel", "ransac", "model"] = "voxel"
     resolution: float = 0.05      # voxel size in scene units (voxel mode only)
     preserve_labeled: bool = True  # only re-presegment points with class_id < 0
+    ransac: Optional[RansacParams] = None  # ransac mode overrides
 
 
 class PresegmentResponse(BaseModel):
     n_assigned: int
     n_segments: int
+    mean_seg_size: float = 0.0  # n_assigned / n_segments (0 if no segments)
     full_class_ids: str        # b64 Int8
     full_instance_ids: str     # b64 Int32
     is_from_prelabel: bool = True
@@ -1047,6 +1065,65 @@ class PresegmentResponse(BaseModel):
     hull_vertices: str = ""    # b64 Float32 (V×3)
     hull_faces: str = ""       # b64 Int32   (F×3)  — global vertex indices
     hull_face_seg: str = ""    # b64 Int32   (F,)   — segment id per face
+
+
+def _apply_ransac_result_to_session(
+    *,
+    sub_inst: np.ndarray,
+    sub_summary: list[dict],
+    positions: np.ndarray,
+    existing_class: np.ndarray,
+    existing_inst: np.ndarray,
+    keep_mask: np.ndarray,
+    redo_mask: np.ndarray,
+    resolution: float = 0.05,
+):
+    """Renumber sub-instance ids above the existing max, assemble the new
+    session arrays, compute boxes + hulls, and return everything. Caller
+    is responsible for writing the session into ``_state["seg"]``."""
+    from segment_state import SegmentSession
+    from segment_hulls import compute_hulls as _compute_hulls
+
+    id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
+    if id_offset and sub_inst.size:
+        sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
+
+    instance_ids = existing_inst.copy()
+    instance_ids[redo_mask] = sub_inst
+
+    class_ids = existing_class.copy()
+    class_ids[redo_mask] = -1
+    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
+    for sid, cid in seg_to_class.items():
+        if cid >= 0:
+            class_ids[instance_ids == sid] = cid
+
+    sess = SegmentSession(
+        class_ids=class_ids,
+        instance_ids=instance_ids.astype(np.int32),
+        positions=positions,
+        is_from_prelabel=True,
+    )
+
+    box_ids, box_centers, box_sizes = _compute_segment_boxes(
+        np.asarray(positions), instance_ids
+    )
+    hull_v, hull_f, hull_seg = _compute_hulls(
+        np.asarray(positions),
+        instance_ids.astype(np.int32),
+        resolution=float(resolution),
+    )
+    return (
+        sess,
+        instance_ids,
+        class_ids,
+        box_ids,
+        box_centers,
+        box_sizes,
+        hull_v,
+        hull_f,
+        hull_seg,
+    )
 
 
 @app.post("/api/segment/presegment", response_model=PresegmentResponse)
@@ -1067,7 +1144,6 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
     points); blocks until done. Clears undo/redo.
     """
     from presegment import presegment as _run_presegment
-    from segment_state import SegmentSession
 
     seg = _state.get("seg")
     if seg is not None:
@@ -1103,47 +1179,43 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
             class_map=name_to_id,
             log=lambda *_: None,
             resolution=float(req.resolution),
+            ransac_params=req.ransac.model_dump(exclude_none=True) if req.ransac else None,
         )
     else:
         sub_inst = np.empty(0, dtype=np.int32)
         sub_summary = []
 
-    # Renumber new instance ids to live above the existing ones so we
-    # never collide with kept-labeled points.
-    id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
-    if id_offset and sub_inst.size:
-        sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
-
-    instance_ids = existing_inst.copy()
-    instance_ids[redo_mask] = sub_inst
-
-    class_ids = existing_class.copy()
-    # New supervoxels stay at class_id = -1 unless the summary mapped them.
-    class_ids[redo_mask] = -1
-    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
-    for sid, cid in seg_to_class.items():
-        if cid >= 0:
-            class_ids[instance_ids == sid] = cid
-
-    _state["seg"] = SegmentSession(
-        class_ids=class_ids,
-        instance_ids=instance_ids.astype(np.int32),
+    (
+        sess,
+        instance_ids,
+        class_ids,
+        box_ids,
+        box_centers,
+        box_sizes,
+        hull_v,
+        hull_f,
+        hull_seg,
+    ) = _apply_ransac_result_to_session(
+        sub_inst=sub_inst,
+        sub_summary=sub_summary,
         positions=positions,
-        is_from_prelabel=True,
+        existing_class=existing_class,
+        existing_inst=existing_inst,
+        keep_mask=keep_mask,
+        redo_mask=redo_mask,
+        resolution=float(req.resolution),
     )
+    _state["seg"] = sess
     _state["seg"].dirty = True
 
     labeled_mask = instance_ids >= 0
-    box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(positions), instance_ids)
-    from segment_hulls import compute_hulls as _compute_hulls
-    hull_v, hull_f, hull_seg = _compute_hulls(
-        np.asarray(positions),
-        instance_ids.astype(np.int32),
-        resolution=float(req.resolution),
-    )
+    n_assigned = int(labeled_mask.sum())
+    n_segments = int(np.unique(instance_ids[labeled_mask]).size) if labeled_mask.any() else 0
+    mean_seg_size = (n_assigned / n_segments) if n_segments > 0 else 0.0
     return PresegmentResponse(
-        n_assigned=int(labeled_mask.sum()),
-        n_segments=int(np.unique(instance_ids[labeled_mask]).size) if labeled_mask.any() else 0,
+        n_assigned=n_assigned,
+        n_segments=n_segments,
+        mean_seg_size=mean_seg_size,
         full_class_ids=_b64(class_ids.astype(np.int8)),
         full_instance_ids=_b64(instance_ids.astype(np.int32)),
         is_from_prelabel=True,
