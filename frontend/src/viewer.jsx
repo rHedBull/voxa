@@ -148,7 +148,10 @@ function attachOrbit(camera, dom, target, onChange) {
       if (!on) { state.dragging = false; state.mode = null; }
     },
     frame(center, radius) {
-      state.target.copy(center);
+      // Accept either a [x,y,z] tuple or a Vector3-shaped object — the
+      // mesh companion frames the bbox via an array literal.
+      if (Array.isArray(center)) state.target.set(center[0], center[1], center[2]);
+      else if (center) state.target.copy(center);
       state.spherical.r = Math.max(0.4, radius * 2.4);
       apply();
     },
