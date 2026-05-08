@@ -175,9 +175,10 @@ export const VoxaAPI = {
       hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
     };
   },
-  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true, ransacParams = null } = {}) {
+  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true, ransacParams = null, labelerStrict = false } = {}) {
     const body = { mode, resolution, preserve_labeled: preserveLabeled };
     if (ransacParams && Object.keys(ransacParams).length > 0) body.ransac = ransacParams;
+    if (labelerStrict) body.labeler_strict = true;
     const r = await fetch('/api/segment/presegment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
