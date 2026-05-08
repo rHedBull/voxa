@@ -177,7 +177,7 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
   async function hydrateFromSession() {
     const s = await VoxaAPI.segState();
     if (!s) return;
-    setStats({ nSegments: s.nSegments, meanSize: 0 });
+    setStats({ nSegments: s.nSegments, meanSize: s.nAssigned / Math.max(s.nSegments, 1) });
     if (prelabelRef) {
       prelabelRef.current = {
         classFull: s.fullClassIds.slice(),
