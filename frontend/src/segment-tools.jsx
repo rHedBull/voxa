@@ -44,13 +44,13 @@ export function SegmentToolStrip({ activeTool, onChange, hasSegState }) {
 // Group order = popover layout (plane → curvature → cylinder → merge).
 const RANSAC_KNOBS = [
   { key: 'plane_distance_threshold', label: 'Plane dist (m)',     def: 0.025, step: 0.005, min: 0.001 },
-  { key: 'plane_min_inliers',        label: 'Plane min inliers',  def: 80,    step: 10,    min: 1     },
-  { key: 'max_planes',               label: 'Max planes',         def: 25,    step: 1,     min: 1     },
+  { key: 'plane_min_inliers',        label: 'Plane min inliers',  def: 30,    step: 5,     min: 1     },
+  { key: 'max_planes',               label: 'Max planes',         def: 40,    step: 1,     min: 1     },
   { key: 'plane_cluster_eps',        label: 'Plane gap eps (m)',  def: 0.15,  step: 0.05,  min: 0     },
   { key: 'leftover_cluster_eps',     label: 'Leftover eps (m)',   def: 0.10,  step: 0.02,  min: 0     },
   { key: 'leftover_min_pts',         label: 'Leftover min pts',   def: 30,    step: 5,     min: 1     },
-  { key: 'flat_thresh',              label: 'Flat thresh',        def: 0.5,   step: 0.05,  min: 0     },
-  { key: 'cylinder_ratio_thresh',    label: 'Cyl ratio thresh',   def: 3.0,   step: 0.1,   min: 1     },
+  { key: 'flat_thresh',              label: 'Flat thresh',        def: 0.9,   step: 0.05,  min: 0     },
+  { key: 'cylinder_ratio_thresh',    label: 'Cyl ratio thresh',   def: 4.0,   step: 0.1,   min: 1     },
   { key: 'cyl_search_radius',        label: 'Cyl radius (m)',     def: 0.12,  step: 0.01,  min: 0.001 },
   { key: 'cyl_axis_thresh',          label: 'Cyl axis dot',       def: 0.92,  step: 0.01,  min: 0, max: 1 },
   { key: 'cyl_radius_ratio',         label: 'Cyl radius ratio',   def: 1.8,   step: 0.05,  min: 1     },

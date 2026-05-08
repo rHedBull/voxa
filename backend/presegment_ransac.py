@@ -201,14 +201,14 @@ def _principal_curvatures(points, normals, k=20, log=print):
 RANSAC_DEFAULTS: dict[str, float] = {
     # plane RANSAC
     "plane_distance_threshold": 0.025,  # m — inlier band for plane fit
-    "plane_min_inliers":        80.0,   # smallest plane that survives
-    "max_planes":               25.0,   # cap on iterative plane RANSAC
+    "plane_min_inliers":        30.0,   # smallest plane that survives (low → small surfaces e.g. cover plates kept)
+    "max_planes":               40.0,   # cap on iterative plane RANSAC (raised since planes are smaller now)
     "plane_cluster_eps":        0.15,   # m — DBSCAN eps to split spatially disjoint plane inliers (0 disables)
     "leftover_cluster_eps":     0.10,   # m — DBSCAN eps for unassigned-point catchall (0 disables, snap-to-nearest only)
     "leftover_min_pts":         30.0,   # smallest leftover blob that gets its own segment
     # curvature classification
-    "flat_thresh":              0.5,    # k_max boundary: flat vs curved
-    "cylinder_ratio_thresh":    3.0,    # k_max/k_min to call a point cylindrical
+    "flat_thresh":              0.9,    # k_max boundary: flat vs curved (raised → more points qualify as flat)
+    "cylinder_ratio_thresh":    4.0,    # k_max/k_min to call a point cylindrical (raised → looser definition)
     # cylinder region-grow
     "cyl_search_radius":        0.12,   # m — neighborhood for region growing
     "cyl_axis_thresh":          0.92,   # |dot(n_a, n_b)| min to join
