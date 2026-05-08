@@ -40,6 +40,22 @@ export function SegmentToolStrip({ activeTool, onChange, hasSegState }) {
 // whether to preserve already-classified points, then re-runs the
 // supervoxel presegmentation on the active scene. Slow on large clouds
 // (~10–60s), so the button shows a busy state while in flight.
+// RANSAC defaults — must mirror RANSAC_DEFAULTS in backend/presegment_ransac.py.
+// Group order = popover layout (plane → curvature → cylinder → merge).
+const RANSAC_KNOBS = [
+  { key: 'plane_distance_threshold', label: 'Plane dist (m)',     def: 0.025, step: 0.005, min: 0.001 },
+  { key: 'plane_min_inliers',        label: 'Plane min inliers',  def: 80,    step: 10,    min: 1     },
+  { key: 'max_planes',               label: 'Max planes',         def: 25,    step: 1,     min: 1     },
+  { key: 'flat_thresh',              label: 'Flat thresh',        def: 0.5,   step: 0.05,  min: 0     },
+  { key: 'cylinder_ratio_thresh',    label: 'Cyl ratio thresh',   def: 3.0,   step: 0.1,   min: 1     },
+  { key: 'cyl_search_radius',        label: 'Cyl radius (m)',     def: 0.12,  step: 0.01,  min: 0.001 },
+  { key: 'cyl_axis_thresh',          label: 'Cyl axis dot',       def: 0.92,  step: 0.01,  min: 0, max: 1 },
+  { key: 'cyl_radius_ratio',         label: 'Cyl radius ratio',   def: 1.8,   step: 0.05,  min: 1     },
+  { key: 'cyl_distance_threshold',   label: 'Cyl dist (m)',       def: 0.03,  step: 0.005, min: 0.001 },
+  { key: 'merge_axis_dot',           label: 'Merge axis dot',     def: 0.95,  step: 0.01,  min: 0, max: 1 },
+  { key: 'merge_radius_ratio',       label: 'Merge radius ratio', def: 1.4,   step: 0.05,  min: 1     },
+];
+
 export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, setCloud }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -47,9 +63,24 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
   const [resolution, setResolution] = useState(0.3);
   const [preserveLabeled, setPreserveLabeled] = useState(true);
   const [mode, setMode] = useState('voxel');
+  const [ransacKnobs, setRansacKnobs] = useState(() => {
+    const o = {};
+    for (const k of RANSAC_KNOBS) o[k.key] = k.def;
+    return o;
+  });
+  const [stats, setStats] = useState(null);  // { nSegments, meanSize } after run
+  const [optStatus, setOptStatus] = useState('idle'); // 'idle' | 'running' | 'done' | 'aborted' | 'error'
+  const [optInfo, setOptInfo] = useState(null);
+  const optTimerRef = useRef(null);
   const popRef = useRef(null);
   const btnRef = useRef(null);
   const disabled = !cloud || busy;
+
+  // Polling interval (not setTimeout chain) so abort/unmount can clearInterval
+  // synchronously without racing an in-flight fetch resolution.
+  useEffect(() => () => {
+    if (optTimerRef.current) { clearInterval(optTimerRef.current); optTimerRef.current = null; }
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -77,9 +108,20 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
     }
     setBusy(true);
     setError(null);
+    setStats(null);
     setOpen(false);
     try {
-      const res = await VoxaAPI.segPresegment({ mode, resolution, preserveLabeled });
+      // Only send overrides for ransac mode; only include knobs that differ from defaults.
+      let ransacParams = null;
+      if (mode === 'ransac') {
+        ransacParams = {};
+        for (const k of RANSAC_KNOBS) {
+          const v = ransacKnobs[k.key];
+          if (v !== k.def && Number.isFinite(v)) ransacParams[k.key] = v;
+        }
+      }
+      const res = await VoxaAPI.segPresegment({ mode, resolution, preserveLabeled, ransacParams });
+      setStats({ nSegments: res.nSegments, meanSize: res.meanSegSize ?? 0 });
       if (prelabelRef) {
         prelabelRef.current = {
           classFull: res.fullClassIds.slice(),
@@ -125,6 +167,103 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
       setError(String(e.message || e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  function stopPolling() {
+    if (optTimerRef.current) { clearInterval(optTimerRef.current); optTimerRef.current = null; }
+  }
+
+  async function hydrateFromSession() {
+    const s = await VoxaAPI.segState();
+    if (!s) return;
+    setStats({ nSegments: s.nSegments, meanSize: 0 });
+    if (prelabelRef) {
+      prelabelRef.current = {
+        classFull: s.fullClassIds.slice(),
+        instanceFull: s.fullInstanceIds.slice(),
+      };
+    }
+    setSegState(initSegState({
+      classFull: s.fullClassIds,
+      instanceFull: s.fullInstanceIds,
+      isFromPrelabel: true,
+      segBoxes: (s.segIds && s.segCenters && s.segSizes)
+        ? { segIds: s.segIds, segCenters: s.segCenters, segSizes: s.segSizes }
+        : null,
+      segHulls: (s.hullVertices && s.hullFaces && s.hullFaceSeg)
+        ? { vertices: s.hullVertices, faces: s.hullFaces, faceSeg: s.hullFaceSeg }
+        : null,
+    }));
+    if (setCloud && cloud) {
+      const subIdx = cloud.subsampleIdx;
+      const subN = (cloud.positions?.length || 0) / 3;
+      const subClass = new Int8Array(subN);
+      const subInst = new Int32Array(subN);
+      for (let p = 0; p < subN; p++) {
+        const f = subIdx ? subIdx[p] : p;
+        subClass[p] = s.fullClassIds[f];
+        subInst[p] = s.fullInstanceIds[f];
+      }
+      setCloud({
+        ...cloud,
+        classIds: subClass,
+        instanceIds: subInst,
+        isFromPrelabel: true,
+      });
+    }
+  }
+
+  async function runOptimize() {
+    if (!cloud || mode !== 'ransac') return;
+    setBusy(true);
+    setError(null);
+    setStats(null);
+    setOptStatus('running');
+    setOptInfo(null);
+    try {
+      const { jobId, total } = await VoxaAPI.segPresegOptimizeStart({
+        nTrials: 20,
+        subsampleN: 200_000,
+        preserveLabeled,
+      });
+      setOptInfo({ jobId, trial: 0, total, bestScore: null, bestParams: null });
+      optTimerRef.current = setInterval(async () => {
+        try {
+          const s = await VoxaAPI.segPresegOptimizeStatus(jobId);
+          setOptInfo({ jobId, trial: s.trial, total: s.total, bestScore: s.bestScore, bestParams: s.bestParams });
+          if (s.status === 'done' || s.status === 'aborted' || s.status === 'error') {
+            stopPolling();
+            setBusy(false);
+            setOptStatus(s.status);
+            if (s.status === 'done' && s.bestParams) {
+              setRansacKnobs((prev) => ({ ...prev, ...s.bestParams }));
+              await hydrateFromSession();
+            } else if (s.status === 'error') {
+              setError(s.error || 'optimize failed');
+            }
+          }
+        } catch (e) {
+          stopPolling();
+          setBusy(false);
+          setOptStatus('error');
+          setError(String(e.message || e));
+        }
+      }, 1500);
+    } catch (e) {
+      stopPolling();
+      setBusy(false);
+      setOptStatus('error');
+      setError(String(e.message || e));
+    }
+  }
+
+  async function abortOptimize() {
+    if (!optInfo?.jobId) return;
+    try {
+      await VoxaAPI.segPresegOptimizeAbort(optInfo.jobId);
+    } catch (e) {
+      setError(String(e.message || e));
     }
   }
 
@@ -212,6 +351,53 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
               style={{ width: 70, background: '#111', color: '#eee', border: '1px solid #444', borderRadius: 3, padding: '2px 4px' }}
             />
           </label>
+          <div
+            style={{
+              display: 'flex', flexDirection: 'column', gap: 4,
+              opacity: mode === 'ransac' ? 1 : 0.4,
+              borderTop: '1px solid #2a2a2a',
+              paddingTop: 6,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ opacity: 0.7 }}>RANSAC params</span>
+              <button
+                type="button"
+                className="tool-btn mini"
+                disabled={mode !== 'ransac'}
+                title="Reset RANSAC params to defaults"
+                onClick={() => {
+                  const o = {};
+                  for (const k of RANSAC_KNOBS) o[k.key] = k.def;
+                  setRansacKnobs(o);
+                }}
+                style={{ fontSize: 10, padding: '1px 6px' }}
+              >reset</button>
+            </div>
+            {RANSAC_KNOBS.map((k) => (
+              <label
+                key={k.key}
+                style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 11 }}>{k.label}</span>
+                <input
+                  type="number"
+                  step={k.step}
+                  min={k.min}
+                  {...(k.max !== undefined ? { max: k.max } : {})}
+                  value={ransacKnobs[k.key]}
+                  disabled={mode !== 'ransac'}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    setRansacKnobs((prev) => ({ ...prev, [k.key]: Number.isFinite(v) ? v : k.def }));
+                  }}
+                  style={{ width: 70, background: '#111', color: '#eee', border: '1px solid #444', borderRadius: 3, padding: '2px 4px', fontSize: 11 }}
+                />
+              </label>
+            ))}
+          </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <input
               type="checkbox"
@@ -220,18 +406,44 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
             />
             <span>Preserve classified points</span>
           </label>
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
-            <button
-              type="button"
-              className="tool-btn mini"
-              onClick={() => setOpen(false)}
-            >Cancel</button>
-            <button
-              type="button"
-              className="tool-btn mini active"
-              onClick={run}
-            >Run</button>
-          </div>
+          {stats && (
+            <div style={{ opacity: 0.8, fontSize: 11 }}>
+              {stats.nSegments} segments · mean size {stats.meanSize.toFixed(0)} pts
+            </div>
+          )}
+          {optStatus === 'running' ? (
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+              <span style={{ fontSize: 11, opacity: 0.85 }}>
+                Trial {optInfo?.trial ?? 0}/{optInfo?.total ?? 0}
+                {optInfo?.bestScore != null ? ` · best ${optInfo.bestScore.toFixed(4)}` : ''}
+              </span>
+              <button
+                type="button"
+                className="tool-btn mini"
+                onClick={abortOptimize}
+              >Abort</button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
+              <button
+                type="button"
+                className="tool-btn mini"
+                onClick={() => setOpen(false)}
+              >Cancel</button>
+              <button
+                type="button"
+                className="tool-btn mini"
+                disabled={mode !== 'ransac' || busy}
+                title={mode !== 'ransac' ? 'Optimize is only available in RANSAC mode' : 'Search for best RANSAC params'}
+                onClick={runOptimize}
+              >Optimize</button>
+              <button
+                type="button"
+                className="tool-btn mini active"
+                onClick={run}
+              >Run</button>
+            </div>
+          )}
           {error && <div style={{ color: '#f88' }}>{error}</div>}
         </div>
       )}
