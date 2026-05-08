@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
-import { SegmentToolStrip, PickTool, BrushTool, PresegmentButton, PresegmentList } from './segment-tools.jsx';
+import { PresegmentButton, PresegmentList } from './segment-tools.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
@@ -17,12 +17,12 @@ function formatPointCount(n) {
   return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
 }
 
-export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instances, onChange, onSave, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
+export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
   const meshPopupRef = useRefLabel(null);
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
-  const [activeTool, setActiveTool] = useStateLabel('cuboid');
+  const activeTool = 'cuboid';
   // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
   // run — wildly different hues per segment make the grouping legible.
   const [colorMode] = useStateLabel('class');
@@ -37,7 +37,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
   // viewport (NaN'd in the position buffer). Default on so the labeling
   // workflow naturally reveals what's left to label.
   const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
-  const [showSegHulls, setShowSegHulls] = useStateLabel(true);
+  const showSegHulls = false;
   const [sideRCollapsed, setSideRCollapsed] = useStateLabel(() => {
     try { return localStorage.getItem('voxa.label.sideRCollapsed') === '1'; }
     catch { return false; }
@@ -90,10 +90,10 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     v.setSelectedSegmentMask(mask);
   }, [segState?.selection, segState?.instanceFull, cloud, viewerRef]);
 
-  // Ctrl+click in the 3D viewport selects the presegment under the cursor.
-  // Active in all tool modes except 'pick' (which handles its own clicks).
+  // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
+  // under the cursor. Active in any tool mode whenever segment data exists.
   useEffectLabel(() => {
-    if (!segState || activeTool === 'pick') return;
+    if (!segState) return;
     const viewer = viewerRef?.current;
     if (!viewer?.onPointerPick) return;
     return viewer.onPointerPick((fullIndex, evt) => {
@@ -107,7 +107,7 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
         return { ...s, selection: next };
       });
     });
-  }, [segState, activeTool, viewerRef, setSegState]);
+  }, [segState, viewerRef, setSegState]);
 
   // Hull-click selection: clicking directly on a hull face (Ctrl or plain click)
   // selects the segment. Works in all tool modes.
@@ -116,13 +116,14 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     const viewer = viewerRef?.current;
     if (!viewer?.onHullPick) return;
     return viewer.onHullPick((segId, evt) => {
-      if (!(evt.ctrlKey || evt.metaKey || evt.shiftKey)) return;
+      if (!(evt.ctrlKey || evt.metaKey || evt.shiftKey)) return false;
       setSegState((s) => {
         if (!s) return s;
         const next = new Set(s.selection);
         next.has(segId) ? next.delete(segId) : next.add(segId);
         return { ...s, selection: next };
       });
+      return true;
     });
   }, [segState, viewerRef, setSegState]);
 
@@ -679,56 +680,6 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
     updateSelected({ center: fitted.center, size: fitted.size });
   };
 
-  // Pick-tool apply: handles selection updates (__select__) and actual segment ops.
-  const onPickApply = useCallbackLabel(async (op, { indices, payload } = {}) => {
-    if (op === '__select__') {
-      // indices is actually the new Set of selected instance ids in this path.
-      setSegState((s) => s ? { ...s, selection: indices } : s);
-      return;
-    }
-    try {
-      const r = await VoxaAPI.segApply(op, { indices, payload });
-      setSegState((s) => {
-        if (!s) return s;
-        const next = applyDelta(s, {
-          indices: r.indices,
-          after_class: r.afterClass,
-          after_instance: r.afterInstance,
-        });
-        viewerRef.current?.recolorByEdit({
-          affectedFullIndices: r.indices,
-          classFull: next.classFull,
-          instanceFull: next.instanceFull,
-          colorMode,
-          palette: cloud?.classPalette ?? null,
-        });
-        return next;
-      });
-    } catch (err) {
-      console.error('segApply failed:', err);
-    }
-  }, [setSegState, colorMode, cloud, viewerRef]);
-
-  // Brush-tool apply: receives a pre-resolved apply response (op === '__delta__').
-  const onBrushApply = useCallbackLabel((_op, r) => {
-    setSegState((s) => {
-      if (!s) return s;
-      const next = applyDelta(s, {
-        indices: r.indices,
-        after_class: r.afterClass,
-        after_instance: r.afterInstance,
-      });
-      viewerRef.current?.recolorByEdit({
-        affectedFullIndices: r.indices,
-        classFull: next.classFull,
-        instanceFull: next.instanceFull,
-        colorMode,
-        palette: cloud?.classPalette ?? null,
-      });
-      return next;
-    });
-  }, [setSegState, colorMode, cloud, viewerRef]);
-
   // Hotkeys: 0–9 assign class, ⌫ delete, A add, F frame, ⌘S save.
   // In walk mode the viewer owns WASD/QE; bail on those keys here so we
   // don't double-fire (e.g. 'A' is both walk-left and add-cuboid).
@@ -800,23 +751,6 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           onClose={() => setClassPickerOpen(false)}
         />
       )}
-      {activeTool === 'pick' && segState && (
-        <PickTool
-          viewerRef={viewerRef}
-          segState={segState}
-          onApply={onPickApply}
-          classes={classes}
-        />
-      )}
-      {activeTool === 'brush' && segState && (
-        <BrushTool
-          viewerRef={viewerRef}
-          segState={segState}
-          classes={classes}
-          activeClassId={activeClass}
-          onApply={onBrushApply}
-        />
-      )}
 
       {/* Left: class palette */}
       <aside className="side-l">
@@ -842,24 +776,12 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           })}
         </div>
 
-        <div className="side-hd" style={{ marginTop: 14 }}>
-          <span>Quick add</span>
-        </div>
-        <button className="ghost-btn" onClick={addCuboid} disabled={!cloud}>
-          + Cuboid for <b style={{ marginLeft: 4 }}>{activeClassDef?.label || '—'}</b> &nbsp;<kbd>A</kbd>
-        </button>
-        <button className="ghost-btn" style={{ marginTop: 6 }} onClick={() => onSave(instances)}>
-          ⌘S Save annotations
-        </button>
-
         <PresegmentList
           segState={segState}
           setSegState={setSegState}
           classes={classes}
           viewerRef={viewerRef}
           cloud={cloud}
-          showSegHulls={showSegHulls}
-          setShowSegHulls={setShowSegHulls}
           excludeSegIds={promotedSegIds}
         />
       </aside>
@@ -940,11 +862,6 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
         </div>
 
         <ViewportToolbar side="left">
-          <SegmentToolStrip
-            activeTool={activeTool}
-            onChange={setActiveTool}
-            hasSegState={!!segState}
-          />
           <PresegmentButton
             segState={segState}
             setSegState={setSegState}
@@ -993,7 +910,6 @@ export function LabelMode({ cloud, setCloud, theme, viewerRef, classes, instance
           )}
           <ToolButton mini icon="↺" label="Reset cam" onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>
-
       </div>
 
       {/* Right: filterable instance list + slim inspector */}

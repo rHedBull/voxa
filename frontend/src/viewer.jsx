@@ -24,6 +24,17 @@ export function evtToNdc(evt, rect) {
   };
 }
 
+// Pick the index of the point under the cursor. Mirrors
+// industrial-point-labeler: small fixed world-space threshold, then take
+// the closest hit along the ray (Three.js sorts by along-ray distance,
+// so hits[0] is the front-most point in the pick cylinder — i.e. the one
+// not occluded by anything closer).
+function pickPointSubRow(pointsObj, raycaster) {
+  raycaster.params.Points = { threshold: 0.05 };
+  const hits = raycaster.intersectObject(pointsObj);
+  return hits.length ? hits[0].index : null;
+}
+
 // Inline HSL→RGB without THREE.Color allocation — used in the hot box-overlay loop.
 function _hue2rgb(p, q, t) {
   if (t < 0) t += 1; if (t > 1) t -= 1;
@@ -634,7 +645,16 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       const ndc = evtToNdc(e, rect);
       raycaster.setFromCamera(ndc, camera);
 
-      // Hull hit check (fires hullPickSubs when a segment hull face is clicked).
+      // Hull hit check. Fires hullPickSubs when a segment hull face is
+      // clicked; callbacks return truthy to consume the event (suppressing
+      // the points-pick fallback). Plain clicks on a hull therefore fall
+      // through to point-pick — important for volumetric "leftover" hulls
+      // that envelope their points and would otherwise swallow every click.
+      const fireHullPick = (segId) => {
+        let consumed = false;
+        hullPickSubs.forEach(({ cb }) => { if (cb(segId, e)) consumed = true; });
+        return consumed;
+      };
       const hm = stateRef.current?.hullMesh;
       if (hm?.visible && hullPickSubs.length > 0) {
         const hullHits = raycaster.intersectObject(hm);
@@ -642,9 +662,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
           const faceIdx = hullHits[0].faceIndex;
           const faceSeg = stateRef.current.hullFaceSeg;
           if (faceIdx !== undefined && faceSeg) {
-            const segId = faceSeg[faceIdx];
-            hullPickSubs.forEach(({ cb }) => cb(segId, e));
-            return;
+            if (fireHullPick(faceSeg[faceIdx])) return;
           }
         }
       }
@@ -656,9 +674,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
           const instIdx = boxHits[0].instanceId;
           const segIds = stateRef.current.boxSegIds;
           if (instIdx !== undefined && segIds) {
-            const segId = segIds[instIdx];
-            hullPickSubs.forEach(({ cb }) => cb(segId, e));
-            return;
+            if (fireHullPick(segIds[instIdx])) return;
           }
         }
       }
@@ -666,10 +682,8 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       if (pickSubs.length === 0) return;
       const m = stateRef.current?.points;
       if (!m) return;
-      raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
-      const hits = raycaster.intersectObject(m);
-      if (!hits.length) return;
-      const subRow = hits[0].index;
+      const subRow = pickPointSubRow(m, raycaster, camera, ndc, rect);
+      if (subRow == null) return;
       const subsampleIdx = m.userData.subsampleIdx;
       // subsampleIdx maps subsampled row → full-res index.
       // Falls back to subRow when subsampleIdx is not yet available (Task 20).
@@ -684,9 +698,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       raycaster.setFromCamera(ndc, camera);
       const m = stateRef.current?.points;
       if (!m) return;
-      raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
-      const hits = raycaster.intersectObject(m);
-      const subRow = hits.length ? hits[0].index : null;
+      const subRow = pickPointSubRow(m, raycaster, camera, ndc, rect);
       const subsampleIdx = m.userData.subsampleIdx;
       const fullIndex = subRow != null ? (subsampleIdx ? subsampleIdx[subRow] : subRow) : null;
       moveSubs.forEach(({ cb }) => cb(fullIndex, e));
@@ -1498,14 +1510,17 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       const rect = s.renderer.domElement.getBoundingClientRect();
       const ndc = evtToNdc(evt, rect);
       const raycaster = new THREE.Raycaster();
-      raycaster.params.Points = { threshold: (s.pointsMat.size || 0.012) * 2.0 };
       raycaster.setFromCamera(ndc, s.camera);
-      const hits = raycaster.intersectObject(s.points);
-      if (!hits.length) return null;
-      const subRow = hits[0].index;
+      const subRow = pickPointSubRow(s.points, raycaster, s.camera, ndc, rect);
+      if (subRow == null) return null;
       const subsampleIdx = s.points.userData.subsampleIdx;
       const fullIndex = subsampleIdx ? subsampleIdx[subRow] : subRow;
-      return { fullIndex, world: hits[0].point.clone() };
+      // Recover the world position of the chosen sub-row from the geometry.
+      const pos = s.points.geometry.attributes.position;
+      const world = new THREE.Vector3(
+        pos.getX(subRow), pos.getY(subRow), pos.getZ(subRow),
+      );
+      return { fullIndex, world };
     },
     onPointerPick(cb) {
       const s = stateRef.current;
