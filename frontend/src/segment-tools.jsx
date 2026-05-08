@@ -363,7 +363,8 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
               <span style={{ opacity: 0.7 }}>RANSAC params</span>
               <button
                 type="button"
-                className="tool-btn mini"
+                className="tool-btn"
+                style={{ width: 'auto', padding: '1px 6px', fontSize: 10 }}
                 disabled={mode !== 'ransac'}
                 title="Reset RANSAC params to defaults"
                 onClick={() => {
@@ -371,7 +372,6 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
                   for (const k of RANSAC_KNOBS) o[k.key] = k.def;
                   setRansacKnobs(o);
                 }}
-                style={{ fontSize: 10, padding: '1px 6px' }}
               >reset</button>
             </div>
             {RANSAC_KNOBS.map((k) => (
@@ -419,7 +419,8 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
               </span>
               <button
                 type="button"
-                className="tool-btn mini"
+                className="tool-btn"
+                style={{ width: 'auto', padding: '2px 10px' }}
                 onClick={abortOptimize}
               >Abort</button>
             </div>
@@ -427,19 +428,22 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
               <button
                 type="button"
-                className="tool-btn mini"
+                className="tool-btn"
+                style={{ width: 'auto', padding: '2px 10px' }}
                 onClick={() => setOpen(false)}
               >Cancel</button>
               <button
                 type="button"
-                className="tool-btn mini"
+                className="tool-btn"
+                style={{ width: 'auto', padding: '2px 10px' }}
                 disabled={mode !== 'ransac' || busy}
                 title={mode !== 'ransac' ? 'Optimize is only available in RANSAC mode' : 'Search for best RANSAC params'}
                 onClick={runOptimize}
               >Optimize</button>
               <button
                 type="button"
-                className="tool-btn mini active"
+                className="tool-btn active"
+                style={{ width: 'auto', padding: '2px 10px' }}
                 onClick={run}
               >Run</button>
             </div>
