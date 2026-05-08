@@ -738,15 +738,13 @@ def presegment(
                 prim["label"] = _classify_cylinder(cyl["radius"], cyl["length"])
 
     # ── Step 7: leftover catchall ──
-    # Anything still at -1 (saddle points, edge points, sphere noise,
-    # tiny clusters that didn't meet min-cluster thresholds) gets covered
-    # in two passes so every point lands somewhere without polluting the
-    # primitive-pure segments:
-    #   7a. Spatial DBSCAN over unassigned points; each blob ≥ leftover_min_pts
-    #       becomes its own "leftover" segment.
-    #   7b. Anything still unassigned (DBSCAN noise / sub-min blobs) snaps to
-    #       its nearest assigned point's segment id.
-    # Skipped entirely under labeler_strict to match the labeler's "leave -1 as -1".
+    # 7a. (default only) DBSCAN over unassigned points — each blob ≥
+    #     leftover_min_pts becomes its own "leftover" segment so primitive
+    #     segments don't get polluted with spatially distant outliers.
+    #     Skipped under labeler_strict.
+    # 7b. Snap-to-nearest for anything still at -1. Runs unconditionally so
+    #     the labeler-strict path also achieves full coverage; the snap is
+    #     the smallest possible deviation from bit-for-bit labeler output.
     if not labeler_strict:
         unassigned = np.where(instance_ids == -1)[0]
         if unassigned.size > 0:
@@ -777,14 +775,13 @@ def presegment(
                     next_id += 1
                 n_blobs = int((cc_labels >= 0).sum())
                 log(f"Catchall: clustered {n_blobs}/{unassigned.size} stragglers into leftover segments")
-            # Snap whatever is still -1 to its nearest assigned point.
-            unassigned = np.where(instance_ids == -1)[0]
-            if unassigned.size > 0 and (instance_ids >= 0).any():
-                assigned_idx = np.where(instance_ids >= 0)[0]
-                nn_tree = cKDTree(points[assigned_idx])
-                _, nn = nn_tree.query(points[unassigned], k=1)
-                instance_ids[unassigned] = instance_ids[assigned_idx[nn]]
-                log(f"Catchall: snapped {unassigned.size} remaining stragglers to nearest segment")
+    unassigned = np.where(instance_ids == -1)[0]
+    if unassigned.size > 0 and (instance_ids >= 0).any():
+        assigned_idx = np.where(instance_ids >= 0)[0]
+        nn_tree = cKDTree(points[assigned_idx])
+        _, nn = nn_tree.query(points[unassigned], k=1)
+        instance_ids[unassigned] = instance_ids[assigned_idx[nn]]
+        log(f"Catchall: snapped {unassigned.size} stragglers to nearest segment")
 
     # If the entire pipeline produced nothing (degenerate cloud), fall back
     # to a single bucket so the UI still has something to show.
