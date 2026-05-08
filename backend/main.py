@@ -1035,6 +1035,7 @@ class RansacParams(BaseModel):
     plane_distance_threshold: Optional[float] = None
     plane_min_inliers: Optional[float] = None
     max_planes: Optional[float] = None
+    plane_cluster_eps: Optional[float] = None
     flat_thresh: Optional[float] = None
     cylinder_ratio_thresh: Optional[float] = None
     cyl_search_radius: Optional[float] = None

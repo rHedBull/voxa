@@ -198,6 +198,26 @@ def _principal_curvatures(points, normals, k=20, log=print):
     return k1, k2, directions, axes
 
 
+RANSAC_DEFAULTS: dict[str, float] = {
+    # plane RANSAC
+    "plane_distance_threshold": 0.025,  # m — inlier band for plane fit
+    "plane_min_inliers":        80.0,   # smallest plane that survives
+    "max_planes":               25.0,   # cap on iterative plane RANSAC
+    "plane_cluster_eps":        0.15,   # m — DBSCAN eps to split spatially disjoint plane inliers (0 disables)
+    # curvature classification
+    "flat_thresh":              0.5,    # k_max boundary: flat vs curved
+    "cylinder_ratio_thresh":    3.0,    # k_max/k_min to call a point cylindrical
+    # cylinder region-grow
+    "cyl_search_radius":        0.12,   # m — neighborhood for region growing
+    "cyl_axis_thresh":          0.92,   # |dot(n_a, n_b)| min to join
+    "cyl_radius_ratio":         1.8,    # max(r1,r2)/min(r1,r2) to join
+    "cyl_distance_threshold":   0.03,   # m — radial tolerance during fit
+    # post-merge
+    "merge_axis_dot":           0.95,   # |dot(axis_i, axis_j)| min to merge
+    "merge_radius_ratio":       1.4,    # max(r1,r2)/min(r1,r2) to merge
+}
+
+
 def _classify_by_curvature(k1, k2, cylinder_ratio_thresh=3.0, flat_thresh=0.5):
     """Per-point surface label: 0=flat, 1=cyl, 2=sphere, 3=saddle, 4=edge."""
     n = len(k1)
@@ -224,7 +244,8 @@ def _classify_by_curvature(k1, k2, cylinder_ratio_thresh=3.0, flat_thresh=0.5):
 # ── plane RANSAC (open3d) ─────────────────────────────────────────────
 
 def _iterative_plane_ransac(points, indices, *, distance_threshold=0.025,
-                            min_inliers=100, max_planes=30, log=print):
+                            min_inliers=100, max_planes=30,
+                            cluster_eps=0.15, log=print):
     import open3d as o3d
     remaining = indices.copy()
     planes = []
@@ -238,6 +259,26 @@ def _iterative_plane_ransac(points, indices, *, distance_threshold=0.025,
         if len(inliers) < min_inliers:
             break
         global_inliers = remaining[inliers]
+
+        # Spatial connectivity: a plane has infinite extent so RANSAC pulls
+        # in coplanar-but-distant slabs (e.g. floor + ceiling tile at the
+        # same height). Keep only the largest connected component;
+        # spatially separated inliers go back to the candidate pool so they
+        # can form their own planes on later iterations.
+        if cluster_eps > 0 and len(global_inliers) >= min_inliers:
+            inlier_pcd = o3d.geometry.PointCloud()
+            inlier_pcd.points = o3d.utility.Vector3dVector(points[global_inliers])
+            cc_labels = np.asarray(
+                inlier_pcd.cluster_dbscan(eps=cluster_eps, min_points=10, print_progress=False)
+            )
+            if cc_labels.size > 0 and (cc_labels >= 0).any():
+                vals, counts = np.unique(cc_labels[cc_labels >= 0], return_counts=True)
+                largest = vals[int(np.argmax(counts))]
+                keep_mask = cc_labels == largest
+                if int(keep_mask.sum()) < min_inliers:
+                    break
+                global_inliers = global_inliers[keep_mask]
+
         a, b, c, d = model
         extent_pts = points[global_inliers]
         extent = float(np.linalg.norm(extent_pts.max(axis=0) - extent_pts.min(axis=0)))
@@ -384,6 +425,7 @@ def presegment(
     *,
     class_map: Optional[dict[str, int]] = None,
     log: Callable[[str], None] = print,
+    params: Optional[dict[str, float]] = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Run RANSAC presegmentation.
 
@@ -396,6 +438,9 @@ def presegment(
         the summary; if None, all summary entries get ``class_id=-1``.
     log : callable
         Progress sink. Default ``print``; pass ``lambda *_: None`` to mute.
+    params : dict | None
+        Per-call overrides for ``RANSAC_DEFAULTS``. Unknown keys are
+        ignored; missing keys fall back to the module-level defaults.
 
     Returns
     -------
@@ -405,6 +450,12 @@ def presegment(
         Per-instance metadata, ready to be serialized to
         ``prelabel/ransac_segment_summary.json`` under a ``segments`` key.
     """
+    cfg = dict(RANSAC_DEFAULTS)
+    if params:
+        for k, v in params.items():
+            if k in cfg and v is not None:
+                cfg[k] = float(v)
+
     points = np.asarray(xyz, dtype=np.float64).copy()
     n_total = len(points)
     log(f"Presegmenting {n_total} points, extent: {np.ptp(points, axis=0).round(2)}")
@@ -427,7 +478,11 @@ def presegment(
     log(f"  k1: median={np.median(np.abs(k1)):.3f}, p95={np.percentile(np.abs(k1), 95):.3f}")
     log(f"  k2: median={np.median(np.abs(k2)):.3f}, p95={np.percentile(np.abs(k2), 95):.3f}")
 
-    surface_labels = _classify_by_curvature(k1, k2)
+    surface_labels = _classify_by_curvature(
+        k1, k2,
+        cylinder_ratio_thresh=cfg["cylinder_ratio_thresh"],
+        flat_thresh=cfg["flat_thresh"],
+    )
     type_names = {0: "flat", 1: "cyl", 2: "sphere", 3: "saddle", 4: "edge"}
     for t, name in type_names.items():
         cnt = int((surface_labels == t).sum())
@@ -441,8 +496,12 @@ def presegment(
     log("Plane extraction…")
     flat_idx = np.where(surface_labels == 0)[0]
     planes, _ = _iterative_plane_ransac(
-        points, flat_idx, distance_threshold=0.025, min_inliers=80,
-        max_planes=25, log=log,
+        points, flat_idx,
+        distance_threshold=cfg["plane_distance_threshold"],
+        min_inliers=int(cfg["plane_min_inliers"]),
+        max_planes=int(cfg["max_planes"]),
+        cluster_eps=cfg["plane_cluster_eps"],
+        log=log,
     )
     for p in planes:
         p["id"] = next_id
@@ -463,9 +522,9 @@ def presegment(
 
     if len(cyl_idx) > 0:
         cyl_tree = cKDTree(cyl_pts)
-        search_radius = 0.12
-        axis_thresh = 0.92
-        radius_ratio = 1.8
+        search_radius = cfg["cyl_search_radius"]
+        axis_thresh = cfg["cyl_axis_thresh"]
+        radius_ratio = cfg["cyl_radius_ratio"]
         neighbor_lists = cyl_tree.query_ball_tree(cyl_tree, r=search_radius)
 
         cyl_cluster = np.full(len(cyl_idx), -1, dtype=np.int32)
@@ -516,7 +575,8 @@ def presegment(
             mean_axis = mean_axis / (np.linalg.norm(mean_axis) + 1e-10)
 
             cyl = _fit_cylinder_to_cluster(c_pts, c_normals,
-                                           axis_hint=mean_axis, distance_threshold=0.03)
+                                           axis_hint=mean_axis,
+                                           distance_threshold=cfg["cyl_distance_threshold"])
             if cyl and cyl["inlier_ratio"] > 0.25:
                 lbl = _classify_cylinder(cyl["radius"], cyl["length"])
                 primitives.append({
@@ -625,10 +685,10 @@ def presegment(
             if j <= i or p2["id"] in merged:
                 continue
             a1 = np.array(p1["axis"]); a2 = np.array(p2["axis"])
-            if abs(np.dot(a1, a2)) < 0.95:
+            if abs(np.dot(a1, a2)) < cfg["merge_axis_dot"]:
                 continue
             r_ratio = max(p1["radius"], p2["radius"]) / (min(p1["radius"], p2["radius"]) + 1e-6)
-            if r_ratio > 1.4:
+            if r_ratio > cfg["merge_radius_ratio"]:
                 continue
             c1 = np.array(p1["center"]); c2 = np.array(p2["center"])
             diff = c2 - c1
@@ -652,7 +712,8 @@ def presegment(
         if prim["type"] == "cylinder" and mask.sum() > 0:
             cyl = _fit_cylinder_to_cluster(
                 points[prim["global_indices"]], normals[prim["global_indices"]],
-                axis_hint=np.array(prim["axis"]), distance_threshold=0.03)
+                axis_hint=np.array(prim["axis"]),
+                distance_threshold=cfg["cyl_distance_threshold"])
             if cyl:
                 prim["radius"] = float(cyl["radius"])
                 prim["length"] = float(cyl["length"])
