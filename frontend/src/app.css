@@ -870,3 +870,18 @@ kbd {
   border-top: 1px solid var(--border, #2a2d34);
   font-size: 11px; color: var(--text-dim, #8a8f99); text-align: center;
 }
+
+/* Spinner shown in the presegment popover while a request is in flight. */
+.preseg-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--accent, #5b8def);
+  animation: preseg-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes preseg-spin {
+  to { transform: rotate(360deg); }
+}

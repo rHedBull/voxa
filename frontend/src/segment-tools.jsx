@@ -69,6 +69,7 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
     for (const k of RANSAC_KNOBS) o[k.key] = k.def;
     return o;
   });
+  const [labelerStrict, setLabelerStrict] = useState(false);
   const [stats, setStats] = useState(null);  // { nSegments, meanSize } after run
   const [optStatus, setOptStatus] = useState('idle'); // 'idle' | 'running' | 'done' | 'aborted' | 'error'
   const [optInfo, setOptInfo] = useState(null);
@@ -110,7 +111,7 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
     setBusy(true);
     setError(null);
     setStats(null);
-    setOpen(false);
+    // Keep the popover open during the request so the spinner is visible.
     try {
       // Only send overrides for ransac mode; only include knobs that differ from defaults.
       let ransacParams = null;
@@ -121,7 +122,10 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
           if (v !== k.def && Number.isFinite(v)) ransacParams[k.key] = v;
         }
       }
-      const res = await VoxaAPI.segPresegment({ mode, resolution, preserveLabeled, ransacParams });
+      const res = await VoxaAPI.segPresegment({
+        mode, resolution, preserveLabeled, ransacParams,
+        labelerStrict: mode === 'ransac' && labelerStrict,
+      });
       setStats({ nSegments: res.nSegments, meanSize: res.meanSegSize ?? 0 });
       if (prelabelRef) {
         prelabelRef.current = {
@@ -375,6 +379,18 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
                 }}
               >reset</button>
             </div>
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}
+              title="Run the bit-for-bit industrial_point_labeler pipeline: no plane CC split, no nearest-neighbour catchall, labeler-style cylinder merge. Use to A/B against the labeler."
+            >
+              <input
+                type="checkbox"
+                checked={labelerStrict}
+                disabled={mode !== 'ransac'}
+                onChange={(e) => setLabelerStrict(e.target.checked)}
+              />
+              <span>Labeler-strict (match industrial_point_labeler)</span>
+            </label>
             {RANSAC_KNOBS.map((k) => (
               <label
                 key={k.key}
@@ -413,8 +429,9 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
             </div>
           )}
           {optStatus === 'running' ? (
-            <div style={{ display: 'flex', gap: 6, justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-              <span style={{ fontSize: 11, opacity: 0.85 }}>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 11, opacity: 0.85 }}>
+                <span className="preseg-spinner" aria-hidden />
                 Trial {optInfo?.trial ?? 0}/{optInfo?.total ?? 0}
                 {optInfo?.bestScore != null ? ` · best ${optInfo.bestScore.toFixed(4)}` : ''}
               </span>
@@ -424,6 +441,13 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
                 style={{ width: 'auto', padding: '2px 10px' }}
                 onClick={abortOptimize}
               >Abort</button>
+            </div>
+          ) : busy ? (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
+              <span className="preseg-spinner" aria-hidden />
+              <span style={{ fontSize: 11, opacity: 0.85 }}>
+                Running {mode === 'ransac' ? 'RANSAC' : 'voxel'} preseg…
+              </span>
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
