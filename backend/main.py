@@ -18,6 +18,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading as _threading
+import time as _time
 import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -1027,15 +1029,37 @@ def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> t
     return unique_ids.astype(np.int32), centers, sizes
 
 
+class RansacParams(BaseModel):
+    """Per-call overrides for ``presegment_ransac.RANSAC_DEFAULTS``. All
+    fields optional — unset fields fall back to the hardcoded defaults."""
+    plane_distance_threshold: Optional[float] = None
+    plane_min_inliers: Optional[float] = None
+    max_planes: Optional[float] = None
+    plane_cluster_eps: Optional[float] = None
+    leftover_cluster_eps: Optional[float] = None
+    leftover_min_pts: Optional[float] = None
+    flat_thresh: Optional[float] = None
+    cylinder_ratio_thresh: Optional[float] = None
+    cyl_search_radius: Optional[float] = None
+    cyl_axis_thresh: Optional[float] = None
+    cyl_radius_ratio: Optional[float] = None
+    cyl_distance_threshold: Optional[float] = None
+    merge_axis_dot: Optional[float] = None
+    merge_radius_ratio: Optional[float] = None
+
+
 class PresegmentRequest(BaseModel):
     mode: Literal["voxel", "ransac", "model"] = "voxel"
     resolution: float = 0.05      # voxel size in scene units (voxel mode only)
     preserve_labeled: bool = True  # only re-presegment points with class_id < 0
+    ransac: Optional[RansacParams] = None  # ransac mode overrides
+    labeler_strict: bool = False  # ransac mode: bit-for-bit industrial_point_labeler pipeline
 
 
 class PresegmentResponse(BaseModel):
     n_assigned: int
     n_segments: int
+    mean_seg_size: float = 0.0  # n_assigned / n_segments (0 if no segments)
     full_class_ids: str        # b64 Int8
     full_instance_ids: str     # b64 Int32
     is_from_prelabel: bool = True
@@ -1047,6 +1071,65 @@ class PresegmentResponse(BaseModel):
     hull_vertices: str = ""    # b64 Float32 (V×3)
     hull_faces: str = ""       # b64 Int32   (F×3)  — global vertex indices
     hull_face_seg: str = ""    # b64 Int32   (F,)   — segment id per face
+
+
+def _apply_ransac_result_to_session(
+    *,
+    sub_inst: np.ndarray,
+    sub_summary: list[dict],
+    positions: np.ndarray,
+    existing_class: np.ndarray,
+    existing_inst: np.ndarray,
+    keep_mask: np.ndarray,
+    redo_mask: np.ndarray,
+    resolution: float = 0.05,
+):
+    """Renumber sub-instance ids above the existing max, assemble the new
+    session arrays, compute boxes + hulls, and return everything. Caller
+    is responsible for writing the session into ``_state["seg"]``."""
+    from segment_state import SegmentSession
+    from segment_hulls import compute_hulls as _compute_hulls
+
+    id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
+    if id_offset and sub_inst.size:
+        sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
+
+    instance_ids = existing_inst.copy()
+    instance_ids[redo_mask] = sub_inst
+
+    class_ids = existing_class.copy()
+    class_ids[redo_mask] = -1
+    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
+    for sid, cid in seg_to_class.items():
+        if cid >= 0:
+            class_ids[instance_ids == sid] = cid
+
+    sess = SegmentSession(
+        class_ids=class_ids,
+        instance_ids=instance_ids.astype(np.int32),
+        positions=positions,
+        is_from_prelabel=True,
+    )
+
+    box_ids, box_centers, box_sizes = _compute_segment_boxes(
+        np.asarray(positions), instance_ids
+    )
+    hull_v, hull_f, hull_seg = _compute_hulls(
+        np.asarray(positions),
+        instance_ids.astype(np.int32),
+        resolution=float(resolution),
+    )
+    return (
+        sess,
+        instance_ids,
+        class_ids,
+        box_ids,
+        box_centers,
+        box_sizes,
+        hull_v,
+        hull_f,
+        hull_seg,
+    )
 
 
 @app.post("/api/segment/presegment", response_model=PresegmentResponse)
@@ -1067,7 +1150,6 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
     points); blocks until done. Clears undo/redo.
     """
     from presegment import presegment as _run_presegment
-    from segment_state import SegmentSession
 
     seg = _state.get("seg")
     if seg is not None:
@@ -1103,47 +1185,44 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
             class_map=name_to_id,
             log=lambda *_: None,
             resolution=float(req.resolution),
+            ransac_params=req.ransac.model_dump(exclude_none=True) if req.ransac else None,
+            labeler_strict=req.labeler_strict,
         )
     else:
         sub_inst = np.empty(0, dtype=np.int32)
         sub_summary = []
 
-    # Renumber new instance ids to live above the existing ones so we
-    # never collide with kept-labeled points.
-    id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
-    if id_offset and sub_inst.size:
-        sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
-
-    instance_ids = existing_inst.copy()
-    instance_ids[redo_mask] = sub_inst
-
-    class_ids = existing_class.copy()
-    # New supervoxels stay at class_id = -1 unless the summary mapped them.
-    class_ids[redo_mask] = -1
-    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
-    for sid, cid in seg_to_class.items():
-        if cid >= 0:
-            class_ids[instance_ids == sid] = cid
-
-    _state["seg"] = SegmentSession(
-        class_ids=class_ids,
-        instance_ids=instance_ids.astype(np.int32),
+    (
+        sess,
+        instance_ids,
+        class_ids,
+        box_ids,
+        box_centers,
+        box_sizes,
+        hull_v,
+        hull_f,
+        hull_seg,
+    ) = _apply_ransac_result_to_session(
+        sub_inst=sub_inst,
+        sub_summary=sub_summary,
         positions=positions,
-        is_from_prelabel=True,
+        existing_class=existing_class,
+        existing_inst=existing_inst,
+        keep_mask=keep_mask,
+        redo_mask=redo_mask,
+        resolution=float(req.resolution),
     )
+    _state["seg"] = sess
     _state["seg"].dirty = True
 
     labeled_mask = instance_ids >= 0
-    box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(positions), instance_ids)
-    from segment_hulls import compute_hulls as _compute_hulls
-    hull_v, hull_f, hull_seg = _compute_hulls(
-        np.asarray(positions),
-        instance_ids.astype(np.int32),
-        resolution=float(req.resolution),
-    )
+    n_assigned = int(labeled_mask.sum())
+    n_segments = int(np.unique(instance_ids[labeled_mask]).size) if labeled_mask.any() else 0
+    mean_seg_size = (n_assigned / n_segments) if n_segments > 0 else 0.0
     return PresegmentResponse(
-        n_assigned=int(labeled_mask.sum()),
-        n_segments=int(np.unique(instance_ids[labeled_mask]).size) if labeled_mask.any() else 0,
+        n_assigned=n_assigned,
+        n_segments=n_segments,
+        mean_seg_size=mean_seg_size,
         full_class_ids=_b64(class_ids.astype(np.int8)),
         full_instance_ids=_b64(instance_ids.astype(np.int32)),
         is_from_prelabel=True,
@@ -1154,6 +1233,172 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
     )
+
+
+class PresegOptimizeRequest(BaseModel):
+    n_trials: int = 20
+    subsample_n: int = 200_000
+    preserve_labeled: bool = True
+
+
+class PresegOptimizeStartResponse(BaseModel):
+    job_id: str
+    total: int
+
+
+class PresegOptimizeStatusResponse(BaseModel):
+    status: Literal["running", "done", "aborted", "error"]
+    trial: int
+    total: int
+    best_score: Optional[float] = None
+    best_params: Optional[dict] = None
+    error: Optional[str] = None
+
+
+def _new_job_state(total: int) -> dict:
+    return {
+        "id": str(uuid.uuid4()),
+        "thread": None,
+        "cancel": _threading.Event(),
+        "status": "running",
+        "trial": 0,
+        "total": total,
+        "best_score": None,
+        "best_params": None,
+        "error": None,
+        "started_at": _time.time(),
+    }
+
+
+def _preseg_optimize_worker(*, job, positions, existing_class, existing_inst,
+                            keep_mask, redo_mask, subsample_n, n_trials, class_map):
+    from preseg_optimize import run_study
+    from presegment_ransac import presegment as _ransac
+    try:
+        candidate_idx = np.flatnonzero(redo_mask)
+        if candidate_idx.size == 0:
+            job["status"] = "error"
+            job["error"] = "Nothing to optimize: all points are already labeled (preserve_labeled=true)"
+            return
+        if candidate_idx.size > subsample_n:
+            rng = np.random.default_rng(0)
+            sub_idx = rng.choice(candidate_idx, size=subsample_n, replace=False)
+        else:
+            sub_idx = candidate_idx
+        xyz_sub = np.asarray(positions[sub_idx], dtype=np.float64)
+
+        def cb(info):
+            job["trial"] = info["trial"]
+            job["best_score"] = info["best_score"]
+            job["best_params"] = info["best_params"]
+
+        result = run_study(
+            xyz_sub,
+            n_trials=n_trials,
+            cancel_event=job["cancel"],
+            progress_cb=cb,
+            class_map=class_map,
+        )
+        job["best_score"] = result["best_score"]
+        job["best_params"] = result["best_params"]
+
+        if job["cancel"].is_set():
+            job["status"] = "aborted"
+            return
+
+        sub_positions = np.asarray(positions[redo_mask], dtype=np.float64)
+        sub_inst, sub_summary = _ransac(
+            sub_positions,
+            class_map=class_map,
+            log=lambda *_: None,
+            params=result["best_params"],
+        )
+        sess, *_unused = _apply_ransac_result_to_session(
+            sub_inst=sub_inst,
+            sub_summary=sub_summary,
+            positions=positions,
+            existing_class=existing_class,
+            existing_inst=existing_inst,
+            keep_mask=keep_mask,
+            redo_mask=redo_mask,
+            resolution=0.05,
+        )
+        _state["seg"] = sess
+        _state["seg"].dirty = True
+        job["status"] = "done"
+    except Exception as e:  # noqa: BLE001
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+@app.post("/api/segment/presegment/optimize", response_model=PresegOptimizeStartResponse)
+def segment_presegment_optimize(req: PresegOptimizeRequest = PresegOptimizeRequest()):
+    existing = _state.get("preseg_opt_job")
+    if existing and existing["status"] == "running":
+        raise HTTPException(409, "An optimization is already running")
+
+    seg = _state.get("seg")
+    if seg is not None:
+        positions = seg.positions
+        existing_class = seg.class_ids.copy()
+        existing_inst = seg.instance_ids.copy()
+    else:
+        pc = _state.get("pc")
+        if pc is None:
+            raise HTTPException(409, "No scene loaded — call /api/load first")
+        positions = pc.points
+        n_init = int(positions.shape[0])
+        existing_class = np.full(n_init, -1, dtype=np.int8)
+        existing_inst = np.full(n_init, -1, dtype=np.int32)
+
+    n_points = int(positions.shape[0])
+    keep_mask = (existing_class >= 0) if req.preserve_labeled else np.zeros(n_points, dtype=bool)
+    redo_mask = ~keep_mask
+
+    job = _new_job_state(req.n_trials)
+    _state["preseg_opt_job"] = job
+    t = _threading.Thread(
+        target=_preseg_optimize_worker,
+        kwargs=dict(
+            job=job,
+            positions=positions,
+            existing_class=existing_class,
+            existing_inst=existing_inst,
+            keep_mask=keep_mask,
+            redo_mask=redo_mask,
+            subsample_n=req.subsample_n,
+            n_trials=req.n_trials,
+            class_map=_voxa_class_name_to_id(),
+        ),
+        daemon=True,
+    )
+    job["thread"] = t
+    t.start()
+    return PresegOptimizeStartResponse(job_id=job["id"], total=req.n_trials)
+
+
+@app.get("/api/segment/presegment/optimize/status", response_model=PresegOptimizeStatusResponse)
+def segment_presegment_optimize_status(job_id: str):
+    job = _state.get("preseg_opt_job")
+    if not job or job["id"] != job_id:
+        raise HTTPException(404, "Unknown job_id")
+    return PresegOptimizeStatusResponse(
+        status=job["status"],
+        trial=job["trial"],
+        total=job["total"],
+        best_score=job["best_score"],
+        best_params=job["best_params"],
+        error=job["error"],
+    )
+
+
+@app.post("/api/segment/presegment/optimize/abort")
+def segment_presegment_optimize_abort(job_id: str):
+    job = _state.get("preseg_opt_job")
+    if not job or job["id"] != job_id:
+        raise HTTPException(404, "Unknown job_id")
+    job["cancel"].set()
+    return {"status": "aborting"}
 
 
 class SegmentStateResponse(BaseModel):

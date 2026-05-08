@@ -175,17 +175,21 @@ export const VoxaAPI = {
       hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
     };
   },
-  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true } = {}) {
+  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true, ransacParams = null, labelerStrict = false } = {}) {
+    const body = { mode, resolution, preserve_labeled: preserveLabeled };
+    if (ransacParams && Object.keys(ransacParams).length > 0) body.ransac = ransacParams;
+    if (labelerStrict) body.labeler_strict = true;
     const r = await fetch('/api/segment/presegment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode, resolution, preserve_labeled: preserveLabeled }),
+      body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`segPresegment failed: ${r.status} ${await r.text()}`);
     const j = await r.json();
     return {
       nAssigned: j.n_assigned,
       nSegments: j.n_segments,
+      meanSegSize: j.mean_seg_size ?? 0,
       fullClassIds: b64ToInt8(j.full_class_ids),
       fullInstanceIds: b64ToInt32(j.full_instance_ids),
       isFromPrelabel: !!j.is_from_prelabel,
@@ -196,6 +200,34 @@ export const VoxaAPI = {
       hullFaces: j.hull_faces ? b64ToInt32(j.hull_faces) : null,
       hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
     };
+  },
+  async segPresegOptimizeStart({ nTrials = 20, subsampleN = 200_000, preserveLabeled = true } = {}) {
+    const r = await fetch('/api/segment/presegment/optimize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ n_trials: nTrials, subsample_n: subsampleN, preserve_labeled: preserveLabeled }),
+    });
+    if (!r.ok) throw new Error(`segPresegOptimizeStart failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return { jobId: j.job_id, total: j.total };
+  },
+  async segPresegOptimizeStatus(jobId) {
+    const r = await fetch(`/api/segment/presegment/optimize/status?job_id=${encodeURIComponent(jobId)}`);
+    if (!r.ok) throw new Error(`segPresegOptimizeStatus failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return {
+      status: j.status,
+      trial: j.trial,
+      total: j.total,
+      bestScore: j.best_score,
+      bestParams: j.best_params,
+      error: j.error,
+    };
+  },
+  async segPresegOptimizeAbort(jobId) {
+    const r = await fetch(`/api/segment/presegment/optimize/abort?job_id=${encodeURIComponent(jobId)}`, { method: 'POST' });
+    if (!r.ok) throw new Error(`segPresegOptimizeAbort failed: ${r.status} ${await r.text()}`);
+    return r.json();
   },
 };
 
