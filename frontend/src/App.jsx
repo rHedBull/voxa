@@ -145,6 +145,7 @@ function MainApp() {
         scene: activeScene,
         meshUrl: cloud.meshUrl ? new URL(cloud.meshUrl, window.location.origin).toString() : null,
         meshIsZUp: !!cloud.meshIsZUp,
+        meshOffset: cloud.recenterOffset || null,
         instances: gtInstances,
         bbox: cloud.bbox || null,
         background: themeBg,

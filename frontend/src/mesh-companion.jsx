@@ -15,6 +15,7 @@ export function MeshCompanion() {
     scene: null,
     meshUrl: null,
     meshIsZUp: false,
+    meshOffset: null,
     instances: [],
     bbox: null,
     background: '#0a0b0e',
@@ -37,6 +38,7 @@ export function MeshCompanion() {
           scene: m.scene ?? null,
           meshUrl: m.meshUrl ?? null,
           meshIsZUp: !!m.meshIsZUp,
+          meshOffset: m.meshOffset ?? null,
           instances: m.instances ?? [],
           bbox: m.bbox ?? null,
           background: m.background ?? '#0a0b0e',
@@ -92,6 +94,7 @@ export function MeshCompanion() {
           showAxes
           meshUrl={state.meshUrl}
           meshIsZUp={state.meshIsZUp}
+          meshOffset={state.meshOffset}
           showMesh={!!state.meshUrl}
           onCameraChange={onCameraChange}
         />

@@ -345,6 +345,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'class' | 'instance' | 'flat'
     navMode = 'orbit',          // 'orbit' | 'walk'
     meshUrl = null,             // GLB streaming URL
+    meshOffset = null,          // [x,y,z] in pre-rotation world units; subtracted from mesh group position so a recentered cloud and the original-frame mesh overlay. Auto-derived from cloud.recenterOffset on the main viewer; the mesh-companion window passes it explicitly because it has no cloud.
     meshIsZUp = false,          // rotate GLB by -π/2 around X when its source frame is Z-up
     showMesh = false,           // when false, mesh stays unloaded (saves a 100MB+ fetch)
     meshBrightness = 1.0,       // multiplier on every loaded mesh material's color (0..2)
@@ -1367,6 +1368,17 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         .forEach((m) => { m.color?.setRGB(b, b, b); });
     });
   }, [meshBrightness, meshUrl, showMesh]);
+
+  // Mesh-group offset, decoupled from cloud-load. The main viewer derives
+  // the offset from cloud.recenterOffset inside the cloud-upload effect
+  // (above), but that effect doesn't run in the mesh-companion window
+  // (cloud is null). Apply meshOffset here so the popup can position its
+  // mesh into the same recentered frame as the cloud.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.meshGroup || !meshOffset) return;
+    s.meshGroup.position.set(-meshOffset[0], -meshOffset[1], -meshOffset[2]);
+  }, [meshOffset]);
 
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {
