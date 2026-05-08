@@ -1,6 +1,8 @@
+import threading
+
 import numpy as np
 import pytest
-from preseg_optimize import score_segmentation
+from preseg_optimize import SEARCH_SPACE, run_study, score_segmentation
 
 
 def _plane_xyz(n=2000, rng=None):
@@ -63,3 +65,58 @@ def test_score_penalises_too_many_segments():
     ids = np.arange(len(xyz), dtype=np.int32)
     score = score_segmentation(xyz, ids)
     assert score >= 1e5
+
+
+def test_search_space_mirrors_ransac_defaults():
+    from presegment_ransac import RANSAC_DEFAULTS
+    assert set(SEARCH_SPACE.keys()) == set(RANSAC_DEFAULTS.keys())
+
+
+def test_run_study_smoke():
+    rng = np.random.default_rng(3)
+    plane = rng.uniform(-1, 1, (1500, 2))
+    plane = np.hstack([plane, rng.normal(0, 1e-3, (1500, 1))])
+    cyl_theta = rng.uniform(0, 2 * np.pi, 1500)
+    cyl = np.column_stack([
+        3 + 0.3 * np.cos(cyl_theta),
+        0.3 * np.sin(cyl_theta),
+        rng.uniform(0, 1, 1500),
+    ])
+    xyz = np.vstack([plane, cyl]).astype(np.float64)
+
+    progress = []
+    cancel = threading.Event()
+
+    def cb(info):
+        progress.append(info["trial"])
+
+    result = run_study(
+        xyz,
+        n_trials=3,
+        cancel_event=cancel,
+        progress_cb=cb,
+        class_map={},
+    )
+    assert result["n_trials_run"] == 3
+    assert set(result["best_params"].keys()) == set(SEARCH_SPACE.keys())
+    assert isinstance(result["best_score"], float)
+    assert progress, "progress_cb should have been called at least once"
+
+
+def test_run_study_cancel():
+    rng = np.random.default_rng(4)
+    xyz = rng.uniform(-1, 1, (2000, 3)).astype(np.float64)
+    cancel = threading.Event()
+    cancel.set()
+
+    def cb(_info):
+        pass
+
+    result = run_study(
+        xyz,
+        n_trials=20,
+        cancel_event=cancel,
+        progress_cb=cb,
+        class_map={},
+    )
+    assert result["n_trials_run"] < 20

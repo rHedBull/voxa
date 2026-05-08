@@ -8,6 +8,9 @@ return a large penalty so the optimiser steers away from them.
 """
 from __future__ import annotations
 
+import threading
+from typing import Any, Callable, Optional
+
 import numpy as np
 
 PENALTY = 1e6
@@ -120,3 +123,102 @@ def score_segmentation(xyz: np.ndarray, instance_ids: np.ndarray) -> float:
     w_arr = np.asarray(weights, dtype=np.float64)
     weighted_mean = float(np.sum(rms_arr * w_arr) / np.sum(w_arr))
     return weighted_mean - LAMBDA_SEG * float(np.log(n_segments))
+
+
+SEARCH_SPACE: dict[str, tuple[float, float, str]] = {
+    "plane_distance_threshold": (0.005, 0.10, "logfloat"),
+    "plane_min_inliers":        (20, 300, "int"),
+    "max_planes":               (5, 50, "int"),
+    "flat_thresh":              (0.1, 2.0, "float"),
+    "cylinder_ratio_thresh":    (1.5, 8.0, "float"),
+    "cyl_search_radius":        (0.05, 0.30, "logfloat"),
+    "cyl_axis_thresh":          (0.85, 0.99, "float"),
+    "cyl_radius_ratio":         (1.2, 3.0, "float"),
+    "cyl_distance_threshold":   (0.005, 0.10, "logfloat"),
+    "merge_axis_dot":           (0.85, 0.99, "float"),
+    "merge_radius_ratio":       (1.1, 3.0, "float"),
+}
+
+
+def _suggest_params(trial: Any) -> dict[str, float]:
+    params: dict[str, float] = {}
+    for name, (lo, hi, kind) in SEARCH_SPACE.items():
+        if kind == "int":
+            # Cast to float so downstream RANSAC code sees a uniform numeric type.
+            params[name] = float(trial.suggest_int(name, int(lo), int(hi)))
+        elif kind == "logfloat":
+            params[name] = float(trial.suggest_float(name, lo, hi, log=True))
+        else:
+            params[name] = float(trial.suggest_float(name, lo, hi, log=False))
+    return params
+
+
+def run_study(
+    xyz_sub: np.ndarray,
+    *,
+    n_trials: int,
+    cancel_event: threading.Event,
+    progress_cb: Callable[[dict], None],
+    class_map: Optional[dict[str, int]] = None,
+) -> dict:
+    import optuna
+    from presegment_ransac import presegment as _ransac
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    ran = 0
+    trials_log: list[dict] = []
+
+    def objective(trial: "optuna.trial.Trial") -> float:
+        nonlocal ran
+        if cancel_event.is_set():
+            raise optuna.TrialPruned()
+        params = _suggest_params(trial)
+        ran += 1
+        try:
+            instance_ids, _summary = _ransac(
+                xyz_sub,
+                class_map=class_map,
+                log=lambda *_: None,
+                params=params,
+            )
+            score = float(score_segmentation(xyz_sub, instance_ids))
+        except Exception:
+            score = float(PENALTY)
+        trials_log.append({"params": dict(params), "score": score})
+        return score
+
+    sampler = optuna.samplers.TPESampler(seed=0)
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+
+    def _cb(study_: "optuna.Study", trial: "optuna.trial.FrozenTrial") -> None:
+        try:
+            best_score: Optional[float] = float(study_.best_value)
+            best_params: Optional[dict] = dict(study_.best_params)
+        except ValueError:
+            best_score = None
+            best_params = None
+        progress_cb({
+            "trial": trial.number,
+            "total": n_trials,
+            "best_score": best_score,
+            "best_params": best_params,
+        })
+        if cancel_event.is_set():
+            study_.stop()
+
+    study.optimize(objective, n_trials=n_trials, callbacks=[_cb])
+
+    try:
+        best_params = dict(study.best_params)
+        best_score = float(study.best_value)
+    except ValueError:
+        best_params = {}
+        best_score = float(PENALTY)
+
+    return {
+        "best_params": best_params,
+        "best_score": best_score,
+        "n_trials_run": ran,
+        "trials": trials_log,
+    }
