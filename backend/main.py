@@ -18,7 +18,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading as _threading
+import time as _time
 import uuid
+import uuid as _uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1226,6 +1229,172 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
     )
+
+
+class PresegOptimizeRequest(BaseModel):
+    n_trials: int = 20
+    subsample_n: int = 200_000
+    preserve_labeled: bool = True
+
+
+class PresegOptimizeStartResponse(BaseModel):
+    job_id: str
+    total: int
+
+
+class PresegOptimizeStatusResponse(BaseModel):
+    status: Literal["running", "done", "aborted", "error"]
+    trial: int
+    total: int
+    best_score: Optional[float] = None
+    best_params: Optional[dict] = None
+    error: Optional[str] = None
+
+
+def _new_job_state(total: int) -> dict:
+    return {
+        "id": str(_uuid.uuid4()),
+        "thread": None,
+        "cancel": _threading.Event(),
+        "status": "running",
+        "trial": 0,
+        "total": total,
+        "best_score": None,
+        "best_params": None,
+        "error": None,
+        "started_at": _time.time(),
+    }
+
+
+def _preseg_optimize_worker(*, job, positions, existing_class, existing_inst,
+                            keep_mask, redo_mask, subsample_n, n_trials, class_map):
+    from preseg_optimize import run_study
+    from presegment_ransac import presegment as _ransac
+    try:
+        candidate_idx = np.flatnonzero(redo_mask)
+        if candidate_idx.size == 0:
+            job["status"] = "error"
+            job["error"] = "Nothing to optimize: all points are already labeled (preserve_labeled=true)"
+            return
+        if candidate_idx.size > subsample_n:
+            rng = np.random.default_rng(0)
+            sub_idx = rng.choice(candidate_idx, size=subsample_n, replace=False)
+        else:
+            sub_idx = candidate_idx
+        xyz_sub = np.asarray(positions[sub_idx], dtype=np.float64)
+
+        def cb(info):
+            job["trial"] = info["trial"]
+            job["best_score"] = info["best_score"]
+            job["best_params"] = info["best_params"]
+
+        result = run_study(
+            xyz_sub,
+            n_trials=n_trials,
+            cancel_event=job["cancel"],
+            progress_cb=cb,
+            class_map=class_map,
+        )
+        job["best_score"] = result["best_score"]
+        job["best_params"] = result["best_params"]
+
+        if job["cancel"].is_set():
+            job["status"] = "aborted"
+            return
+
+        sub_positions = np.asarray(positions[redo_mask], dtype=np.float64)
+        sub_inst, sub_summary = _ransac(
+            sub_positions,
+            class_map=class_map,
+            log=lambda *_: None,
+            params=result["best_params"],
+        )
+        sess, *_unused = _apply_ransac_result_to_session(
+            sub_inst=sub_inst,
+            sub_summary=sub_summary,
+            positions=positions,
+            existing_class=existing_class,
+            existing_inst=existing_inst,
+            keep_mask=keep_mask,
+            redo_mask=redo_mask,
+            resolution=0.05,
+        )
+        _state["seg"] = sess
+        _state["seg"].dirty = True
+        job["status"] = "done"
+    except Exception as e:  # noqa: BLE001
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+@app.post("/api/segment/presegment/optimize", response_model=PresegOptimizeStartResponse)
+def segment_presegment_optimize(req: PresegOptimizeRequest = PresegOptimizeRequest()):
+    existing = _state.get("preseg_opt_job")
+    if existing and existing["status"] == "running":
+        raise HTTPException(409, "An optimization is already running")
+
+    seg = _state.get("seg")
+    if seg is not None:
+        positions = seg.positions
+        existing_class = seg.class_ids.copy()
+        existing_inst = seg.instance_ids.copy()
+    else:
+        pc = _state.get("pc")
+        if pc is None:
+            raise HTTPException(409, "No scene loaded — call /api/load first")
+        positions = pc.points
+        n_init = int(positions.shape[0])
+        existing_class = np.full(n_init, -1, dtype=np.int8)
+        existing_inst = np.full(n_init, -1, dtype=np.int32)
+
+    n_points = int(positions.shape[0])
+    keep_mask = (existing_class >= 0) if req.preserve_labeled else np.zeros(n_points, dtype=bool)
+    redo_mask = ~keep_mask
+
+    job = _new_job_state(req.n_trials)
+    _state["preseg_opt_job"] = job
+    t = _threading.Thread(
+        target=_preseg_optimize_worker,
+        kwargs=dict(
+            job=job,
+            positions=positions,
+            existing_class=existing_class,
+            existing_inst=existing_inst,
+            keep_mask=keep_mask,
+            redo_mask=redo_mask,
+            subsample_n=req.subsample_n,
+            n_trials=req.n_trials,
+            class_map=_voxa_class_name_to_id(),
+        ),
+        daemon=True,
+    )
+    job["thread"] = t
+    t.start()
+    return PresegOptimizeStartResponse(job_id=job["id"], total=req.n_trials)
+
+
+@app.get("/api/segment/presegment/optimize/status", response_model=PresegOptimizeStatusResponse)
+def segment_presegment_optimize_status(job_id: str):
+    job = _state.get("preseg_opt_job")
+    if not job or job["id"] != job_id:
+        raise HTTPException(404, "Unknown job_id")
+    return PresegOptimizeStatusResponse(
+        status=job["status"],
+        trial=job["trial"],
+        total=job["total"],
+        best_score=job["best_score"],
+        best_params=job["best_params"],
+        error=job["error"],
+    )
+
+
+@app.post("/api/segment/presegment/optimize/abort")
+def segment_presegment_optimize_abort(job_id: str):
+    job = _state.get("preseg_opt_job")
+    if not job or job["id"] != job_id:
+        raise HTTPException(404, "Unknown job_id")
+    job["cancel"].set()
+    return {"status": "aborting"}
 
 
 class SegmentStateResponse(BaseModel):
