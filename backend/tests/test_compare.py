@@ -17,7 +17,7 @@ def _cuboid(id_, cls="pipe", center=(0.0, 0.0, 0.0), size=(1.0, 1.0, 1.0)):
 
 def _save(client, scene, kind, instances):
     client.put(
-        f"/api/annotations/{scene}/{kind}",
+        f"/api/annotations/{kind}/{scene}",
         json={"scene": scene, "kind": kind, "instances": instances, "meta": {}},
     )
 

@@ -47,8 +47,43 @@ def load_prelabel(
 _TS_RE = re.compile(r"^\d{8}_\d{6}$")
 
 
-def _validate_invariants(class_ids: np.ndarray, instance_ids: np.ndarray) -> None:
-    """SCHEMA invariants 3 & 4. Raises ValueError on violation."""
+def _load_class_registry(scan_dir: Path) -> Optional[dict]:
+    """Read `<lidar_root>/classes.json` from scan_dir's grandparent.
+
+    Returns ``{"version": int, "by_id": {id: name}}`` or ``None`` if the
+    registry isn't found / malformed. Tests using throwaway tmp dirs
+    naturally hit the None branch, so callers must treat schema-aware
+    enrichment + validation as optional.
+    """
+    candidate = scan_dir.parent.parent / "classes.json"
+    if not candidate.exists():
+        return None
+    try:
+        raw = json.loads(candidate.read_text())
+        version = int(raw["version"])
+        by_id = {int(c["id"]): str(c["name"]) for c in raw["classes"]}
+    except (OSError, ValueError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return {"version": version, "by_id": by_id}
+
+
+def _read_meta_class_map_version(scan_dir: Path) -> Optional[int]:
+    meta_path = scan_dir / "meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        raw = json.loads(meta_path.read_text())
+        return int(raw["class_map_version"])
+    except (OSError, ValueError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _validate_invariants(
+    class_ids: np.ndarray, instance_ids: np.ndarray,
+    registry: Optional[dict] = None,
+    meta_class_map_version: Optional[int] = None,
+) -> None:
+    """SCHEMA invariants 3, 4, and (when registry is supplied) 5 & 6."""
     cls_unl = class_ids == -1
     inst_unl = instance_ids == -1
     if not np.array_equal(cls_unl, inst_unl):
@@ -69,15 +104,32 @@ def _validate_invariants(class_ids: np.ndarray, instance_ids: np.ndarray) -> Non
             raise ValueError(
                 "invariant 4: per-segment class consistency violated",
             )
+    if registry is not None and labeled.any():
+        unknown = sorted({int(c) for c in np.unique(class_ids[labeled]).tolist()
+                          if int(c) not in registry["by_id"]})
+        if unknown:
+            raise ValueError(
+                f"invariant 5: class IDs {unknown} not in classes.json "
+                f"(known: {sorted(registry['by_id'])})",
+            )
+    if (registry is not None and meta_class_map_version is not None
+            and meta_class_map_version != registry["version"]):
+        raise ValueError(
+            f"invariant 6: meta.json::class_map_version "
+            f"({meta_class_map_version}) != classes.json::version "
+            f"({registry['version']})",
+        )
 
 
 def _build_segment_metadata(
     class_ids: np.ndarray, instance_ids: np.ndarray,
     positions: Optional[np.ndarray] = None,
+    registry: Optional[dict] = None,
 ) -> dict:
     n_points = int(instance_ids.shape[0])
     labeled = instance_ids >= 0
     n_labeled = int(labeled.sum())
+    by_id = registry["by_id"] if registry is not None else {}
     segments: list[dict] = []
     for sid in np.unique(instance_ids[labeled]):
         sid_i = int(sid)
@@ -88,17 +140,20 @@ def _build_segment_metadata(
             "class_id": cid,
             "n_points": int(m.sum()),
         }
+        if cid in by_id:
+            entry["label"] = by_id[cid]
         if positions is not None:
             sub = positions[m]
             mn = sub.min(axis=0); mx = sub.max(axis=0)
             entry["bbox"] = [float(mn[0]), float(mn[1]), float(mn[2]),
                               float(mx[0]), float(mx[1]), float(mx[2])]
         segments.append(entry)
+    version = registry["version"] if registry is not None else 1
     return {
         "n_points": n_points,
         "n_gt_segments": len(segments),
         "n_labeled_points": n_labeled,
-        "class_map_version": 1,
+        "class_map_version": version,
         "segments": segments,
     }
 
@@ -121,7 +176,11 @@ def save_labels(
     Writes are sequential (3 files); not atomic across files. A history
     snapshot is taken from the prior on-disk labels before overwrite.
     """
-    _validate_invariants(class_ids, instance_ids)
+    registry = _load_class_registry(scan_dir)
+    meta_version = _read_meta_class_map_version(scan_dir)
+    _validate_invariants(class_ids, instance_ids,
+                         registry=registry,
+                         meta_class_map_version=meta_version)
 
     labels_dir = scan_dir / "labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
@@ -141,7 +200,8 @@ def save_labels(
 
     np.save(labels_dir / "gt_class_ids.npy", class_ids.astype(np.int32))
     np.save(labels_dir / "gt_segment_ids.npy", instance_ids.astype(np.int32))
-    meta = _build_segment_metadata(class_ids, instance_ids, positions)
+    meta = _build_segment_metadata(class_ids, instance_ids, positions,
+                                   registry=registry)
     (labels_dir / "gt_segment_metadata.json").write_text(json.dumps(meta, indent=2))
 
 

@@ -20,7 +20,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
 import yaml
@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from lidar_io import LabelArrays, load_annotated, load_laz
+from lidar_io import LabelArrays, load_annotated, load_laz, load_laz_region
 from point_cloud import PointCloud, load_glb, load_ply
 from scene_registry import (
     SceneSource,
@@ -45,8 +45,12 @@ SCENES_DIR = DATA_DIR / "scenes"
 ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
 FRONTEND_DIST = ROOT / "dist"
-MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "300000"))
+MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "1000000"))
 MAX_LABEL_POINTS = int(os.environ.get("VOXA_MAX_LABEL_POINTS", "5000000"))
+# Drop segments smaller than this from on-disk labels. Defends against
+# broken prelabel files (e.g. one-point-per-instance arrays) that would
+# otherwise flood the UI with hundreds of thousands of micro-segments.
+MIN_SEGMENT_POINTS = int(os.environ.get("VOXA_MIN_SEGMENT_POINTS", "10"))
 LIDAR_ROOT = load_lidar_root_from_env()
 
 app = FastAPI(title="Voxa 3D scan studio")
@@ -95,11 +99,13 @@ class LoadRequest(BaseModel):
     name: str                              # tier-prefixed id or bare legacy name
     max_points: int = MAX_POINTS_DEFAULT
     want_full_labels: bool = False
+    prefer_prelabel: bool = False          # if True, skip GT and surface model recommendation
 
 
 class LoadResponse(BaseModel):
     scene: str                             # tier-prefixed canonical id
-    num_points: int
+    num_points: int                        # in-memory full-resolution count
+    num_points_total: Optional[int] = None # source file truth (e.g. LAZ header) when > num_points
     num_subsampled: int
     bbox_min: list[float]
     bbox_max: list[float]
@@ -122,18 +128,40 @@ class LoadResponse(BaseModel):
     is_from_prelabel: bool = False
     segment_summary: Optional[dict] = None   # { "<inst>": {class_id, n_points} }
     subsample_idx: Optional[str] = None      # b64 Int32, len==num_subsampled, maps sub row → full idx
+    seg_ids: Optional[str] = None            # b64 Int32 — segment ids (full-res, for voxel box overlay)
+    seg_centers: Optional[str] = None        # b64 Float32 (N×3) — bbox centres
+    seg_sizes: Optional[str] = None          # b64 Float32 (N×3) — bbox extents
+
+
+class LoadRegionRequest(BaseModel):
+    aabb_min: list[float]    # in loaded frame (post recenter)
+    aabb_max: list[float]
+    max_points: Optional[int] = None   # None → no cap, return everything inside
+
+
+class LoadRegionResponse(BaseModel):
+    num_points: int                   # what we returned (post-cap)
+    num_in_region_total: int          # before any cap
+    positions: str                    # b64 Float32 (xyz, recentered frame)
+    colors: Optional[str] = None      # b64 Float32 (rgb 0..1)
 
 
 class Cuboid(BaseModel):
+    # Despite the name, this model now covers both cuboid and pointset
+    # instances. Pointsets carry `kind="pointset"` + `segId`, and have
+    # null center/size. Compare-mode IoU skips pointset instances.
     id: str
     cls: str
     label: str = ""
     color: str = "#5b8def"
-    center: list[float]   # [x,y,z]
-    size: list[float]     # [w,h,d]
+    center: Optional[list[float]] = None   # [x,y,z]; null for pointset
+    size: Optional[list[float]] = None     # [w,h,d]; null for pointset
     rotation: list[float] = [0.0, 0.0, 0.0]   # euler xyz radians
     conf: float = 1.0
-    source: str = "manual"   # 'manual' | 'auto' | 'fit'
+    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'preseg' | 'recommendation'
+    confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
+    kind: str = "cuboid"     # 'cuboid' | 'pointset'
+    segId: Optional[int] = None  # set for pointset (and preseg-promoted) instances; per-point membership key in segState.instanceFull
 
 
 class AnnotationDoc(BaseModel):
@@ -178,7 +206,10 @@ class CompareResponse(BaseModel):
     precision: float
     recall: float
     f1: float
-    iou_mean: float
+    iou_mean: float                 # mean IoU over the 1:1 TPs (conditional on match)
+    coverage_loose: float           # fraction of GT with best-pred IoU ≥ 0.1 (any pred)
+    coverage_strict: float          # fraction of GT with best-pred IoU ≥ 0.3 (any pred)
+    best_iou_mean: float            # mean of best-pred IoU per GT (overall recommendation tightness)
     tp: int
     fp: int
     fn: int
@@ -277,7 +308,10 @@ def _recenter(pc: PointCloud) -> tuple[PointCloud, list[float]]:
 
 def _iou_aabb(a: Cuboid, b: Cuboid) -> float:
     """Axis-aligned IoU. Cuboid rotation is ignored — adequate for scoring
-    industrial-pose annotations where rotation is usually small."""
+    industrial-pose annotations where rotation is usually small. Returns 0
+    if either instance lacks a box (e.g. pointset)."""
+    if a.center is None or a.size is None or b.center is None or b.size is None:
+        return 0.0
     a_min = np.array(a.center) - np.array(a.size) / 2
     a_max = np.array(a.center) + np.array(a.size) / 2
     b_min = np.array(b.center) - np.array(b.size) / 2
@@ -377,6 +411,31 @@ def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
     )
 
 
+def _filter_tiny_segments(labels, min_points: int):
+    """Reset (class_id, instance_id) to (-1, -1) for any point belonging
+    to an instance with fewer than ``min_points`` points. Keeps the
+    arrays in-place-friendly: returns a fresh LabelArrays so the caller
+    can swap without mutating the loader's outputs."""
+    from lidar_io import LabelArrays
+    inst = np.asarray(labels.instance_ids, dtype=np.int32)
+    cls = np.asarray(labels.class_ids, dtype=np.int8)
+    if inst.size == 0 or min_points <= 1:
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    labeled = inst >= 0
+    if not labeled.any():
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    ids, counts = np.unique(inst[labeled], return_counts=True)
+    drop_ids = ids[counts < int(min_points)]
+    if drop_ids.size == 0:
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    drop_mask = np.isin(inst, drop_ids)
+    new_cls = cls.copy()
+    new_inst = inst.copy()
+    new_cls[drop_mask] = -1
+    new_inst[drop_mask] = -1
+    return LabelArrays(class_ids=new_cls, instance_ids=new_inst)
+
+
 def _scene_is_z_up(src: SceneSource) -> bool:
     """Decide whether the scene's source frame is Z-up (surveying / LAS).
 
@@ -394,36 +453,42 @@ def _scene_is_z_up(src: SceneSource) -> bool:
     return bool(src.extras.get("is_z_up", True))
 
 
-def _load_scene_source(src: SceneSource, max_points: int):
+def _load_scene_source(src: SceneSource, max_points: int, *,
+                       prefer_prelabel: bool = False):
     """Dispatch to the right loader.
 
     Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances,
-             n_labeled_points, is_from_prelabel).
+             n_labeled_points, is_from_prelabel, n_source_total).
+
+    `n_source_total` is the source file's true point count when it differs
+    from the loaded count (LAZ stride-samples at read time); None when the
+    loaded count already matches the on-disk count.
     """
     if src.tier == "annotated":
-        a = load_annotated(src, LIDAR_ROOT)
+        a = load_annotated(src, LIDAR_ROOT, prefer_prelabel=prefer_prelabel)
         n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
         palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
         return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
-                n_labeled, bool(a.is_from_prelabel))
+                n_labeled, bool(a.is_from_prelabel), None)
 
     if src.tier == "raw":
-        pc, intensity = load_laz(src.source_path, max_points=max(max_points, 50_000))
-        return (pc, None, intensity, None, None, None, None, None, False)
+        pc, intensity, n_source_total = load_laz(src.source_path, max_points=max(max_points, 50_000))
+        return (pc, None, intensity, None, None, None, None, None, False, n_source_total)
 
     # legacy + decimated → reuse the existing loaders
     if src.source_format == "glb":
         pc, mesh = load_glb(src.source_path, num_samples=max(max_points, 50_000))
-        return (pc, mesh, None, None, None, None, None, None, False)
+        return (pc, mesh, None, None, None, None, None, None, False, None)
     pc, _ = load_ply(src.source_path)
-    return (pc, None, None, None, None, None, None, None, False)
+    return (pc, None, None, None, None, None, None, None, False, None)
 
 
 @app.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
     src = _resolve(req.name)
-    pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled, is_from_prelabel = (
-        _load_scene_source(src, req.max_points)
+    (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled,
+     is_from_prelabel, n_source_total) = (
+        _load_scene_source(src, req.max_points, prefer_prelabel=req.prefer_prelabel)
     )
 
     # LAS / lidar archive scans are Z-up; rotate into Three.js Y-up before
@@ -437,7 +502,32 @@ def load_scene(req: LoadRequest):
     # Recenter for float32 stability (LAS UTM, etc).
     pc, offset = _recenter(pc)
 
+    # Drop segments below a sanity threshold. Some prelabel files in the
+    # wild are essentially `np.arange(n_points)` (every point its own
+    # instance) which floods the UI with hundreds of thousands of
+    # one-point segments and tanks rendering. Anything smaller than
+    # MIN_SEGMENT_POINTS is treated as unlabeled (class=-1, instance=-1)
+    # so the user starts from a clean slate.
+    if labels is not None:
+        labels = _filter_tiny_segments(labels, MIN_SEGMENT_POINTS)
+
     sub, idx, sub_intensity, sub_labels = _safe_subsample(pc, req.max_points, intensity, labels)
+
+    # Preserve any live seg session (e.g. RANSAC presegmentation) across
+    # page reloads when the same scene is reloaded with a compatible point
+    # count. Without this guard, the user's preseg work is silently
+    # clobbered by the on-disk labels on every /api/load.
+    prev_scene = _state.get("scene")
+    prev_seg = _state.get("seg")
+    keep_prev_seg = (
+        prev_seg is not None
+        and prev_scene == src.scene_id
+        and len(prev_seg.positions) == len(pc)
+        # Switching GT↔prelabel reseats the source of truth; carrying
+        # over the prior session would silently keep the old mode.
+        and bool(prev_seg.is_from_prelabel) == bool(is_from_prelabel)
+    )
+
     _state.update(
         scene=src.scene_id,
         pc=pc,
@@ -448,7 +538,10 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
     )
     from segment_state import SegmentSession
-    if labels is not None and len(pc) <= MAX_LABEL_POINTS:
+    if keep_prev_seg:
+        # Carry over the existing session as-is.
+        _state["seg"] = prev_seg
+    elif labels is not None and len(pc) <= MAX_LABEL_POINTS:
         _state["seg"] = SegmentSession(
             class_ids=labels.class_ids,
             instance_ids=labels.instance_ids,
@@ -485,6 +578,12 @@ def load_scene(req: LoadRequest):
         else:
             summary = {}
         full_payload["segment_summary"] = summary
+        if (labels.instance_ids >= 0).any():
+            box_ids, box_centers, box_sizes = _compute_segment_boxes(
+                pc.points, labels.instance_ids)
+            full_payload["seg_ids"] = _b64(box_ids)
+            full_payload["seg_centers"] = _b64(box_centers)
+            full_payload["seg_sizes"] = _b64(box_sizes)
     seg_for_meta = _state.get("seg")
     full_payload["is_from_prelabel"] = bool(seg_for_meta.is_from_prelabel) if seg_for_meta is not None else False
 
@@ -493,6 +592,7 @@ def load_scene(req: LoadRequest):
     return LoadResponse(
         scene=src.scene_id,
         num_points=len(pc),
+        num_points_total=n_source_total if (n_source_total is not None and n_source_total > len(pc)) else None,
         num_subsampled=len(sub),
         bbox_min=bbox_min,
         bbox_max=bbox_max,
@@ -510,6 +610,71 @@ def load_scene(req: LoadRequest):
         mesh_is_z_up=is_z_up if src.has_mesh else False,
         subsample_idx=subsample_idx_b64,
         **full_payload,
+    )
+
+
+@app.post("/api/load-region", response_model=LoadRegionResponse)
+def load_region(req: LoadRegionRequest):
+    """Return points inside an AABB at *full* density (no stride).
+
+    For LAZ scenes the file is re-streamed and filtered chunk-by-chunk in the
+    loaded frame (z-up→y-up + recenter). For PLY/GLB scenes (already loaded
+    full-density into _state) we just numpy-mask. Used by the viewer to pop
+    extra detail inside a selected cuboid without re-loading the whole scene.
+    """
+    scene_id = _state.get("scene")
+    if not scene_id:
+        raise HTTPException(400, "No scene loaded")
+    src = _resolve(scene_id)
+
+    aabb_min = np.asarray(req.aabb_min, dtype=np.float32)
+    aabb_max = np.asarray(req.aabb_max, dtype=np.float32)
+    if (aabb_max <= aabb_min).any():
+        raise HTTPException(400, "aabb_max must be > aabb_min componentwise")
+
+    # Annotated scenes annotate against the 500k–1M PLY but their per-point
+    # ML labels need to land on the *original* LAZ. When the user selects a
+    # cuboid we pop full density from the source LAZ that the PLY was sampled
+    # from — so labeling is in the dense substrate, not the navigation proxy.
+    laz_path: Optional[Path] = None
+    if src.tier in ("decimated", "raw") and src.source_format == "laz":
+        laz_path = src.source_path
+    elif src.tier == "annotated":
+        slp = src.extras.get("source_laz_path")
+        if slp:
+            laz_path = Path(slp)
+
+    if laz_path is not None:
+        offset = np.asarray(_state.get("recenter_offset") or [0.0, 0.0, 0.0], dtype=np.float64)
+        positions, colors = load_laz_region(
+            laz_path, aabb_min, aabb_max,
+            is_z_up=_scene_is_z_up(src), offset=offset,
+        )
+    else:
+        pc = _state.get("pc")
+        if pc is None:
+            raise HTTPException(400, "Scene state missing")
+        m = ((pc.points >= aabb_min) & (pc.points <= aabb_max)).all(axis=1)
+        positions = pc.points[m].astype(np.float32)
+        if pc.colors is not None:
+            colors = (pc.colors[m].astype(np.float32) / 255.0).astype(np.float32)
+        else:
+            colors = None
+
+    n_in_region = int(len(positions))
+    if req.max_points is not None and n_in_region > req.max_points:
+        rng = np.random.default_rng(7)
+        idx = rng.choice(n_in_region, size=req.max_points, replace=False)
+        idx.sort()
+        positions = positions[idx]
+        if colors is not None:
+            colors = colors[idx]
+
+    return LoadRegionResponse(
+        num_points=int(len(positions)),
+        num_in_region_total=n_in_region,
+        positions=_b64(positions),
+        colors=_b64(colors) if colors is not None else None,
     )
 
 
@@ -540,7 +705,10 @@ def get_mesh(tier: str, name: str):
                         filename=f"{name}.glb")
 
 
-@app.get("/api/annotations/{scene}/{kind}", response_model=AnnotationDoc)
+# `kind` comes first so `scene:path` can greedily match tier-prefixed ids
+# like `annotated/smart_ais` (Starlette decodes `%2F` back to `/` during
+# routing, so a `{scene}/{kind}` template would split such ids).
+@app.get("/api/annotations/{kind}/{scene:path}", response_model=AnnotationDoc)
 def get_annotation(scene: str, kind: str):
     p = _annotation_path(scene, kind)
     if not p.exists():
@@ -555,7 +723,7 @@ def get_annotation(scene: str, kind: str):
     )
 
 
-@app.put("/api/annotations/{scene}/{kind}")
+@app.put("/api/annotations/{kind}/{scene:path}")
 def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest):
     p = _annotation_path(scene, kind)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -570,7 +738,7 @@ def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest):
     return {"saved": str(p), "count": len(doc.instances)}
 
 
-@app.post("/api/compare/{scene}", response_model=CompareResponse)
+@app.post("/api/compare/{scene:path}", response_model=CompareResponse)
 def compare(scene: str, req: CompareRequest | None = None):
     iou_thr = (req.iou_threshold if req else 0.3)
     gt_doc = get_annotation(scene, "gt")
@@ -624,11 +792,34 @@ def compare(scene: str, req: CompareRequest | None = None):
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
     iou_mean = float(np.mean(ious)) if ious else 0.0
 
+    # Coverage / best-IoU: for each GT, best IoU against any pred regardless
+    # of greedy 1:1 matching. Better fits the aided-labeling question of
+    # "did the model find a usable starting point for this object?"
+    best_per_gt: list[float] = []
+    for g in gt:
+        best = 0.0
+        for p in pr:
+            if p.cls != g.cls:
+                continue
+            iou = _iou_aabb(g, p)
+            if iou > best:
+                best = iou
+        best_per_gt.append(best)
+    if best_per_gt:
+        coverage_loose = sum(1 for v in best_per_gt if v >= 0.1) / len(best_per_gt)
+        coverage_strict = sum(1 for v in best_per_gt if v >= 0.3) / len(best_per_gt)
+        best_iou_mean = float(np.mean(best_per_gt))
+    else:
+        coverage_loose = coverage_strict = best_iou_mean = 0.0
+
     return CompareResponse(
         precision=round(precision, 3),
         recall=round(recall, 3),
         f1=round(f1, 3),
         iou_mean=round(iou_mean, 3),
+        coverage_loose=round(coverage_loose, 3),
+        coverage_strict=round(coverage_strict, 3),
+        best_iou_mean=round(best_iou_mean, 3),
         tp=tp, fp=fp, fn=fn,
         rows=rows, gt=gt, pred=pr,
     )
@@ -739,13 +930,29 @@ def _decode_indices_or_400(req: "ApplyRequest") -> np.ndarray:
     return np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
 
 
+def _coerce_class_id(v):
+    """Accept either int class id or string class name from the frontend.
+    The labels palette uses string ids ('pipe', 'beam', ...); the seg
+    state stores int8 class ids. Map names → ids via the configured
+    classes.yaml so both wire formats work."""
+    if v is None:
+        return None
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    name_to_id = _voxa_class_name_to_id()
+    key = str(v).lower()
+    if key not in name_to_id:
+        raise ValueError(f"unknown class name: {v!r}")
+    return name_to_id[key]
+
+
 @app.post("/api/segment/apply")
 def segment_apply(req: ApplyRequest):
     seg = _require_seg()
     try:
         if req.op == "set_class":
             idx = _decode_indices_or_400(req)
-            out = seg.apply_set_class(idx, class_id=int(req.payload["class_id"]))
+            out = seg.apply_set_class(idx, class_id=_coerce_class_id(req.payload["class_id"]))
         elif req.op == "merge":
             out = seg.apply_merge(
                 source_inst=int(req.payload["source_inst"]),
@@ -756,7 +963,7 @@ def segment_apply(req: ApplyRequest):
             out = seg.apply_reassign(
                 idx,
                 target_inst=req.payload.get("target_inst"),
-                target_class=req.payload.get("target_class"),
+                target_class=_coerce_class_id(req.payload.get("target_class")),
             )
         else:
             raise HTTPException(400, f"unknown op: {req.op}")
@@ -783,6 +990,218 @@ def segment_redo():
     return _serialize_delta(out)
 
 
+def _voxa_class_name_to_id() -> dict[str, int]:
+    """Build {class-name-lower: int-id} from the configured classes.yaml.
+
+    Mirrors the enumeration order used by ``get_config()`` so id↔name
+    stays consistent with the palette the frontend renders.
+    """
+    if not CONFIG_PATH.exists():
+        return {}
+    raw = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    return {str(name).lower(): i
+            for i, name in enumerate((raw.get("classes") or {}).keys())}
+
+
+def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> tuple:
+    """Compute per-segment bounding box as center + size (float32).
+
+    Returns (seg_ids int32[N], centers float32[N,3], sizes float32[N,3]).
+    Vectorised via argsort + reduceat: O(n log n) not O(n_seg × n_points).
+    """
+    pos = np.asarray(positions, dtype=np.float32)
+    mask = instance_ids >= 0
+    if not mask.any():
+        empty3 = np.empty((0, 3), dtype=np.float32)
+        return np.empty(0, dtype=np.int32), empty3, empty3
+    pos_v = pos[mask]
+    ids_v = instance_ids[mask]
+    order = np.argsort(ids_v, kind='stable')
+    ids_s = ids_v[order]
+    pos_s = pos_v[order]
+    unique_ids, starts = np.unique(ids_s, return_index=True)
+    mins = np.minimum.reduceat(pos_s, starts)
+    maxs = np.maximum.reduceat(pos_s, starts)
+    centers = ((mins + maxs) / 2).astype(np.float32)
+    sizes = np.maximum(maxs - mins, 0.01).astype(np.float32)
+    return unique_ids.astype(np.int32), centers, sizes
+
+
+class PresegmentRequest(BaseModel):
+    mode: Literal["voxel", "ransac", "model"] = "voxel"
+    resolution: float = 0.05      # voxel size in scene units (voxel mode only)
+    preserve_labeled: bool = True  # only re-presegment points with class_id < 0
+
+
+class PresegmentResponse(BaseModel):
+    n_assigned: int
+    n_segments: int
+    full_class_ids: str        # b64 Int8
+    full_instance_ids: str     # b64 Int32
+    is_from_prelabel: bool = True
+    seg_ids: str = ""          # b64 Int32  — segment ids in order
+    seg_centers: str = ""      # b64 Float32 (N×3) — bbox centres
+    seg_sizes: str = ""        # b64 Float32 (N×3) — bbox extents
+    # Per-segment convex hulls, packed into one merged geometry. Frontend
+    # builds a single THREE.BufferGeometry from these (3d-labeler style).
+    hull_vertices: str = ""    # b64 Float32 (V×3)
+    hull_faces: str = ""       # b64 Int32   (F×3)  — global vertex indices
+    hull_face_seg: str = ""    # b64 Int32   (F,)   — segment id per face
+
+
+@app.post("/api/segment/presegment", response_model=PresegmentResponse)
+def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
+    """Run voxel presegmentation on the active scene's full-resolution
+    points and return the new full arrays so the frontend can refresh
+    its mirror.
+
+    With ``preserve_labeled=True`` (default), only points whose
+    ``class_id < 0`` are re-presegmented; points already assigned to a
+    class keep their (class_id, instance_id) intact and the new
+    supervoxel ids are renumbered to start above the highest existing
+    instance id. With ``preserve_labeled=False`` the entire session is
+    replaced.
+
+    Bootstraps a fresh all-unlabeled session from the loaded cloud if no
+    segment session exists yet. Slow on real clouds (~10–60 s for 1 M
+    points); blocks until done. Clears undo/redo.
+    """
+    from presegment import presegment as _run_presegment
+    from segment_state import SegmentSession
+
+    seg = _state.get("seg")
+    if seg is not None:
+        positions = seg.positions
+        existing_class = seg.class_ids.copy()
+        existing_inst = seg.instance_ids.copy()
+    else:
+        pc = _state.get("pc")
+        if pc is None:
+            raise HTTPException(409, "No scene loaded — call /api/load first")
+        if len(pc) > MAX_LABEL_POINTS:
+            raise HTTPException(
+                413,
+                f"Cloud has {len(pc)} points; presegmentation is capped at "
+                f"VOXA_MAX_LABEL_POINTS={MAX_LABEL_POINTS}",
+            )
+        positions = pc.points
+        n_init = int(positions.shape[0])
+        existing_class = np.full(n_init, -1, dtype=np.int8)
+        existing_inst = np.full(n_init, -1, dtype=np.int32)
+
+    n_points = int(positions.shape[0])
+    name_to_id = _voxa_class_name_to_id()
+
+    keep_mask = (existing_class >= 0) if req.preserve_labeled else np.zeros(n_points, dtype=bool)
+    redo_mask = ~keep_mask
+
+    if redo_mask.any():
+        sub_positions = np.asarray(positions[redo_mask], dtype=np.float64)
+        sub_inst, sub_summary = _run_presegment(
+            sub_positions,
+            mode=req.mode,
+            class_map=name_to_id,
+            log=lambda *_: None,
+            resolution=float(req.resolution),
+        )
+    else:
+        sub_inst = np.empty(0, dtype=np.int32)
+        sub_summary = []
+
+    # Renumber new instance ids to live above the existing ones so we
+    # never collide with kept-labeled points.
+    id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
+    if id_offset and sub_inst.size:
+        sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
+
+    instance_ids = existing_inst.copy()
+    instance_ids[redo_mask] = sub_inst
+
+    class_ids = existing_class.copy()
+    # New supervoxels stay at class_id = -1 unless the summary mapped them.
+    class_ids[redo_mask] = -1
+    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
+    for sid, cid in seg_to_class.items():
+        if cid >= 0:
+            class_ids[instance_ids == sid] = cid
+
+    _state["seg"] = SegmentSession(
+        class_ids=class_ids,
+        instance_ids=instance_ids.astype(np.int32),
+        positions=positions,
+        is_from_prelabel=True,
+    )
+    _state["seg"].dirty = True
+
+    labeled_mask = instance_ids >= 0
+    box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(positions), instance_ids)
+    from segment_hulls import compute_hulls as _compute_hulls
+    hull_v, hull_f, hull_seg = _compute_hulls(
+        np.asarray(positions),
+        instance_ids.astype(np.int32),
+        resolution=float(req.resolution),
+    )
+    return PresegmentResponse(
+        n_assigned=int(labeled_mask.sum()),
+        n_segments=int(np.unique(instance_ids[labeled_mask]).size) if labeled_mask.any() else 0,
+        full_class_ids=_b64(class_ids.astype(np.int8)),
+        full_instance_ids=_b64(instance_ids.astype(np.int32)),
+        is_from_prelabel=True,
+        seg_ids=_b64(box_ids),
+        seg_centers=_b64(box_centers),
+        seg_sizes=_b64(box_sizes),
+        hull_vertices=_b64(hull_v),
+        hull_faces=_b64(hull_f),
+        hull_face_seg=_b64(hull_seg),
+    )
+
+
+class SegmentStateResponse(BaseModel):
+    """Snapshot of the in-memory segment session, returned to the frontend
+    on page reload so the user doesn't have to re-run preseg every time
+    they refresh the tab. Hulls are recomputed on demand (cheap relative
+    to the original RANSAC run)."""
+    has_state: bool
+    n_assigned: int = 0
+    n_segments: int = 0
+    full_class_ids: str = ""
+    full_instance_ids: str = ""
+    seg_ids: str = ""
+    seg_centers: str = ""
+    seg_sizes: str = ""
+    hull_vertices: str = ""
+    hull_faces: str = ""
+    hull_face_seg: str = ""
+
+
+@app.get("/api/segment/state", response_model=SegmentStateResponse)
+def segment_state():
+    """Return the active segment session if there is one (no-op otherwise).
+    Used by the frontend to hydrate ``segState`` after a page reload."""
+    seg = _state.get("seg")
+    if seg is None:
+        return SegmentStateResponse(has_state=False)
+    instance_ids = seg.instance_ids.astype(np.int32, copy=False)
+    class_ids = seg.class_ids.astype(np.int8, copy=False)
+    labeled = instance_ids >= 0
+    box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(seg.positions), instance_ids)
+    from segment_hulls import compute_hulls as _compute_hulls
+    hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
+    return SegmentStateResponse(
+        has_state=True,
+        n_assigned=int(labeled.sum()),
+        n_segments=int(np.unique(instance_ids[labeled]).size) if labeled.any() else 0,
+        full_class_ids=_b64(class_ids),
+        full_instance_ids=_b64(instance_ids),
+        seg_ids=_b64(box_ids),
+        seg_centers=_b64(box_centers),
+        seg_sizes=_b64(box_sizes),
+        hull_vertices=_b64(hull_v),
+        hull_faces=_b64(hull_f),
+        hull_face_seg=_b64(hull_seg),
+    )
+
+
 @app.put("/api/segment/save")
 def segment_save():
     seg = _require_seg()
@@ -794,6 +1213,15 @@ def segment_save():
         os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
         not in ("1", "true", "yes", "on")
     )
+    # Drop unclassified preseg points (inst≥0, class=-1) so a save during
+    # partial labeling succeeds: invariant 3 requires class==-1 ⟺ inst==-1,
+    # and the preseg suggestion isn't authoritative until the user picks a
+    # class for it. Mutating in place keeps in-memory state consistent with
+    # what's about to land on disk.
+    unclassified = (seg.instance_ids >= 0) & (seg.class_ids == -1)
+    n_dropped = int(unclassified.sum())
+    if n_dropped:
+        seg.instance_ids[unclassified] = np.int32(-1)
     try:
         from segment_io import save_labels
         save_labels(
@@ -813,6 +1241,7 @@ def segment_save():
         "ok": True,
         "n_labeled_points": n_labeled_points,
         "n_segments": n_segments,
+        "n_dropped_preseg": n_dropped,
     }
 
 

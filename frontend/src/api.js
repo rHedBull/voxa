@@ -4,6 +4,7 @@ export function decodeLoadResponse(j) {
   return {
     scene: j.scene,
     numPoints: j.num_points,
+    numPointsTotal: j.num_points_total ?? null,
     numSubsampled: j.num_subsampled,
     bbox: { min: j.bbox_min, max: j.bbox_max },
     positions: b64ToFloat32(j.positions),
@@ -25,6 +26,9 @@ export function decodeLoadResponse(j) {
     isFromPrelabel: !!j.is_from_prelabel,
     segmentSummary: j.segment_summary || null,
     subsampleIdx: j.subsample_idx ? b64ToInt32(j.subsample_idx) : null,
+    segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
+    segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
+    segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
   };
 }
 
@@ -41,11 +45,12 @@ export const VoxaAPI = {
     const r = await fetch('/api/scenes');
     return r.json();
   },
-  async load(name, { maxPoints = null, wantFullLabels = false } = {}) {
+  async load(name, { maxPoints = null, wantFullLabels = false, preferPrelabel = false } = {}) {
     const body = {
       name,
       ...(maxPoints != null ? { max_points: maxPoints } : {}),
       ...(wantFullLabels ? { want_full_labels: true } : {}),
+      ...(preferPrelabel ? { prefer_prelabel: true } : {}),
     };
     const r = await fetch('/api/load', {
       method: 'POST',
@@ -55,14 +60,36 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`load failed: ${r.status} ${await r.text()}`);
     return decodeLoadResponse(await r.json());
   },
+  async loadRegion(aabbMin, aabbMax, { maxPoints = null } = {}) {
+    const body = {
+      aabb_min: aabbMin,
+      aabb_max: aabbMax,
+      ...(maxPoints != null ? { max_points: maxPoints } : {}),
+    };
+    const r = await fetch('/api/load-region', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`loadRegion failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return {
+      numPoints: j.num_points,
+      numInRegionTotal: j.num_in_region_total,
+      positions: b64ToFloat32(j.positions),
+      colors: j.colors ? b64ToFloat32(j.colors) : null,
+    };
+  },
   async getAnnotation(scene, kind) {
-    const r = await fetch(`/api/annotations/${encodeURIComponent(scene)}/${kind}`);
+    // Tier-prefixed ids contain `/` which Starlette decodes during routing,
+    // so the route puts `kind` first and matches `scene` greedily as a path.
+    const r = await fetch(`/api/annotations/${kind}/${scene}`);
     if (!r.ok) return { scene, kind, instances: [], meta: {} };
     return r.json();
   },
   async putAnnotation(scene, kind, doc) {
     const body = { scene, kind, instances: doc.instances || [], meta: doc.meta || {} };
-    const r = await fetch(`/api/annotations/${encodeURIComponent(scene)}/${kind}`, {
+    const r = await fetch(`/api/annotations/${kind}/${scene}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -126,9 +153,49 @@ export const VoxaAPI = {
     return _decodeApplyResponse(await r.json());
   },
   async segSave() {
-    const r = await fetch('/api/segment/save', { method: 'POST' });
+    const r = await fetch('/api/segment/save', { method: 'PUT' });
     if (!r.ok) throw new Error(`segSave failed: ${r.status} ${await r.text()}`);
     return r.json();
+  },
+  async segState() {
+    const r = await fetch('/api/segment/state');
+    if (!r.ok) throw new Error(`segState failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    if (!j.has_state) return null;
+    return {
+      nAssigned: j.n_assigned,
+      nSegments: j.n_segments,
+      fullClassIds: b64ToInt8(j.full_class_ids),
+      fullInstanceIds: b64ToInt32(j.full_instance_ids),
+      segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
+      segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
+      segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
+      hullVertices: j.hull_vertices ? b64ToFloat32(j.hull_vertices) : null,
+      hullFaces: j.hull_faces ? b64ToInt32(j.hull_faces) : null,
+      hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
+    };
+  },
+  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true } = {}) {
+    const r = await fetch('/api/segment/presegment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, resolution, preserve_labeled: preserveLabeled }),
+    });
+    if (!r.ok) throw new Error(`segPresegment failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return {
+      nAssigned: j.n_assigned,
+      nSegments: j.n_segments,
+      fullClassIds: b64ToInt8(j.full_class_ids),
+      fullInstanceIds: b64ToInt32(j.full_instance_ids),
+      isFromPrelabel: !!j.is_from_prelabel,
+      segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
+      segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
+      segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
+      hullVertices: j.hull_vertices ? b64ToFloat32(j.hull_vertices) : null,
+      hullFaces: j.hull_faces ? b64ToInt32(j.hull_faces) : null,
+      hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
+    };
   },
 };
 

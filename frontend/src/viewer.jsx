@@ -13,6 +13,7 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 // Converts a pointer event + bounding rect to normalized device coords [-1,1].
 // Exported for unit testing.
@@ -21,6 +22,15 @@ export function evtToNdc(evt, rect) {
     x:  ((evt.clientX - rect.left) / rect.width)  * 2 - 1,
     y: -((evt.clientY - rect.top)  / rect.height) * 2 + 1,
   };
+}
+
+// Inline HSL→RGB without THREE.Color allocation — used in the hot box-overlay loop.
+function _hue2rgb(p, q, t) {
+  if (t < 0) t += 1; if (t > 1) t -= 1;
+  if (t < 1/6) return p + (q - p) * 6 * t;
+  if (t < 1/2) return q;
+  if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+  return p;
 }
 
 // Resolve a class palette (list of {id, color, label}) into a dense RGB lookup
@@ -54,6 +64,7 @@ function attachOrbit(camera, dom, target, onChange) {
     spherical: { r: 0, phi: 0, theta: 0 },
     target: target.clone(),
     silent: false,   // when true, apply() skips the onChange callback
+    enabled: true,   // when false, ignore mouse + wheel (gizmo is dragging)
   };
   const off = camera.position.clone().sub(target);
   state.spherical.r = off.length();
@@ -70,9 +81,10 @@ function attachOrbit(camera, dom, target, onChange) {
     camera.lookAt(state.target);
     if (!state.silent) onChange && onChange(state);
   };
-  apply();
+  state.silent = true; apply(); state.silent = false;
 
   const onDown = (e) => {
+    if (!state.enabled) return;
     state.dragging = true;
     state.mode = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';
     state.lx = e.clientX; state.ly = e.clientY;
@@ -98,6 +110,7 @@ function attachOrbit(camera, dom, target, onChange) {
   };
   const onUp = () => { state.dragging = false; state.mode = null; };
   const onWheel = (e) => {
+    if (!state.enabled) return;
     e.preventDefault();
     state.spherical.r = Math.max(0.1, Math.min(2000,
       state.spherical.r * (1 + Math.sign(e.deltaY) * 0.08)));
@@ -114,16 +127,31 @@ function attachOrbit(camera, dom, target, onChange) {
   return {
     setFromState(s) {
       // Programmatic update — silence the onChange so synced viewports don't
-      // ping-pong each other into a stack overflow.
+      // ping-pong each other into a stack overflow. Shape-check guards against
+      // cross-mode sync (walk-state arriving here during a navMode flip) and
+      // malformed cross-window payloads (e.g. Vector3 lost across structured
+      // clone) — applying NaN coords would warp the camera off the cloud.
+      if (!s || !s.spherical || !s.target) return;
+      const sp = s.spherical;
+      if (!Number.isFinite(sp.r) || !Number.isFinite(sp.phi) || !Number.isFinite(sp.theta)) return;
+      const t = s.target;
+      if (!Number.isFinite(t.x) || !Number.isFinite(t.y) || !Number.isFinite(t.z)) return;
       state.silent = true;
-      state.spherical = { ...s.spherical };
-      state.target.copy(s.target);
+      state.spherical = { r: sp.r, phi: sp.phi, theta: sp.theta };
+      state.target.set(t.x, t.y, t.z);
       apply();
       state.silent = false;
     },
     getState() { return { spherical: { ...state.spherical }, target: state.target.clone() }; },
+    setEnabled(on) {
+      state.enabled = !!on;
+      if (!on) { state.dragging = false; state.mode = null; }
+    },
     frame(center, radius) {
-      state.target.copy(center);
+      // Accept either a [x,y,z] tuple or a Vector3-shaped object — the
+      // mesh companion frames the bbox via an array literal.
+      if (Array.isArray(center)) state.target.set(center[0], center[1], center[2]);
+      else if (center) state.target.copy(center);
       state.spherical.r = Math.max(0.4, radius * 2.4);
       apply();
     },
@@ -157,6 +185,7 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
     keys: { w: false, a: false, s: false, d: false, q: false, e: false, shift: false },
     dragging: false, lx: 0, ly: 0,
     silent: false,
+    enabled: true,
   };
   // Seed yaw/pitch from the camera's current look direction so toggling
   // doesn't snap the view.
@@ -175,11 +204,12 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
     );
     if (!state.silent) onChange && onChange(state);
   };
-  apply();
+  state.silent = true; apply(); state.silent = false;
 
   // Drag with any mouse button (left, middle, right) rotates look. Right
   // button needs the contextmenu listener to keep the OS menu from popping.
   const onDown = (e) => {
+    if (!state.enabled) return;
     state.dragging = true;
     state.lx = e.clientX; state.ly = e.clientY;
     e.preventDefault();
@@ -197,6 +227,7 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
   const onUp = () => { state.dragging = false; };
   const onCtx = (e) => e.preventDefault();
   const onWheel = (e) => {
+    if (!state.enabled) return;
     e.preventDefault();
     // Scroll in walk mode steps you forward/back in the horizontal plane.
     const fwd = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
@@ -257,14 +288,29 @@ function attachWalk(camera, dom, sceneRadius, onChange) {
 
   return {
     setFromState(s) {
+      // Shape-check guards against cross-mode sync (orbit-state arriving here
+      // during a navMode flip) and malformed cross-window payloads.
+      if (!s || !s.position || s.yaw == null || s.pitch == null) return;
+      const p = s.position;
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return;
+      if (!Number.isFinite(s.yaw) || !Number.isFinite(s.pitch)) return;
       state.silent = true;
-      camera.position.copy(s.position);
+      camera.position.set(p.x, p.y, p.z);
       state.yaw = s.yaw; state.pitch = s.pitch;
       apply();
       state.silent = false;
     },
     getState() {
       return { position: camera.position.clone(), yaw: state.yaw, pitch: state.pitch };
+    },
+    setEnabled(on) {
+      state.enabled = !!on;
+      if (!on) {
+        state.dragging = false;
+        // Release any held movement keys so the camera doesn't keep drifting
+        // while the gizmo has the input.
+        Object.keys(state.keys).forEach((k) => { state.keys[k] = false; });
+      }
     },
     frame() { /* no-op in walk mode — user navigates manually */ },
     preset() { /* no-op in walk mode — orbit presets don't apply */ },
@@ -299,6 +345,7 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     colorMode = 'rgb',          // 'rgb' | 'height' | 'intensity' | 'class' | 'instance' | 'flat'
     navMode = 'orbit',          // 'orbit' | 'walk'
     meshUrl = null,             // GLB streaming URL
+    meshOffset = null,          // [x,y,z] in pre-rotation world units; subtracted from mesh group position so a recentered cloud and the original-frame mesh overlay. Auto-derived from cloud.recenterOffset on the main viewer; the mesh-companion window passes it explicitly because it has no cloud.
     meshIsZUp = false,          // rotate GLB by -π/2 around X when its source frame is Z-up
     showMesh = false,           // when false, mesh stays unloaded (saves a 100MB+ fetch)
     meshBrightness = 1.0,       // multiplier on every loaded mesh material's color (0..2)
@@ -306,6 +353,18 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     onCameraChange = null,
     diffMask = null,            // Uint8Array, length = num full-res points; 1 = changed vs prelabel
     showDiff = false,           // when true, tint diff points red using diffMask
+    transformMode = null,       // 'translate' | 'rotate' | 'scale' | null — gizmo for selected cuboid
+    onCuboidTransform = null,   // (id, { center, size, rotation }) => void; called on gizmo drag
+    highlightCuboid = null,     // { center, size, rotation, color } — points inside this oriented box are tinted
+    confirmedCuboids = null,    // [{ center, size, rotation }] — confirmed cuboids; always present (drives stats)
+    confirmedPointsetHideMask = null, // Uint8Array sub-cloud length: 1 = belongs to a confirmed pointset; NaN'd alongside confirmed-cuboid points
+    hideConfirmedPoints = true, // when true, points inside any confirmedCuboid are NaN'd in the position buffer
+    onLabelStats = null,        // ({ total, labeled, left }) => void — reported after each confirmed-set change
+    denseOverlay = null,        // { positions: Float32Array, colors: Float32Array | null } — full-density points to show inside the selected cuboid; takes precedence over the base cloud where they overlap
+    segBoxes = null,            // { segIds, segCenters, segSizes, selection } — fallback bbox overlay per presegment
+    segHulls = null,            // { vertices, faces, faceSeg, selection } — merged convex-hull overlay per presegment
+    showSegHulls = true,        // hide the hull mesh when false; points still get segment-coloured
+    selectionMask = null,       // Uint8Array sub-cloud length: 1 = belongs to selected instance; non-1 points are dimmed
   } = props;
 
   const mountRef = useRef(null);
@@ -314,6 +373,20 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
   // closure without recreating the controller every render.
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
+  // Same trick for the gizmo: TransformControls listeners are wired once at
+  // mount, but the callback identity changes per render.
+  const onCuboidTransformRef = useRef(onCuboidTransform);
+  onCuboidTransformRef.current = onCuboidTransform;
+  // Latest onLabelStats; read inside the hide-effect without forcing a re-run
+  // when only the callback identity changes.
+  const onLabelStatsRef = useRef(onLabelStats);
+  onLabelStatsRef.current = onLabelStats;
+  // ID of the cuboid the gizmo is currently attached to. Read inside the
+  // gizmo's objectChange listener so we know which instance to patch.
+  const gizmoTargetIdRef = useRef(null);
+  // Set true while the user is dragging the gizmo. Used to suppress the
+  // anchor-sync effect (which would otherwise overwrite the in-progress drag).
+  const gizmoDraggingRef = useRef(false);
 
   // ── Mount once ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -322,6 +395,19 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
+    // Survive context loss when a sibling tab/popup opens its own WebGL
+    // context (Brave under snap/AppArmor evicts older contexts aggressively).
+    // preventDefault on `lost` is required for the browser to fire `restored`
+    // afterwards; the continuous rAF loop redraws automatically once the
+    // GPU resources are re-uploaded by Three.js's internal handlers.
+    const onCtxLost = (e) => { e.preventDefault(); };
+    const onCtxRestored = () => {
+      try { renderer.setSize(renderer.domElement.clientWidth,
+                             renderer.domElement.clientHeight, false); }
+      catch { /* renderer disposed mid-restore */ }
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onCtxLost, false);
+    renderer.domElement.addEventListener('webglcontextrestored', onCtxRestored, false);
     // Linear tone mapping lets per-material color > 1 actually brighten
     // pixels instead of clamping. Used by the mesh-brightness slider.
     renderer.toneMapping = THREE.LinearToneMapping;
@@ -366,6 +452,134 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const cuboidGroup = new THREE.Group();
     scene.add(cuboidGroup);
 
+    // Highlight overlay: a second Points object that re-renders only the
+    // points falling inside the selected cuboid, in yellow and at a larger
+    // size. Position buffer is sized to the active cloud (capped) and the
+    // draw range shrinks to the actual count each update.
+    const highlightGeom = new THREE.BufferGeometry();
+    const highlightMat = new THREE.PointsMaterial({
+      size: pointSize * 2.4,
+      color: 0xfacc15, // tailwind yellow-400
+      sizeAttenuation: true,
+      transparent: false,
+      depthWrite: true,
+    });
+    const highlightPoints = new THREE.Points(highlightGeom, highlightMat);
+    highlightPoints.frustumCulled = false;
+    highlightPoints.visible = false;
+    scene.add(highlightPoints);
+
+    // Selected-segment overlay. Same yellow + 2.4× size as cuboid highlight,
+    // but driven independently by setSelectedSegmentMask() — populated when
+    // the user clicks rows in the Presegment list or picks segments in 3D.
+    const segSelectionGeom = new THREE.BufferGeometry();
+    const segSelectionMat = new THREE.PointsMaterial({
+      size: pointSize * 2.4,
+      color: 0xfacc15,
+      sizeAttenuation: true,
+      transparent: false,
+      depthWrite: true,
+    });
+    const segSelectionPoints = new THREE.Points(segSelectionGeom, segSelectionMat);
+    segSelectionPoints.frustumCulled = false;
+    segSelectionPoints.visible = false;
+    scene.add(segSelectionPoints);
+
+    // Dense overlay: full-density points fetched for the AABB of the selected
+    // cuboid. Drawn on top of the base cloud so small geometry (pipes, valves)
+    // is legible even when the base is strided to ~1M for performance. Uses
+    // vertex colors from the LAZ source; a slight size bump distinguishes it
+    // visually without being garish.
+    const denseGeom = new THREE.BufferGeometry();
+    const denseMat = new THREE.PointsMaterial({
+      size: pointSize * 1.1,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: false,
+    });
+    const densePoints = new THREE.Points(denseGeom, denseMat);
+    densePoints.frustumCulled = false;
+    densePoints.visible = false;
+    scene.add(densePoints);
+
+    // Instanced box overlay — one box per presegment, sized to its bounding box.
+    // InstancedMesh is allocated to MAX_SEGS capacity; actual count is set via .count.
+    const MAX_SEGS = 100000;
+    const boxGeom = new THREE.BoxGeometry(1, 1, 1);
+    const boxMat = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const boxMesh = new THREE.InstancedMesh(boxGeom, boxMat, MAX_SEGS);
+    boxMesh.count = 0;
+    boxMesh.frustumCulled = false;
+    boxMesh.visible = false;
+    // Pre-allocate instanceColor so the box-overlay loop can write directly
+    // to the underlying Float32Array without per-iteration setColorAt overhead.
+    boxMesh.instanceColor = new THREE.InstancedBufferAttribute(
+      new Float32Array(MAX_SEGS * 3), 3);
+    scene.add(boxMesh);
+
+    // Merged hull overlay — single BufferGeometry built from all segment
+    // convex hulls (3d-labeler style). Replaces boxMesh visually when the
+    // backend ships hull data; boxMesh stays as the click-pick fallback.
+    const hullGeom = new THREE.BufferGeometry();
+    const hullMat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.25,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const hullMesh = new THREE.Mesh(hullGeom, hullMat);
+    hullMesh.frustumCulled = false;
+    hullMesh.visible = false;
+    scene.add(hullMesh);
+
+    // Gizmo anchor. Persistent Object3D the TransformControls is attached to —
+    // we sync its position/rotation/scale from the selected instance, and
+    // read them back on each gizmo drag tick. Decoupling the gizmo from the
+    // edge-line meshes (which get rebuilt every instances change) keeps the
+    // gizmo stable across re-renders.
+    const transformAnchor = new THREE.Object3D();
+    scene.add(transformAnchor);
+
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setSpace('local');
+    transformControls.setTranslationSnap(null);
+    transformControls.setRotationSnap(null);
+    transformControls.setScaleSnap(null);
+    transformControls.visible = false;
+    transformControls.enabled = false;
+    scene.add(transformControls);
+
+    // While the gizmo is being dragged, suspend orbit/walk pointer handling
+    // so camera and gizmo don't fight for the same drag.
+    transformControls.addEventListener('dragging-changed', (e) => {
+      gizmoDraggingRef.current = !!e.value;
+      const ctrl = stateRef.current?.controller;
+      if (ctrl?.setEnabled) ctrl.setEnabled(!e.value);
+    });
+
+    // Read transform off the anchor on every change tick and patch the
+    // selected instance. Scale is the size (anchor.scale === inst.size since
+    // we drive scale directly from inst.size on attach).
+    transformControls.addEventListener('objectChange', () => {
+      const id = gizmoTargetIdRef.current;
+      const cb = onCuboidTransformRef.current;
+      if (!id || !cb) return;
+      const c = transformAnchor.position;
+      const r = transformAnchor.rotation;
+      const sc = transformAnchor.scale;
+      cb(id, {
+        center: [c.x, c.y, c.z],
+        rotation: [r.x, r.y, r.z],
+        size: [Math.max(0.005, sc.x), Math.max(0.005, sc.y), Math.max(0.005, sc.z)],
+      });
+    });
+
     // Mesh container. The optional Z-up → Y-up rotation is applied when the
     // backend reports the mesh source is Z-up; the group also carries the
     // recenter offset so mesh and cloud overlay correctly.
@@ -406,14 +620,50 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     // Pointer-pick subscriber list: { cb } entries added by onPointerPick/onPointerMove.
     const pickSubs = [];
     const moveSubs = [];
+    // Hull-pick subscriber list: cb(segId, evt) — fires when a hull face is clicked.
+    const hullPickSubs = [];
 
     const raycaster = new THREE.Raycaster();
 
     const onPointerDown = (e) => {
-      if (pickSubs.length === 0) return;
+      // Left button only — right/middle drags drive the camera and must
+      // not trigger pick/select callbacks (otherwise orbiting silently
+      // toggles whatever segment was under the cursor).
+      if (e.button !== 0) return;
       const rect = renderer.domElement.getBoundingClientRect();
       const ndc = evtToNdc(e, rect);
       raycaster.setFromCamera(ndc, camera);
+
+      // Hull hit check (fires hullPickSubs when a segment hull face is clicked).
+      const hm = stateRef.current?.hullMesh;
+      if (hm?.visible && hullPickSubs.length > 0) {
+        const hullHits = raycaster.intersectObject(hm);
+        if (hullHits.length > 0) {
+          const faceIdx = hullHits[0].faceIndex;
+          const faceSeg = stateRef.current.hullFaceSeg;
+          if (faceIdx !== undefined && faceSeg) {
+            const segId = faceSeg[faceIdx];
+            hullPickSubs.forEach(({ cb }) => cb(segId, e));
+            return;
+          }
+        }
+      }
+      // Box hit check (fallback when hulls aren't available).
+      const bm = stateRef.current?.boxMesh;
+      if (bm?.visible && hullPickSubs.length > 0) {
+        const boxHits = raycaster.intersectObject(bm);
+        if (boxHits.length > 0) {
+          const instIdx = boxHits[0].instanceId;
+          const segIds = stateRef.current.boxSegIds;
+          if (instIdx !== undefined && segIds) {
+            const segId = segIds[instIdx];
+            hullPickSubs.forEach(({ cb }) => cb(segId, e));
+            return;
+          }
+        }
+      }
+
+      if (pickSubs.length === 0) return;
       const m = stateRef.current?.points;
       if (!m) return;
       raycaster.params.Points = { threshold: (m.material.size || 0.012) * 2.0 };
@@ -450,17 +700,38 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       controller: null,
       cuboidGroup, meshGroup, meshUrlLoaded: null, meshLoadAbort: null,
       floor, grid, axes, mount,
-      pickSubs, moveSubs,
+      pickSubs, moveSubs, hullPickSubs,
+      transformAnchor, transformControls,
+      highlightGeom, highlightMat, highlightPoints,
+      segSelectionGeom, segSelectionMat, segSelectionPoints,
+      denseGeom, denseMat, densePoints,
+      boxGeom, boxMat, boxMesh, boxSegIds: null,
+      hullGeom, hullMat, hullMesh, hullFaceSeg: null,
     };
 
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
       stateRef.current.controller?.dispose();
+      transformControls.detach();
+      transformControls.dispose();
+      scene.remove(transformControls);
+      scene.remove(transformAnchor);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      renderer.domElement.removeEventListener('webglcontextlost', onCtxLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', onCtxRestored);
       pointsGeom.dispose();
       pointsMat.dispose();
+      highlightGeom.dispose();
+      highlightMat.dispose();
+      segSelectionGeom.dispose();
+      segSelectionMat.dispose();
+      boxGeom.dispose();
+      boxMat.dispose();
+      hullGeom.dispose();
+      hullMat.dispose();
+      renderer.forceContextLoss();
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
@@ -494,6 +765,29 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       new THREE.BufferAttribute(cloud.colors.slice(), 3));
     s.pointsGeom.computeBoundingSphere();
     s.points.userData.subsampleIdx = cloud.subsampleIdx ?? null;
+
+    // Pre-size the highlight overlay buffer to match the rendered cloud.
+    // Each update only fills the leading subset and uses setDrawRange.
+    if (s.highlightGeom) {
+      const N = cloud.positions.length / 3;
+      const buf = new Float32Array(N * 3);
+      const attr = new THREE.BufferAttribute(buf, 3);
+      attr.setUsage(THREE.DynamicDrawUsage);
+      s.highlightGeom.setAttribute('position', attr);
+      s.highlightGeom.setDrawRange(0, 0);
+      s.highlightPoints.visible = false;
+    }
+
+    // Same for the segment-selection overlay (independent of cuboid highlight).
+    if (s.segSelectionGeom) {
+      const N = cloud.positions.length / 3;
+      const buf = new Float32Array(N * 3);
+      const attr = new THREE.BufferAttribute(buf, 3);
+      attr.setUsage(THREE.DynamicDrawUsage);
+      s.segSelectionGeom.setAttribute('position', attr);
+      s.segSelectionGeom.setDrawRange(0, 0);
+      s.segSelectionPoints.visible = false;
+    }
 
     // Apply the recenter offset to the mesh group so a co-located mesh
     // overlays the cloud. The group's rotation already brings GLB Z-up
@@ -557,12 +851,88 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     const s = stateRef.current;
     if (!s.pointsMat) return;
     s.pointsMat.size = pointSize;
+    if (s.highlightMat) s.highlightMat.size = pointSize * 2.4;
     s.scene.background = new THREE.Color(background);
     s.floor.material.color = new THREE.Color(floorColor);
     s.floor.visible = showFloor;
     s.grid.visible = showFloor;
     s.axes.visible = showAxes;
   }, [pointSize, background, floorColor, showFloor, showAxes]);
+
+  // ── Confirmed-cuboid mask + hide ────────────────────────────────────────
+  // Build a per-point mask of points inside ANY confirmed cuboid (unique
+  // count regardless of overlap). When `hideConfirmedPoints` is true, NaN
+  // those positions so they vanish from rendering AND raycasting. Always
+  // emit { total, labeled, left } via onLabelStats so the HUD can show the
+  // unlabeled count even when hide is toggled off.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.pointsGeom || !cloud) return;
+    const posAttr = s.pointsGeom.getAttribute('position');
+    if (!posAttr) return;
+    const out = posAttr.array;
+    out.set(cloud.positions);
+    const N = out.length;
+    const numPts = N / 3;
+
+    let labeled = 0;
+    const hasCuboids = confirmedCuboids && confirmedCuboids.length > 0;
+    const hasPointsetMask = confirmedPointsetHideMask
+      && confirmedPointsetHideMask.length === numPts;
+    if (hasCuboids || hasPointsetMask) {
+      const mask = new Uint8Array(numPts);
+      if (hasPointsetMask) {
+        for (let i = 0; i < numPts; i++) if (confirmedPointsetHideMask[i]) mask[i] = 1;
+      }
+      for (const cub of (confirmedCuboids || [])) {
+        const cx = cub.center[0], cy = cub.center[1], cz = cub.center[2];
+        const hx = cub.size[0] / 2, hy = cub.size[1] / 2, hz = cub.size[2] / 2;
+        const rx = cub.rotation?.[0] || 0;
+        const ry = cub.rotation?.[1] || 0;
+        const rz = cub.rotation?.[2] || 0;
+        const isAA = rx === 0 && ry === 0 && rz === 0;
+        if (isAA) {
+          for (let p = 0, i = 0; p < N; p += 3, i++) {
+            if (mask[i]) continue;
+            const dx = out[p] - cx, dy = out[p + 1] - cy, dz = out[p + 2] - cz;
+            if (dx > -hx && dx < hx && dy > -hy && dy < hy && dz > -hz && dz < hz) {
+              mask[i] = 1;
+            }
+          }
+        } else {
+          const mtx = new THREE.Matrix4().makeRotationFromEuler(
+            new THREE.Euler(rx, ry, rz, 'XYZ')
+          ).invert();
+          const e = mtx.elements;
+          const e0 = e[0], e1 = e[1], e2 = e[2];
+          const e4 = e[4], e5 = e[5], e6 = e[6];
+          const e8 = e[8], e9 = e[9], e10 = e[10];
+          for (let p = 0, i = 0; p < N; p += 3, i++) {
+            if (mask[i]) continue;
+            const dx = out[p] - cx, dy = out[p + 1] - cy, dz = out[p + 2] - cz;
+            const lx = e0 * dx + e4 * dy + e8 * dz;
+            const ly = e1 * dx + e5 * dy + e9 * dz;
+            const lz = e2 * dx + e6 * dy + e10 * dz;
+            if (lx > -hx && lx < hx && ly > -hy && ly < hy && lz > -hz && lz < hz) {
+              mask[i] = 1;
+            }
+          }
+        }
+      }
+      if (hideConfirmedPoints) {
+        for (let p = 0, i = 0; p < N; p += 3, i++) {
+          if (mask[i]) {
+            labeled++;
+            out[p] = NaN; out[p + 1] = NaN; out[p + 2] = NaN;
+          }
+        }
+      } else {
+        for (let i = 0; i < numPts; i++) if (mask[i]) labeled++;
+      }
+    }
+    posAttr.needsUpdate = true;
+    onLabelStatsRef.current?.({ total: numPts, labeled, left: numPts - labeled });
+  }, [confirmedCuboids, confirmedPointsetHideMask, hideConfirmedPoints, cloud]);
 
   // ── Per-point color recompute ───────────────────────────────────────────
   useEffect(() => {
@@ -573,7 +943,33 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     if (!colorAttr || !cloud) return;
     const orig = cloud.colors;
 
-    if (colorMode === 'height' && cloud.bbox) {
+    // While a presegmentation is active, points get the same segment-id hue
+    // the hull mesh uses, regardless of the global ``colorMode`` setting.
+    // The user is grouping points, not labelling them, so class/RGB modes
+    // would just hide the grouping. Same _hue2rgb math as the hull effect
+    // so points and hulls are exact colour matches.
+    const segActive = !!(segHulls && segHulls.faces && segHulls.faces.length && cloud.instanceIds);
+    if (segActive) {
+      const ids = cloud.instanceIds;
+      const sel = segHulls.selection;
+      const G = 0.6180339887;
+      const arr = colorAttr.array;
+      for (let i = 0, p = 0; i < arr.length; i += 3, p++) {
+        const iid = ids[p];
+        if (iid < 0) {
+          arr[i] = 0.42; arr[i + 1] = 0.44; arr[i + 2] = 0.48;
+          continue;
+        }
+        const hue = ((iid * G) % 1 + 1) % 1;
+        const isSel = sel && sel.has(iid);
+        const l = isSel ? 0.82 : 0.52;
+        const pp = l <= 0.5 ? l * 1.7 : l + 0.7 - l * 0.7;
+        const q = 2 * l - pp;
+        arr[i]     = _hue2rgb(q, pp, hue + 1 / 3);
+        arr[i + 1] = _hue2rgb(q, pp, hue);
+        arr[i + 2] = _hue2rgb(q, pp, hue - 1 / 3);
+      }
+    } else if (colorMode === 'height' && cloud.bbox) {
       // Per-point gradient by Y, normalized to the cloud's own Y range.
       const yMin = cloud.bbox.min[1];
       const yMax = cloud.bbox.max[1];
@@ -672,8 +1068,222 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       }
     }
 
+    if (selectionMask && selectionMask.length * 3 === colorAttr.array.length) {
+      const arr = colorAttr.array;
+      for (let p = 0; p < selectionMask.length; p++) {
+        if (selectionMask[p]) continue;
+        const i = p * 3;
+        arr[i]     = 0.22;
+        arr[i + 1] = 0.23;
+        arr[i + 2] = 0.26;
+      }
+    }
+
     colorAttr.needsUpdate = true;
-  }, [colorMode, cloud, showDiff, diffMask]);
+  }, [colorMode, cloud, showDiff, diffMask, segHulls, selectionMask]);
+
+  // ── Selected-cuboid highlight overlay ───────────────────────────────────
+  // Re-populates a separate Points buffer with the cloud points that fall
+  // inside the selected cuboid (oriented AABB). Runs on every gizmo drag
+  // since highlightCuboid is a fresh object whenever any of its fields
+  // change. Inside-test is the same math as the IoU but in JS.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.highlightGeom || !s.highlightPoints) return;
+    const hAttr = s.highlightGeom.getAttribute('position');
+    if (!hAttr) {
+      s.highlightPoints.visible = false;
+      return;
+    }
+    if (!highlightCuboid) {
+      s.highlightGeom.setDrawRange(0, 0);
+      s.highlightPoints.visible = false;
+      return;
+    }
+    const posAttr = s.pointsGeom?.getAttribute('position');
+    if (!posAttr) {
+      s.highlightPoints.visible = false;
+      return;
+    }
+
+    const { center, size, rotation } = highlightCuboid;
+    const cx = center[0], cy = center[1], cz = center[2];
+    const hx = size[0] / 2, hy = size[1] / 2, hz = size[2] / 2;
+    const rx = rotation?.[0] || 0, ry = rotation?.[1] || 0, rz = rotation?.[2] || 0;
+    const isAA = rx === 0 && ry === 0 && rz === 0;
+    const pos = posAttr.array;
+    const out = hAttr.array;
+    const N = pos.length;
+    let m = 0;
+
+    if (isAA) {
+      for (let p = 0; p < N; p += 3) {
+        const dx = pos[p] - cx, dy = pos[p + 1] - cy, dz = pos[p + 2] - cz;
+        if (dx > -hx && dx < hx && dy > -hy && dy < hy && dz > -hz && dz < hz) {
+          out[m++] = pos[p];
+          out[m++] = pos[p + 1];
+          out[m++] = pos[p + 2];
+        }
+      }
+    } else {
+      // Inverse rotation matrix; XYZ Euler order matches cuboid line meshes.
+      const mtx = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(rx, ry, rz, 'XYZ')
+      ).invert();
+      const e = mtx.elements;
+      const e0 = e[0], e1 = e[1], e2 = e[2];
+      const e4 = e[4], e5 = e[5], e6 = e[6];
+      const e8 = e[8], e9 = e[9], e10 = e[10];
+      for (let p = 0; p < N; p += 3) {
+        const dx = pos[p] - cx, dy = pos[p + 1] - cy, dz = pos[p + 2] - cz;
+        const lx = e0 * dx + e4 * dy + e8  * dz;
+        const ly = e1 * dx + e5 * dy + e9  * dz;
+        const lz = e2 * dx + e6 * dy + e10 * dz;
+        if (lx > -hx && lx < hx && ly > -hy && ly < hy && lz > -hz && lz < hz) {
+          out[m++] = pos[p];
+          out[m++] = pos[p + 1];
+          out[m++] = pos[p + 2];
+        }
+      }
+    }
+
+    const count = m / 3;
+    s.highlightGeom.setDrawRange(0, count);
+    hAttr.needsUpdate = true;
+    s.highlightPoints.visible = count > 0;
+  }, [highlightCuboid, cloud]);
+
+  // ── Dense overlay (full-density points around selected cuboid) ──────────
+  // Replaces the geometry on each `denseOverlay` change. We allocate fresh
+  // buffers each time (instead of a fixed cap + drawRange like the highlight
+  // overlay) because the per-region count varies wildly with cuboid size and
+  // scene density. Colors fall back to a flat tint when the LAZ has no RGB.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.denseGeom || !s.densePoints) return;
+    if (!denseOverlay || !denseOverlay.positions || denseOverlay.positions.length === 0) {
+      s.denseGeom.setDrawRange(0, 0);
+      s.densePoints.visible = false;
+      return;
+    }
+    const positions = denseOverlay.positions;
+    const n = positions.length / 3;
+    let colors = denseOverlay.colors;
+    if (!colors || colors.length !== n * 3) {
+      // Flat warm tint so the region still reads as "extra detail" without RGB.
+      colors = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        colors[i * 3]     = 0.85;
+        colors[i * 3 + 1] = 0.78;
+        colors[i * 3 + 2] = 0.55;
+      }
+    }
+    s.denseGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    s.denseGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    s.denseGeom.computeBoundingSphere();
+    s.denseGeom.setDrawRange(0, n);
+    s.densePoints.visible = true;
+  }, [denseOverlay]);
+
+  // ── Instanced-box overlay (fallback) ────────────────────────────────────
+  // One box per presegment sized to its axis-aligned bbox. InstancedMesh
+  // renders all boxes in a single draw call. Selected segments are brighter.
+  // Suppressed when ``segHulls`` is present — hulls give a tighter fit.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.boxMesh) return;
+    const hullsActive = !!(segHulls && segHulls.faces && segHulls.faces.length);
+    if (hullsActive || !segBoxes || !segBoxes.segIds || segBoxes.segIds.length === 0) {
+      s.boxMesh.count = 0;
+      s.boxMesh.visible = false;
+      s.boxSegIds = null;
+      return;
+    }
+
+    const { segIds, segCenters, segSizes, selection } = segBoxes;
+    const n = segIds.length;
+    const GOLDEN = 0.6180339887;
+    const matArr = s.boxMesh.instanceMatrix.array;
+    const colArr = s.boxMesh.instanceColor.array;
+
+    for (let i = 0; i < n; i++) {
+      const sid = segIds[i];
+      const cx = segCenters[i * 3], cy = segCenters[i * 3 + 1], cz = segCenters[i * 3 + 2];
+      const sx = segSizes[i * 3],   sy = segSizes[i * 3 + 1],   sz = segSizes[i * 3 + 2];
+      // Write scale+translate matrix directly (Three.js column-major Float32Array).
+      const m = i * 16;
+      matArr[m]      = sx; matArr[m+1]  = 0;  matArr[m+2]  = 0;  matArr[m+3]  = 0;
+      matArr[m+4]    = 0;  matArr[m+5]  = sy; matArr[m+6]  = 0;  matArr[m+7]  = 0;
+      matArr[m+8]    = 0;  matArr[m+9]  = 0;  matArr[m+10] = sz; matArr[m+11] = 0;
+      matArr[m+12]   = cx; matArr[m+13] = cy; matArr[m+14] = cz; matArr[m+15] = 1;
+      // Inline HSL→RGB (avoids per-iter THREE.Color allocation + method call overhead).
+      const isSel = selection && selection.has(sid);
+      const hue = ((sid * GOLDEN) % 1 + 1) % 1;
+      const l = isSel ? 0.82 : 0.52;
+      const p = l <= 0.5 ? l * 1.7 : l + 0.7 - l * 0.7;
+      const q = 2 * l - p;
+      const c = i * 3;
+      colArr[c]   = _hue2rgb(q, p, hue + 1/3);
+      colArr[c+1] = _hue2rgb(q, p, hue);
+      colArr[c+2] = _hue2rgb(q, p, hue - 1/3);
+    }
+
+    s.boxMesh.count = n;
+    s.boxMesh.instanceMatrix.needsUpdate = true;
+    s.boxMesh.instanceColor.needsUpdate = true;
+    s.boxSegIds = segIds;
+    s.boxMesh.visible = true;
+  }, [segBoxes, segHulls]);
+
+  // ── Merged hull overlay ──────────────────────────────────────────────────
+  // Per-segment convex hulls packed into a single BufferGeometry with vertex
+  // colors. Mirrors 3d-labeler's `SupervoxelHulls` component: one mesh, one
+  // draw call, translucent / double-sided / no depth-write so points stay
+  // visible behind the hulls. Per-vertex hue cycles via golden-ratio HSL;
+  // selected segments are brightened by lifting the lightness term.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.hullMesh) return;
+    if (!segHulls || !segHulls.faces || segHulls.faces.length === 0) {
+      s.hullMesh.visible = false;
+      s.hullFaceSeg = null;
+      return;
+    }
+
+    const { vertices, faces, faceSeg, selection } = segHulls;
+    const nVerts = vertices.length / 3;
+    const colors = new Float32Array(nVerts * 3);
+    const GOLDEN = 0.6180339887;
+
+    // Per-face → per-vertex color: the same vertex can belong to multiple
+    // faces of the same hull, so writing color per-vertex (using the first
+    // face that touches it) is sufficient. We walk faces once and stamp.
+    for (let f = 0; f < faceSeg.length; f++) {
+      const sid = faceSeg[f];
+      const isSel = selection && selection.has(sid);
+      const hue = ((sid * GOLDEN) % 1 + 1) % 1;
+      const l = isSel ? 0.82 : 0.52;
+      const p = l <= 0.5 ? l * 1.7 : l + 0.7 - l * 0.7;
+      const q = 2 * l - p;
+      const r = _hue2rgb(q, p, hue + 1/3);
+      const g = _hue2rgb(q, p, hue);
+      const b = _hue2rgb(q, p, hue - 1/3);
+      const v0 = faces[f * 3], v1 = faces[f * 3 + 1], v2 = faces[f * 3 + 2];
+      colors[v0 * 3] = r; colors[v0 * 3 + 1] = g; colors[v0 * 3 + 2] = b;
+      colors[v1 * 3] = r; colors[v1 * 3 + 1] = g; colors[v1 * 3 + 2] = b;
+      colors[v2 * 3] = r; colors[v2 * 3 + 1] = g; colors[v2 * 3 + 2] = b;
+    }
+
+    const geom = s.hullMesh.geometry;
+    geom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geom.setIndex(new THREE.BufferAttribute(faces, 1));
+    geom.computeVertexNormals();
+    geom.computeBoundingSphere();
+
+    s.hullFaceSeg = faceSeg;
+    s.hullMesh.visible = !!showSegHulls;
+  }, [segHulls, showSegHulls]);
 
   // ── Mesh load/show ──────────────────────────────────────────────────────
   // The GLB sits at meshUrl on the backend. Loading is gated by showMesh —
@@ -759,6 +1369,17 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     });
   }, [meshBrightness, meshUrl, showMesh]);
 
+  // Mesh-group offset, decoupled from cloud-load. The main viewer derives
+  // the offset from cloud.recenterOffset inside the cloud-upload effect
+  // (above), but that effect doesn't run in the mesh-companion window
+  // (cloud is null). Apply meshOffset here so the popup can position its
+  // mesh into the same recentered frame as the cloud.
+  useEffect(() => {
+    const s = stateRef.current;
+    if (!s.meshGroup || !meshOffset) return;
+    s.meshGroup.position.set(-meshOffset[0], -meshOffset[1], -meshOffset[2]);
+  }, [meshOffset]);
+
   // ── Cuboid rebuild ──────────────────────────────────────────────────────
   useEffect(() => {
     const s = stateRef.current;
@@ -774,6 +1395,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       : new Set(instances.map((i) => i.id));
     instances.forEach((inst) => {
       if (!visible.has(inst.id)) return;
+      // Pointset instances carry no cuboid (size/center are null); skip
+      // them in the cuboid renderer. The mesh-companion window receives
+      // raw gtInstances and so hits this path with mixed kinds.
+      if (!inst.size || !inst.center) return;
       const isHi = inst.id === highlightedId || inst.id === selectedId;
       const box = new THREE.BoxGeometry(...inst.size);
       const edges = new THREE.EdgesGeometry(box);
@@ -803,6 +1428,51 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       }
     });
   }, [instances, visibleInstanceIds, highlightedId, selectedId, showCuboids, cuboidStyle, cuboidOpacity]);
+
+  // ── Gizmo: attach to selected cuboid, sync transform from props ─────────
+  // - Skipped while the user is actively dragging (the anchor IS the truth
+  //   then, and onCuboidTransform is feeding incoming props).
+  // - Detaches the gizmo when nothing is selected, transformMode is null,
+  //   or when cuboids are hidden.
+  useEffect(() => {
+    const s = stateRef.current;
+    const tc = s.transformControls;
+    const anchor = s.transformAnchor;
+    if (!tc || !anchor) return;
+
+    const selected = selectedId ? instances.find((i) => i.id === selectedId) : null;
+    // Pointset instances have no cuboid → no gizmo, no anchor sync.
+    const isCuboid = selected && selected.kind !== 'pointset' && selected.center && selected.size;
+    const wantGizmo = !!(isCuboid && transformMode && showCuboids);
+
+    if (!wantGizmo) {
+      tc.detach();
+      tc.visible = false;
+      tc.enabled = false;
+      gizmoTargetIdRef.current = null;
+      return;
+    }
+
+    // Sync anchor only when the user is not currently dragging it. During
+    // drag, anchor changes drive the props, not the other way around.
+    if (!gizmoDraggingRef.current) {
+      anchor.position.set(...selected.center);
+      anchor.rotation.set(...(selected.rotation || [0, 0, 0]));
+      const sz = selected.size || [1, 1, 1];
+      anchor.scale.set(
+        Math.max(0.005, sz[0]),
+        Math.max(0.005, sz[1]),
+        Math.max(0.005, sz[2]),
+      );
+      anchor.updateMatrixWorld(true);
+    }
+
+    gizmoTargetIdRef.current = selected.id;
+    tc.setMode(transformMode);
+    if (tc.object !== anchor) tc.attach(anchor);
+    tc.visible = true;
+    tc.enabled = true;
+  }, [selectedId, instances, transformMode, showCuboids]);
 
   useImperativeHandle(ref, () => ({
     preset(name) {
@@ -857,6 +1527,16 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         if (i !== -1) s.moveSubs.splice(i, 1);
       };
     },
+    onHullPick(cb) {
+      const s = stateRef.current;
+      if (!s) return () => {};
+      const entry = { cb };
+      s.hullPickSubs.push(entry);
+      return () => {
+        const i = s.hullPickSubs.indexOf(entry);
+        if (i !== -1) s.hullPickSubs.splice(i, 1);
+      };
+    },
     attachBrushGizmo({ radius, color }) {
       const s = stateRef.current;
       if (!s.scene) return { remove: () => {}, mesh: null };
@@ -890,12 +1570,47 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         mesh.visible = true;
       }
     },
-    recolorByEdit({ affectedFullIndices, classFull, instanceFull, colorMode, palette }) {
+    /**
+     * Highlight the subsampled points whose subRow has mask[subRow] !== 0.
+     * Caller computes the mask from segState.selection + instanceFull
+     * + cloud.subsampleIdx — the viewer just blits matching positions
+     * into the yellow overlay buffer.
+     */
+    setSelectedSegmentMask(mask) {
+      const s = stateRef.current;
+      if (!s.segSelectionGeom || !s.pointsGeom) return;
+      const posAttr = s.pointsGeom.getAttribute('position');
+      const outAttr = s.segSelectionGeom.getAttribute('position');
+      if (!posAttr || !outAttr) return;
+      const pos = posAttr.array;
+      const out = outAttr.array;
+      const subN = pos.length / 3;
+      let m = 0;
+      if (mask && mask.length > 0) {
+        for (let p = 0; p < subN; p++) {
+          if (!mask[p]) continue;
+          const b = p * 3;
+          out[m++] = pos[b];
+          out[m++] = pos[b + 1];
+          out[m++] = pos[b + 2];
+        }
+      }
+      s.segSelectionGeom.setDrawRange(0, m / 3);
+      outAttr.needsUpdate = true;
+      s.segSelectionPoints.visible = m > 0;
+    },
+    recolorByEdit({ affectedFullIndices, classFull, instanceFull, colorMode, palette,
+                    dimInstances = null }) {
       const s = stateRef.current;
       if (!s.pointsGeom) return;
       const colorAttr = s.pointsGeom.getAttribute('color');
       if (!colorAttr) return;
 
+      // dimInstances: any Set-like. Points whose instance is in this set
+      // paint as a dim grey instead of their class/instance colour. Used
+      // for "hide confirmed" mode in the Presegment list.
+      const dimSet = dimInstances && typeof dimInstances.has === 'function' ? dimInstances : null;
+      const dim = [0.22, 0.23, 0.26];
       const subsampleIdx = s.points.userData.subsampleIdx;
       if (!subsampleIdx) {
         // No subsampling: sub row == full idx. Recolor directly.
@@ -904,7 +1619,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         const tmp = new THREE.Color();
         for (const fullIdx of affectedFullIndices) {
           const base = fullIdx * 3;
-          if (colorMode === 'class' && paletteRgb && classFull) {
+          if (dimSet && instanceFull && dimSet.has(instanceFull[fullIdx])) {
+            colorAttr.array[base]     = dim[0];
+            colorAttr.array[base + 1] = dim[1];
+            colorAttr.array[base + 2] = dim[2];
+          } else if (colorMode === 'class' && paletteRgb && classFull) {
             const cid = classFull[fullIdx];
             const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
             colorAttr.array[base]     = rgb[0];
@@ -944,7 +1663,11 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         const subRow = fullToSub[fullIdx];
         if (subRow === -1) continue;
         const base = subRow * 3;
-        if (colorMode === 'class' && paletteRgb && classFull) {
+        if (dimSet && instanceFull && dimSet.has(instanceFull[fullIdx])) {
+          colorAttr.array[base]     = dim[0];
+          colorAttr.array[base + 1] = dim[1];
+          colorAttr.array[base + 2] = dim[2];
+        } else if (colorMode === 'class' && paletteRgb && classFull) {
           const cid = classFull[fullIdx];
           const rgb = cid >= 0 ? (paletteRgb[cid] || grey) : grey;
           colorAttr.array[base]     = rgb[0];

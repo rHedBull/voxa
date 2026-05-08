@@ -9,11 +9,26 @@ import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
 import { useTweaks, TweaksPanel, TweakSection, TweakRadio } from './tweaks-panel.jsx';
+import { MeshCompanion } from './mesh-companion.jsx';
+import { openChannel, postState, postCamera, isMeshCompanion } from './mesh-sync.js';
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "dark",
   "mode": "inspect"
 }/*EDITMODE-END*/;
+
+// Pull persisted overrides at module-load so the first paint already shows
+// the right mode — avoids a flash from default → restored. Only `mode` is
+// browser-persisted; `theme` lives in the on-disk EDITMODE block.
+const INITIAL_TWEAKS = (() => {
+  try {
+    const m = localStorage.getItem('voxa.mode');
+    if (m && ['inspect', 'label', 'compare'].includes(m)) {
+      return { ...TWEAK_DEFAULTS, mode: m };
+    }
+  } catch { /* private mode / no localStorage */ }
+  return TWEAK_DEFAULTS;
+})();
 
 const MODE_META = {
   inspect: {
@@ -34,12 +49,24 @@ const MODE_META = {
 };
 
 export default function App() {
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  // The mesh companion is the same bundle, served at `/?mesh=1`. Branching
+  // here keeps it cheap (no separate Vite entry) and lets the companion reuse
+  // the existing Viewer + CSS.
+  if (isMeshCompanion()) return <MeshCompanion />;
+  return <MainApp />;
+}
+
+function MainApp() {
+  const [t, setTweak] = useTweaks(INITIAL_TWEAKS);
   const viewerRef = useRefApp();
   const prelabelRef = useRefApp({ classFull: null, instanceFull: null });
 
   const [scenes, setScenes] = useStateApp([]);
-  const [activeScene, setActiveScene] = useStateApp(null);
+  // Lazy-init from localStorage so refresh keeps you on the scene you were
+  // working on. Validated against the scenes list once it loads.
+  const [activeScene, setActiveScene] = useStateApp(() => {
+    try { return localStorage.getItem('voxa.activeScene') || null; } catch { return null; }
+  });
   const [cloud, setCloud] = useStateApp(null);
   const [loading, setLoading] = useStateApp(false);
   const [loadError, setLoadError] = useStateApp(null);
@@ -54,14 +81,82 @@ export default function App() {
   // Label preserves whether the user was orbiting or walking.
   const [navMode, setNavMode] = useStateApp('orbit');
 
-  // Initial config + scene list.
+  // Initial config + scene list. If a persisted scene id no longer exists in
+  // the list, fall back to the first scene rather than firing a 404 load.
   useEffectApp(() => {
     VoxaAPI.config().then((c) => setClasses(c.classes || []));
     VoxaAPI.scenes().then((s) => {
       setScenes(s);
-      if (s.length && !activeScene) setActiveScene(s[0].id || s[0].name);
+      setActiveScene((cur) => {
+        if (cur && s.some((x) => (x.id || x.name) === cur)) return cur;
+        return s[0]?.id || s[0]?.name || null;
+      });
     });
     // eslint-disable-next-line
+  }, []);
+
+  // Persist active scene across refreshes.
+  useEffectApp(() => {
+    if (!activeScene) return;
+    try { localStorage.setItem('voxa.activeScene', activeScene); } catch { /* quota / private mode */ }
+  }, [activeScene]);
+
+  // Persist active mode across refreshes (paired with INITIAL_TWEAKS lazy-init).
+  useEffectApp(() => {
+    try { localStorage.setItem('voxa.mode', t.mode); } catch { /* quota / private mode */ }
+  }, [t.mode]);
+
+  // ── Mesh companion sync ─────────────────────────────────────────────────
+  // BroadcastChannel link to any open `?mesh=1` window. Main publishes the
+  // scene-shape state (mesh URL, cuboids, theme) and the live camera; companion
+  // publishes only its camera back. The viewer's setFromState already silences
+  // its onChange while applying, so the loop terminates after one hop.
+  const meshChannelRef = useRefApp(null);
+  const themeBg = t.theme === 'light' ? '#f5f5f5' : '#0a0b0e';
+  const themeFloor = t.theme === 'light' ? '#e7e8ec' : '#15171c';
+  useEffectApp(() => {
+    const ch = openChannel();
+    meshChannelRef.current = ch;
+    if (!ch) return;
+    ch.onmessage = (ev) => {
+      const m = ev.data;
+      if (!m || typeof m !== 'object') return;
+      if (m.type === 'camera' && m.camera) {
+        viewerRef.current?.setCameraState(m.camera);
+      } else if (m.type === 'request-state') {
+        // Companion just opened — re-broadcast latest. We rely on the next
+        // effect's broadcast to fire on the next render cycle, so simulate
+        // an explicit broadcast here too.
+        meshBroadcastRef.current?.();
+      }
+    };
+    return () => { ch.close(); meshChannelRef.current = null; };
+    // eslint-disable-next-line
+  }, []);
+
+  // Latest broadcast closure, kept in a ref so the channel-open effect (which
+  // runs once) can call the freshest version on demand.
+  const meshBroadcastRef = useRefApp(null);
+  useEffectApp(() => {
+    meshBroadcastRef.current = () => {
+      const ch = meshChannelRef.current;
+      if (!ch || !cloud) return;
+      postState(ch, {
+        scene: activeScene,
+        meshUrl: cloud.meshUrl ? new URL(cloud.meshUrl, window.location.origin).toString() : null,
+        meshIsZUp: !!cloud.meshIsZUp,
+        meshOffset: cloud.recenterOffset || null,
+        instances: gtInstances,
+        bbox: cloud.bbox || null,
+        background: themeBg,
+        floorColor: themeFloor,
+      });
+    };
+    meshBroadcastRef.current();
+  }, [cloud, gtInstances, activeScene, themeBg, themeFloor]);
+
+  const onMainCameraChange = useCallbackApp((cam) => {
+    postCamera(meshChannelRef.current, cam);
   }, []);
 
   // Load cloud + annotations whenever the active scene or mode changes.
@@ -72,38 +167,82 @@ export default function App() {
     setLoadError(null);
     const activeSceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
     const wantFullLabels = t.mode === 'label' && activeSceneObj?.tier === 'annotated';
-    VoxaAPI.load(activeScene, { wantFullLabels })
-      .then((c) => {
-        if (cancel) return;
-        setCloud(c);
-        setCuboidDirty(false);
-        if (c.fullClassIds && c.fullInstanceIds) {
-          if (c.isFromPrelabel) {
-            prelabelRef.current = {
-              classFull: c.fullClassIds.slice(),
-              instanceFull: c.fullInstanceIds.slice(),
-            };
-          } else {
-            prelabelRef.current = { classFull: null, instanceFull: null };
-          }
-          setSegState(initSegState({
-            classFull: c.fullClassIds,
-            instanceFull: c.fullInstanceIds,
-            isFromPrelabel: c.isFromPrelabel,
-          }));
+    // Run /api/load first, then fetch /api/segment/state. They MUST be
+    // sequential: /api/load is what swaps the backend's in-memory seg
+    // session over to the new scene; if segState() races ahead it can
+    // come back with the previous scene's data (e.g. 482k smart_ais
+    // segments hydrated onto a 16k industrial_scan cloud).
+    Promise.all([
+      VoxaAPI.load(activeScene, { wantFullLabels }),
+      VoxaAPI.getAnnotation(activeScene, 'gt'),
+    ]).then(async ([c, gtDoc]) => {
+      const segLive = await VoxaAPI.segState().catch(() => null);
+      return [c, gtDoc, segLive];
+    }).then(([c, gtDoc, segLive]) => {
+      if (cancel) return;
+      setCloud(c);
+      setCuboidDirty(false);
+      if (segLive) {
+        // Live seg session wins — includes hulls + any unsaved preseg edits.
+        prelabelRef.current = c.isFromPrelabel
+          ? { classFull: segLive.fullClassIds.slice(), instanceFull: segLive.fullInstanceIds.slice() }
+          : { classFull: null, instanceFull: null };
+        setSegState(initSegState({
+          classFull: segLive.fullClassIds,
+          instanceFull: segLive.fullInstanceIds,
+          isFromPrelabel: !!c.isFromPrelabel,
+          segBoxes: (segLive.segIds && segLive.segCenters && segLive.segSizes)
+            ? { segIds: segLive.segIds, segCenters: segLive.segCenters, segSizes: segLive.segSizes }
+            : null,
+          segHulls: (segLive.hullVertices && segLive.hullFaces && segLive.hullFaceSeg)
+            ? { vertices: segLive.hullVertices, faces: segLive.hullFaces, faceSeg: segLive.hullFaceSeg }
+            : null,
+        }));
+        // Project full-res labels onto the subsampled cloud so points pick
+        // up segment colours immediately.
+        const subIdx = c.subsampleIdx;
+        const subN = (c.positions?.length || 0) / 3;
+        const subClass = new Int8Array(subN);
+        const subInst = new Int32Array(subN);
+        for (let p = 0; p < subN; p++) {
+          const f = subIdx ? subIdx[p] : p;
+          subClass[p] = segLive.fullClassIds[f];
+          subInst[p]  = segLive.fullInstanceIds[f];
+        }
+        setCloud({ ...c, classIds: subClass, instanceIds: subInst, isFromPrelabel: !!c.isFromPrelabel });
+      } else if (c.fullClassIds && c.fullInstanceIds) {
+        if (c.isFromPrelabel) {
+          prelabelRef.current = {
+            classFull: c.fullClassIds.slice(),
+            instanceFull: c.fullInstanceIds.slice(),
+          };
         } else {
           prelabelRef.current = { classFull: null, instanceFull: null };
-          setSegState(null);
         }
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (cancel) return;
-        setLoadError(String(e.message || e));
-        setLoading(false);
-      });
-    VoxaAPI.getAnnotation(activeScene, 'gt')
-      .then((d) => !cancel && setGtInstances(d.instances || []));
+        setSegState(initSegState({
+          classFull: c.fullClassIds,
+          instanceFull: c.fullInstanceIds,
+          isFromPrelabel: c.isFromPrelabel,
+          segBoxes: (c.segIds && c.segCenters && c.segSizes)
+            ? { segIds: c.segIds, segCenters: c.segCenters, segSizes: c.segSizes }
+            : null,
+        }));
+      } else {
+        prelabelRef.current = { classFull: null, instanceFull: null };
+        setSegState(null);
+      }
+
+      // Cuboid recommendations from prelabels are disabled — the right
+      // Instances panel only ever holds user-authored cuboids. Presegments
+      // live in the left list and feed into cuboids manually.
+      setGtInstances(gtDoc.instances || []);
+
+      setLoading(false);
+    }).catch((e) => {
+      if (cancel) return;
+      setLoadError(String(e.message || e));
+      setLoading(false);
+    });
     VoxaAPI.getAnnotation(activeScene, 'pred')
       .then((d) => !cancel && setPredInstances(d.instances || []));
     return () => { cancel = true; };
@@ -116,8 +255,6 @@ export default function App() {
 
   useEffectApp(() => { document.body.className = themeClass; }, [themeClass]);
 
-  const meta = MODE_META[t.mode] || MODE_META.inspect;
-
   const saveGt = useCallbackApp(async (instances) => {
     if (!activeScene) return;
     setGtInstances(instances);
@@ -126,10 +263,119 @@ export default function App() {
     setCuboidDirty(false);
   }, [activeScene]);
 
+  // Auto-save: debounce cuboid edits to the backend so a refresh never loses
+  // unconfirmed work. Refs let the debounced save read the LATEST scene id
+  // even after a scene switch interleaves with the timer, and let the
+  // beforeunload flush below send whatever's pending without rebuilding the
+  // closure chain.
+  const activeSceneRef = useRefApp(activeScene);
+  useEffectApp(() => { activeSceneRef.current = activeScene; }, [activeScene]);
+  const autosaveTimerRef = useRefApp(null);
+  const pendingSaveRef = useRefApp(null);  // { scene, instances } | null
+
   const onCuboidChange = useCallbackApp((instances) => {
     setGtInstances(instances);
     setCuboidDirty(true);
+    const sceneAtChange = activeSceneRef.current;
+    if (!sceneAtChange) return;
+    pendingSaveRef.current = { scene: sceneAtChange, instances };
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(async () => {
+      autosaveTimerRef.current = null;
+      const pending = pendingSaveRef.current;
+      pendingSaveRef.current = null;
+      if (!pending || pending.scene !== activeSceneRef.current) return;
+      try {
+        await VoxaAPI.putAnnotation(pending.scene, 'gt', { instances: pending.instances });
+        setSavedAt(new Date().toLocaleTimeString());
+        setCuboidDirty(false);
+      } catch (err) {
+        console.error('autosave failed:', err);
+      }
+    }, 600);
   }, []);
+
+  // Cancel any pending autosave when the scene changes; the load effect will
+  // re-fetch persisted annotations for the new scene.
+  useEffectApp(() => {
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [activeScene]);
+
+  // Flush any pending autosave when the user closes/refreshes the tab.
+  // `keepalive: true` lets the PUT complete past the navigation so a fast
+  // Ctrl+Enter → refresh doesn't lose the just-confirmed state.
+  useEffectApp(() => {
+    const onBeforeUnload = () => {
+      const pending = pendingSaveRef.current;
+      if (!pending) return;
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+      pendingSaveRef.current = null;
+      try {
+        fetch(`/api/annotations/gt/${pending.scene}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scene: pending.scene, kind: 'gt',
+            instances: pending.instances, meta: {},
+          }),
+          keepalive: true,
+        });
+      } catch { /* best effort */ }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
+  // Auto-save segment (per-point) edits ~600 ms after a change so closing
+  // the tab without Ctrl+S no longer drops the work. The endpoint reads the
+  // server-side seg session, so the request body is empty; we just need to
+  // fire it and clear the dirty flag on success.
+  const segAutosaveTimerRef = useRefApp(null);
+  useEffectApp(() => {
+    if (!segState?.dirty) return;
+    if (segAutosaveTimerRef.current) clearTimeout(segAutosaveTimerRef.current);
+    segAutosaveTimerRef.current = setTimeout(async () => {
+      segAutosaveTimerRef.current = null;
+      try {
+        await VoxaAPI.segSave();
+        setSegState((s) => (s ? { ...s, dirty: false } : s));
+        setSavedAt(new Date().toLocaleTimeString());
+      } catch (err) {
+        console.error('seg autosave failed:', err);
+      }
+    }, 600);
+    return () => {
+      if (segAutosaveTimerRef.current) {
+        clearTimeout(segAutosaveTimerRef.current);
+        segAutosaveTimerRef.current = null;
+      }
+    };
+  }, [segState?.dirty]);
+
+  // beforeunload: best-effort flush of pending segment edits. The save is
+  // server-resident, so a keepalive PUT is enough — no payload to ferry.
+  useEffectApp(() => {
+    const onBeforeUnload = () => {
+      if (!segState?.dirty) return;
+      if (segAutosaveTimerRef.current) {
+        clearTimeout(segAutosaveTimerRef.current);
+        segAutosaveTimerRef.current = null;
+      }
+      try {
+        fetch('/api/segment/save', { method: 'PUT', keepalive: true });
+      } catch { /* best effort */ }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [segState?.dirty]);
 
   // Cmd/Ctrl+Z / Shift+Z → segment undo / redo (only when segState active).
   useEffectApp(() => {
@@ -214,7 +460,7 @@ export default function App() {
             : loadError
               ? <><span className="dot" style={{ background: 'oklch(0.65 0.18 25)' }} /> {loadError}</>
               : cloud
-                ? <><span className="dot" /> {cloud.numSubsampled.toLocaleString()} pts loaded</>
+                ? <><span className="dot" /> {cloud.numSubsampled.toLocaleString()} / {(cloud.numPointsTotal ?? cloud.numPoints).toLocaleString()} pts</>
                 : <><span className="dot" style={{ background: 'oklch(0.6 0.02 250)' }} /> No scene</>
           }
         </div>
@@ -236,18 +482,25 @@ export default function App() {
         </button>
       </header>
 
-      <div className="mode-banner">
-        <div className="stripe" style={{ background: meta.color }} />
-        <b>{meta.label} mode</b>
-        <span>·</span>
-        <span>{meta.sub}</span>
-      </div>
-
       {scenePickerOpen && (
         <ScenePicker
           scenes={scenes}
           activeScene={activeScene}
-          onPick={(name) => { setActiveScene(name); setScenePickerOpen(false); }}
+          onPick={(name) => {
+            // Switching scenes drops the in-memory cloud, the per-point
+            // segState (presegments + selection), and resets selection in
+            // the instance list. Saved-to-disk annotations survive, but any
+            // unsaved labels and the active selection do not — so warn.
+            if (name && activeScene && name !== activeScene) {
+              const ok = window.confirm(
+                'Switch scene?\n\n'
+                + 'Any unsaved instances, selections, and presegmentation '
+                + 'state for the current scene may be lost.');
+              if (!ok) return;
+            }
+            setActiveScene(name);
+            setScenePickerOpen(false);
+          }}
           onClose={() => setScenePickerOpen(false)}
         />
       )}
@@ -256,16 +509,19 @@ export default function App() {
         {t.mode === 'inspect' && (
           <InspectMode key="i" cloud={cloud} loading={loading} theme={theme}
             viewerRef={viewerRef} sceneName={activeScene}
-            navMode={navMode} onNavModeChange={setNavMode} />
+            navMode={navMode} onNavModeChange={setNavMode}
+            onCameraChange={onMainCameraChange} />
         )}
         {t.mode === 'label' && (
-          <LabelMode key="l" cloud={cloud} theme={theme} viewerRef={viewerRef}
-            classes={classes} instances={gtInstances} sceneName={activeScene}
+          <LabelMode key="l" cloud={cloud} setCloud={setCloud} theme={theme} viewerRef={viewerRef}
+            classes={classes} instances={gtInstances}
             cloudBBox={cloud?.bbox}
             navMode={navMode} onNavModeChange={setNavMode}
             onChange={onCuboidChange} onSave={saveGt}
             segState={segState} setSegState={setSegState}
-            prelabelRef={prelabelRef} />
+            prelabelRef={prelabelRef}
+            onCameraChange={onMainCameraChange}
+            hasMesh={!!cloud?.meshUrl} />
         )}
         {t.mode === 'compare' && (
           <CompareMode key="c" cloud={cloud} theme={theme}

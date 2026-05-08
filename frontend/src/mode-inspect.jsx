@@ -4,9 +4,9 @@ import { useEffect as useEffectInspect,
          useState as useStateInspect,
          useMemo as useMemoInspect } from 'react';
 import { Viewer } from './viewer.jsx';
-import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle } from './viewport-atoms.jsx';
+import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 
-export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMode, onNavModeChange }) {
+export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMode, onNavModeChange, onCameraChange }) {
   const [pointSize, setPointSize] = useStateInspect(0.012);
   const [colorMode, setColorMode] = useStateInspect('rgb');
   const [showFloor, setShowFloor] = useStateInspect(true);
@@ -46,6 +46,51 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
     if (cloud && !channels[colorMode]) setColorMode('rgb');
   }, [cloud, channels, colorMode]);
 
+  const helpSections = useMemoInspect(() => ([
+    {
+      title: 'Camera',
+      items: navMode === 'walk'
+        ? [
+            { keys: ['W', 'A', 'S', 'D'], desc: 'Move (XZ plane)' },
+            { keys: ['Q', 'E'], desc: 'Down / up' },
+            { keys: ['Shift'], desc: 'Hold to sprint' },
+            { keys: ['Drag'], desc: 'Look around' },
+            { keys: ['Scroll'], desc: 'Step forward / back' },
+          ]
+        : [
+            { keys: ['Drag'], desc: 'Orbit' },
+            { keys: ['Shift', 'Drag'], desc: 'Pan' },
+            { keys: ['Right', 'Drag'], desc: 'Pan' },
+            { keys: ['Scroll'], desc: 'Zoom' },
+          ],
+    },
+    {
+      title: 'Camera presets',
+      items: [
+        { keys: ['iso'], desc: 'Isometric' },
+        { keys: ['top'], desc: 'Top-down' },
+        { keys: ['front'], desc: 'Front' },
+        { keys: ['side'], desc: 'Side' },
+      ],
+    },
+    {
+      title: 'Display',
+      items: [
+        { keys: ['RGB'], desc: 'Per-point color from the source' },
+        { keys: ['Height'], desc: 'Y-axis gradient' },
+        { keys: ['Class'], desc: 'Per-point class palette (annotated scans)' },
+        { keys: ['Instance'], desc: 'Per-point instance hash hue' },
+      ],
+    },
+    {
+      title: 'Other',
+      items: [
+        { keys: ['?'], desc: 'Toggle this panel' },
+        { keys: ['Esc'], desc: 'Close panel' },
+      ],
+    },
+  ]), [navMode]);
+
   return (
     <div className="mode-root inspect">
       <div className="vp-stack">
@@ -65,17 +110,19 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
           showMesh={showMesh}
           meshBrightness={meshBrightness}
           onMeshLoadProgress={setMeshProgress}
+          onCameraChange={onCameraChange}
         />
 
         <div className="vp-hud-top">
           <div className="hud-group">
             <HUDChip label="Scene" value={sceneName || '—'} mono />
-            <HUDChip label="Points" value={cloud ? `${(cloud.numSubsampled / 1000).toFixed(0)}k / ${(cloud.numPoints / 1000).toFixed(0)}k` : '—'} mono />
+            <HUDChip label="Points" value={cloud ? `${(cloud.numSubsampled / 1000).toFixed(0)}k / ${(((cloud.numPointsTotal ?? cloud.numPoints)) / 1000).toFixed(0)}k` : '—'} mono />
             {stats && <HUDChip label="Extent" value={`${stats.ext}×${stats.dep}×${stats.hgt}m`} mono />}
           </div>
           <div className="hud-group">
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
+            <HelpButton sections={helpSections} />
           </div>
         </div>
 
@@ -90,7 +137,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
             <div className="panel-body">
               <div className="kv"><span>name</span><b>{sceneName || '—'}</b></div>
               {cloud && <>
-                <div className="kv"><span>points</span><b className="mono">{cloud.numPoints.toLocaleString()}</b></div>
+                <div className="kv"><span>points</span><b className="mono">{(cloud.numPointsTotal ?? cloud.numPoints).toLocaleString()}{cloud.numPointsTotal ? ` (loaded ${cloud.numPoints.toLocaleString()})` : ''}</b></div>
                 <div className="kv"><span>shown</span><b className="mono">{cloud.numSubsampled.toLocaleString()}</b></div>
                 <div className="kv"><span>x-min/max</span><b className="mono">{cloud.bbox.min[0].toFixed(2)}/{cloud.bbox.max[0].toFixed(2)}</b></div>
                 <div className="kv"><span>y-min/max</span><b className="mono">{cloud.bbox.min[1].toFixed(2)}/{cloud.bbox.max[1].toFixed(2)}</b></div>

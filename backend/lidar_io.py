@@ -110,14 +110,20 @@ def _build_palette(class_id_to_name: dict[int, str],
     return palette
 
 
-def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedScene:
-    """Load an annotated/<scan>/ scene with its label arrays + class palette."""
+def load_annotated(src: SceneSource, lidar_root: Optional[Path],
+                   *, prefer_prelabel: bool = False) -> AnnotatedScene:
+    """Load an annotated/<scan>/ scene with its label arrays + class palette.
+
+    `prefer_prelabel=True` skips the `labels/` GT branch so the model
+    recommendation in `prelabel/` (or fresh inference) surfaces in the
+    UI even on scenes that already have authored GT.
+    """
     pc, _mesh = load_ply(src.source_path)
 
     labels: Optional[LabelArrays] = None
     n_classes = 0
     n_instances = 0
-    if src.extras.get("gt_class_path") and src.extras.get("gt_segment_path"):
+    if not prefer_prelabel and src.extras.get("gt_class_path") and src.extras.get("gt_segment_path"):
         class_path = Path(src.extras["gt_class_path"])
         segment_path = Path(src.extras["gt_segment_path"])
         try:
@@ -165,22 +171,11 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedSce
             n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
             is_from_prelabel = True
 
-    if labels is None:
-        # No GT, no cached prelabel — try the trained merge model. This
-        # writes the result to prelabel/ as a side effect so subsequent
-        # loads short-circuit to the load_prelabel branch above.
-        from seg_inference import predict_for_scene  # noqa: PLC0415
-        class_map = _read_classes_json(lidar_root)
-        name_to_id = {name: cid for cid, name in class_map.items()}
-        inferred = predict_for_scene(scan_dir, n_points=len(pc), class_map=name_to_id)
-        if inferred is not None:
-            ci8, ii = inferred
-            labels = LabelArrays(class_ids=ci8, instance_ids=ii)
-            valid_classes = ci8[ci8 >= 0]
-            valid_inst = ii[ii >= 0]
-            n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
-            n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
-            is_from_prelabel = True
+    # Trained merge-model fallback (seg_inference.predict_for_scene) is
+    # currently disabled. Voxa's RANSAC port (presegment.py / the ⚙
+    # button in Label mode) is the single recommender path. To re-enable,
+    # restore the predict_for_scene call here and ensure
+    # VOXA_SEGMENTATION_REPO + VOXA_MERGE_MODEL point at a valid bundle.
 
     if labels is None:
         labels = LabelArrays(
@@ -216,12 +211,14 @@ def _laz_chunk_iter(path: Path, chunk_size: int = 1_000_000):
         reader.close()
 
 
-def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray]:
+def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray, int]:
     """Stride-sample a LAS/LAZ file down to ~max_points.
 
-    Returns (PointCloud, intensity[N]) where intensity is float32 in 0..1.
-    The point count returned will be slightly less than max_points because
-    stride is computed from the header total.
+    Returns (PointCloud, intensity[N], n_source_total) where intensity is
+    float32 in 0..1 and n_source_total is the file's true point count (from
+    the LAS header, before any subsampling). The PointCloud size will be
+    slightly less than max_points because stride is computed from the header
+    total.
     """
     import laspy
 
@@ -295,4 +292,71 @@ def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray]:
             intensity = intensity / imax
         intensity = intensity.astype(np.float32)
 
-    return PointCloud(points=points, colors=colors), intensity
+    return PointCloud(points=points, colors=colors), intensity, n_total
+
+
+def load_laz_region(
+    path: Path,
+    aabb_min: np.ndarray,
+    aabb_max: np.ndarray,
+    *,
+    is_z_up: bool,
+    offset: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Stream a LAZ and return ALL points (no stride) inside `aabb`.
+
+    The AABB is in the *loaded* frame (post Z-up→Y-up + post recenter).
+    Each chunk is transformed into that frame before the filter, so the
+    caller gets points already aligned with what the viewer is showing.
+
+    Returns (positions[Nx3 f32], colors[Nx3 f32 in 0..1] | None).
+    """
+    pos_chunks: list[np.ndarray] = []
+    col_chunks: list[np.ndarray] = []
+    has_color = True
+
+    for _hdr, chunk in _laz_chunk_iter(path, chunk_size=2_000_000):
+        x = np.asarray(chunk.x, dtype=np.float64)
+        y = np.asarray(chunk.y, dtype=np.float64)
+        z = np.asarray(chunk.z, dtype=np.float64)
+        if is_z_up:
+            lx, ly, lz = x, z, -y
+        else:
+            lx, ly, lz = x, y, z
+        lx = (lx - offset[0]).astype(np.float32)
+        ly = (ly - offset[1]).astype(np.float32)
+        lz = (lz - offset[2]).astype(np.float32)
+
+        m = ((lx >= aabb_min[0]) & (lx <= aabb_max[0]) &
+             (ly >= aabb_min[1]) & (ly <= aabb_max[1]) &
+             (lz >= aabb_min[2]) & (lz <= aabb_max[2]))
+        if not m.any():
+            continue
+
+        pos_chunks.append(np.column_stack([lx[m], ly[m], lz[m]]))
+
+        if has_color:
+            try:
+                r = np.asarray(chunk.red[m], dtype=np.uint32)
+                g = np.asarray(chunk.green[m], dtype=np.uint32)
+                b = np.asarray(chunk.blue[m], dtype=np.uint32)
+                col_chunks.append(np.column_stack([r, g, b]))
+            except (AttributeError, ValueError):
+                has_color = False
+                col_chunks.clear()
+
+    if not pos_chunks:
+        return np.zeros((0, 3), dtype=np.float32), None
+
+    positions = np.concatenate(pos_chunks).astype(np.float32)
+    colors: np.ndarray | None = None
+    if has_color and col_chunks:
+        col_arr = np.concatenate(col_chunks)
+        cmax = int(col_arr.max(initial=0))
+        if cmax > 255:
+            col_arr = (col_arr >> 8).astype(np.uint8)
+        else:
+            col_arr = col_arr.astype(np.uint8)
+        colors = (col_arr.astype(np.float32) / 255.0).astype(np.float32)
+
+    return positions, colors

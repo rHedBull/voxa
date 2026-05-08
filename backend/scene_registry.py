@@ -98,6 +98,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
         # frame. Default: assume Z-up unless the meta.json explicitly says
         # otherwise (covers the unmaintained-meta case).
         is_z_up = True
+        source_laz_path: Optional[str] = None
         if meta_path.exists():
             try:
                 with meta_path.open() as f:
@@ -105,6 +106,20 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
                 n_points = int(meta.get("n_points") or 0) or None
                 if meta.get("source_mesh") and not meta.get("source_laz"):
                     is_z_up = False
+                # Resolve source LAZ (the cloud the PLY was subsampled from)
+                # so the viewer can pop full-density points back from the
+                # original file when a cuboid is selected. Path stored in
+                # meta is canonical archive-relative (`lidar/laz/<file>.laz`);
+                # fall back to basename lookup under `<lidar_root>/laz/` so
+                # we're robust to small path format drift.
+                src_laz_str = meta.get("source_laz")
+                if src_laz_str:
+                    cand1 = lidar_root / "laz" / Path(src_laz_str).name
+                    cand2 = lidar_root.parent / src_laz_str
+                    for cand in (cand1, cand2):
+                        if cand.exists():
+                            source_laz_path = str(cand)
+                            break
             except (OSError, ValueError, json.JSONDecodeError):
                 n_points = None
         out.append(SceneSource(
@@ -121,6 +136,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
                 "scan_dir": str(sd),
                 "mesh_path": str(mesh_path) if mesh_path.exists() else None,
                 "is_z_up": is_z_up,
+                "source_laz_path": source_laz_path,
             },
         ))
     return out
