@@ -137,6 +137,8 @@ SEARCH_SPACE: dict[str, tuple[float, float, str]] = {
     "plane_min_inliers":        (20, 300, "int"),
     "max_planes":               (5, 50, "int"),
     "plane_cluster_eps":        (0.05, 1.0, "logfloat"),
+    "leftover_cluster_eps":     (0.03, 0.50, "logfloat"),
+    "leftover_min_pts":         (10, 100, "int"),
     "flat_thresh":              (0.1, 2.0, "float"),
     "cylinder_ratio_thresh":    (1.5, 8.0, "float"),
     "cyl_search_radius":        (0.05, 0.30, "logfloat"),

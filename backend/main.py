@@ -1036,6 +1036,8 @@ class RansacParams(BaseModel):
     plane_min_inliers: Optional[float] = None
     max_planes: Optional[float] = None
     plane_cluster_eps: Optional[float] = None
+    leftover_cluster_eps: Optional[float] = None
+    leftover_min_pts: Optional[float] = None
     flat_thresh: Optional[float] = None
     cylinder_ratio_thresh: Optional[float] = None
     cyl_search_radius: Optional[float] = None
@@ -1051,6 +1053,7 @@ class PresegmentRequest(BaseModel):
     resolution: float = 0.05      # voxel size in scene units (voxel mode only)
     preserve_labeled: bool = True  # only re-presegment points with class_id < 0
     ransac: Optional[RansacParams] = None  # ransac mode overrides
+    labeler_strict: bool = False  # ransac mode: bit-for-bit industrial_point_labeler pipeline
 
 
 class PresegmentResponse(BaseModel):
@@ -1183,6 +1186,7 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
             log=lambda *_: None,
             resolution=float(req.resolution),
             ransac_params=req.ransac.model_dump(exclude_none=True) if req.ransac else None,
+            labeler_strict=req.labeler_strict,
         )
     else:
         sub_inst = np.empty(0, dtype=np.int32)

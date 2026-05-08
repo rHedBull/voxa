@@ -204,6 +204,8 @@ RANSAC_DEFAULTS: dict[str, float] = {
     "plane_min_inliers":        80.0,   # smallest plane that survives
     "max_planes":               25.0,   # cap on iterative plane RANSAC
     "plane_cluster_eps":        0.15,   # m — DBSCAN eps to split spatially disjoint plane inliers (0 disables)
+    "leftover_cluster_eps":     0.10,   # m — DBSCAN eps for unassigned-point catchall (0 disables, snap-to-nearest only)
+    "leftover_min_pts":         30.0,   # smallest leftover blob that gets its own segment
     # curvature classification
     "flat_thresh":              0.5,    # k_max boundary: flat vs curved
     "cylinder_ratio_thresh":    3.0,    # k_max/k_min to call a point cylindrical
@@ -426,6 +428,7 @@ def presegment(
     class_map: Optional[dict[str, int]] = None,
     log: Callable[[str], None] = print,
     params: Optional[dict[str, float]] = None,
+    labeler_strict: bool = False,
 ) -> tuple[np.ndarray, list[dict]]:
     """Run RANSAC presegmentation.
 
@@ -441,6 +444,13 @@ def presegment(
     params : dict | None
         Per-call overrides for ``RANSAC_DEFAULTS``. Unknown keys are
         ignored; missing keys fall back to the module-level defaults.
+    labeler_strict : bool
+        Run the bit-for-bit ``industrial_point_labeler`` pipeline:
+        disables the connected-component plane split, skips the
+        nearest-neighbour Step 7 catchall (so saddle/edge points stay
+        at -1), and uses the labeler's stale ``global_indices`` in the
+        cylinder merge. Use to A/B against the labeler; output will
+        match modulo the unseeded RANSAC RNG noise both pipelines share.
 
     Returns
     -------
@@ -451,6 +461,8 @@ def presegment(
         ``prelabel/ransac_segment_summary.json`` under a ``segments`` key.
     """
     cfg = dict(RANSAC_DEFAULTS)
+    if labeler_strict:
+        cfg["plane_cluster_eps"] = 0.0
     if params:
         for k, v in params.items():
             if k in cfg and v is not None:
@@ -699,7 +711,10 @@ def presegment(
             half_len = (p1["length"] + p2["length"]) / 2
             if along > half_len + 0.3:
                 continue
-            instance_ids[instance_ids == p2["id"]] = p1["id"]
+            if labeler_strict:
+                instance_ids[p2["global_indices"]] = p1["id"]
+            else:
+                instance_ids[instance_ids == p2["id"]] = p1["id"]
             merged.add(p2["id"])
 
     primitives = [p for p in primitives if p["id"] not in merged]
@@ -722,19 +737,54 @@ def presegment(
                 prim["inlier_ratio"] = float(cyl["inlier_ratio"])
                 prim["label"] = _classify_cylinder(cyl["radius"], cyl["length"])
 
-    # ── Step 7: nearest-neighbour catchall ──
+    # ── Step 7: leftover catchall ──
     # Anything still at -1 (saddle points, edge points, sphere noise,
-    # tiny clusters that didn't meet min-cluster thresholds) gets pulled
-    # into its closest assigned segment so every point lands somewhere.
-    # Unconditional: no normal / class consistency check at this stage —
-    # the user can still re-classify segments interactively.
-    unassigned = np.where(instance_ids == -1)[0]
-    if unassigned.size > 0 and (instance_ids >= 0).any():
-        assigned_idx = np.where(instance_ids >= 0)[0]
-        nn_tree = cKDTree(points[assigned_idx])
-        _, nn = nn_tree.query(points[unassigned], k=1)
-        instance_ids[unassigned] = instance_ids[assigned_idx[nn]]
-        log(f"Catchall: assigned {unassigned.size} stragglers to nearest segment")
+    # tiny clusters that didn't meet min-cluster thresholds) gets covered
+    # in two passes so every point lands somewhere without polluting the
+    # primitive-pure segments:
+    #   7a. Spatial DBSCAN over unassigned points; each blob ≥ leftover_min_pts
+    #       becomes its own "leftover" segment.
+    #   7b. Anything still unassigned (DBSCAN noise / sub-min blobs) snaps to
+    #       its nearest assigned point's segment id.
+    # Skipped entirely under labeler_strict to match the labeler's "leave -1 as -1".
+    if not labeler_strict:
+        unassigned = np.where(instance_ids == -1)[0]
+        if unassigned.size > 0:
+            leftover_eps = float(cfg["leftover_cluster_eps"])
+            leftover_min = int(cfg["leftover_min_pts"])
+            if leftover_eps > 0 and unassigned.size >= leftover_min:
+                import open3d as o3d
+                un_pcd = o3d.geometry.PointCloud()
+                un_pcd.points = o3d.utility.Vector3dVector(points[unassigned])
+                cc_labels = np.asarray(
+                    un_pcd.cluster_dbscan(eps=leftover_eps, min_points=10, print_progress=False)
+                )
+                next_id = int(instance_ids.max(initial=-1)) + 1
+                for lbl in np.unique(cc_labels):
+                    if lbl < 0:
+                        continue
+                    blob = unassigned[cc_labels == lbl]
+                    if blob.size < leftover_min:
+                        continue
+                    instance_ids[blob] = next_id
+                    primitives.append({
+                        "id": next_id,
+                        "type": "leftover",
+                        "label": "curved_unclassified",
+                        "n_points": int(blob.size),
+                        "global_indices": blob.copy(),
+                    })
+                    next_id += 1
+                n_blobs = int((cc_labels >= 0).sum())
+                log(f"Catchall: clustered {n_blobs}/{unassigned.size} stragglers into leftover segments")
+            # Snap whatever is still -1 to its nearest assigned point.
+            unassigned = np.where(instance_ids == -1)[0]
+            if unassigned.size > 0 and (instance_ids >= 0).any():
+                assigned_idx = np.where(instance_ids >= 0)[0]
+                nn_tree = cKDTree(points[assigned_idx])
+                _, nn = nn_tree.query(points[unassigned], k=1)
+                instance_ids[unassigned] = instance_ids[assigned_idx[nn]]
+                log(f"Catchall: snapped {unassigned.size} remaining stragglers to nearest segment")
 
     # If the entire pipeline produced nothing (degenerate cloud), fall back
     # to a single bucket so the UI still has something to show.
