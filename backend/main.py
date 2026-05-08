@@ -21,7 +21,6 @@ import os
 import threading as _threading
 import time as _time
 import uuid
-import uuid as _uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1253,7 +1252,7 @@ class PresegOptimizeStatusResponse(BaseModel):
 
 def _new_job_state(total: int) -> dict:
     return {
-        "id": str(_uuid.uuid4()),
+        "id": str(uuid.uuid4()),
         "thread": None,
         "cancel": _threading.Event(),
         "status": "running",
