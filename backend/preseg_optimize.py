@@ -15,9 +15,14 @@ import numpy as np
 
 PENALTY = 1e6
 MIN_SEG_PTS = 30
-LAMBDA_SEG = 1e-3
+LAMBDA_SEG = 5e-3
 MIN_SEGMENTS = 5
 MAX_SEGMENTS = 5000
+# Soft penalty when any single segment hogs more than this fraction of all
+# assigned points. Each percentage-point above the threshold adds OVERSIZE_GAIN
+# to the score, so the optimiser actively prefers splits.
+OVERSIZE_FRAC = 0.20
+OVERSIZE_GAIN = 0.5
 
 
 def _plane_rms(pts: np.ndarray) -> float:
@@ -99,13 +104,12 @@ def score_segmentation(xyz: np.ndarray, instance_ids: np.ndarray) -> float:
     xyz = xyz[mask]
     ids = instance_ids[mask]
 
-    unique_ids = np.unique(ids)
+    unique_ids, counts = np.unique(ids, return_counts=True)
     n_segments = len(unique_ids)
     if n_segments < MIN_SEGMENTS or n_segments > MAX_SEGMENTS:
         return PENALTY
 
     rms_values: list[float] = []
-    weights: list[int] = []
     for seg_id in unique_ids:
         seg_pts = xyz[ids == seg_id]
         if len(seg_pts) < MIN_SEG_PTS:
@@ -114,15 +118,18 @@ def score_segmentation(xyz: np.ndarray, instance_ids: np.ndarray) -> float:
         if not np.isfinite(score):
             continue
         rms_values.append(score)
-        weights.append(len(seg_pts))
 
     if not rms_values:
         return PENALTY
 
-    rms_arr = np.asarray(rms_values, dtype=np.float64)
-    w_arr = np.asarray(weights, dtype=np.float64)
-    weighted_mean = float(np.sum(rms_arr * w_arr) / np.sum(w_arr))
-    return weighted_mean - LAMBDA_SEG * float(np.log(n_segments))
+    # Unweighted: each qualifying segment contributes equally so a single
+    # giant pure segment can't drown out many small pure ones.
+    mean_rms = float(np.mean(rms_values))
+    log_bonus = LAMBDA_SEG * float(np.log(n_segments))
+    total_assigned = int(counts.sum())
+    largest_frac = float(counts.max() / max(total_assigned, 1))
+    oversize = max(0.0, largest_frac - OVERSIZE_FRAC) * OVERSIZE_GAIN
+    return mean_rms + oversize - log_bonus
 
 
 SEARCH_SPACE: dict[str, tuple[float, float, str]] = {
