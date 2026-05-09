@@ -1758,6 +1758,95 @@ def segment_save():
     }
 
 
+# ── Edit-mode full-density slice export ─────────────────────────────────────
+# The frontend's Edit mode operates on the subsampled cloud, so its
+# slice indices only address `len(sub.points)` points. To export the
+# raw-density survivors, the client sends the chain of oriented selection
+# boxes used to build the active slice; we replay that chain against the
+# in-memory full-density `pc.points` and stream a binary PLY back.
+
+class _ObbBox(BaseModel):
+    center: list[float]    # [cx, cy, cz] in recentered scene units
+    size: list[float]      # [sx, sy, sz]
+    rotation: list[float]  # [rx, ry, rz] Euler XYZ (radians), Three.js convention
+
+
+class ExportPlyRequest(BaseModel):
+    scene: str
+    boxes: list[_ObbBox]   # applied in order; root → active. Empty = whole cloud.
+
+
+def _euler_xyz_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
+    """Three.js Euler XYZ → 3x3 rotation matrix (Rz · Ry · Rx)."""
+    cx, sx = np.cos(rx), np.sin(rx)
+    cy, sy = np.cos(ry), np.sin(ry)
+    cz, sz = np.cos(rz), np.sin(rz)
+    return np.array([
+        [cy * cz,  sx * sy * cz - cx * sz,  cx * sy * cz + sx * sz],
+        [cy * sz,  sx * sy * sz + cx * cz,  cx * sy * sz - sx * cz],
+        [-sy,      sx * cy,                 cx * cy],
+    ], dtype=np.float64)
+
+
+def _obb_mask(points: np.ndarray, box: _ObbBox) -> np.ndarray:
+    c = np.asarray(box.center, dtype=np.float64)
+    s = np.asarray(box.size, dtype=np.float64)
+    R = _euler_xyz_matrix(*box.rotation)
+    # local = R^T · (p - c)  → vectorized as (p - c) @ R
+    local = (points.astype(np.float64) - c) @ R
+    half = s / 2.0
+    return np.all(np.abs(local) <= half + 1e-6, axis=1)
+
+
+@app.post("/api/edit/export-ply")
+def edit_export_ply(req: ExportPlyRequest) -> Response:
+    pc = _state.get("pc")
+    scene = _state.get("scene")
+    if pc is None or scene is None:
+        raise HTTPException(409, "no scene loaded")
+    if req.scene != scene:
+        raise HTTPException(409, f"scene mismatch — server has '{scene}', request was '{req.scene}'")
+
+    points = pc.points
+    colors = pc.colors
+
+    mask = np.ones(len(points), dtype=bool)
+    for box in req.boxes:
+        if not mask.any():
+            break
+        idx = np.flatnonzero(mask)
+        keep = idx[_obb_mask(points[idx], box)]
+        mask = np.zeros_like(mask)
+        mask[keep] = True
+
+    sel_points = points[mask].astype(np.float32, copy=False)
+    n = int(len(sel_points))
+    has_color = colors is not None
+    sel_colors = colors[mask].astype(np.uint8, copy=False) if has_color else None
+
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        + ("property uchar red\nproperty uchar green\nproperty uchar blue\n" if has_color else "")
+        + "end_header\n"
+    ).encode("ascii")
+
+    if has_color:
+        dt = np.dtype([("xyz", "<f4", 3), ("rgb", "u1", 3)])
+        rec = np.empty(n, dtype=dt)
+        rec["xyz"] = sel_points
+        rec["rgb"] = sel_colors
+        body = rec.tobytes()
+    else:
+        body = sel_points.astype("<f4", copy=False).tobytes()
+
+    return Response(content=header + body, media_type="application/octet-stream")
+
+
 # ── Static frontend ─────────────────────────────────────────────────────────
 # Mounted last so /api/* takes precedence. In dev, Vite serves the frontend
 # directly and proxies /api/* to this backend; in production, run `npm run

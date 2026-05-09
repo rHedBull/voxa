@@ -193,7 +193,7 @@ function safeFilename(s) {
   return (s || 'slice').replace(/[^a-z0-9_\-]+/gi, '_').slice(0, 64) || 'slice';
 }
 
-export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, onCameraChange }) {
+export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, onCameraChange, sceneName }) {
   // Slice chain: [{ id, name, parentId, indices: Uint32Array | null }].
   // Original is the head with indices=null (means all points).
   const [slices, setSlices] = useState([]);
@@ -280,7 +280,18 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
     }
     const id = nextSliceId();
     const name = `Slice ${slices.length}`;
-    const newSlice = { id, name, parentId: activeSlice.id, indices: survivors };
+    const newSlice = {
+      id, name,
+      parentId: activeSlice.id,
+      indices: survivors,
+      // Snapshot the OBB used to build this slice — the server export
+      // replays the chain against the full-density cloud.
+      box: {
+        center: [...selBox.center],
+        size: [...selBox.size],
+        rotation: [...selBox.rotation],
+      },
+    };
     setSlices((arr) => [...arr, newSlice]);
     setActiveId(id);
   }, [cloud, activeSlice, selBox, slices.length]);
@@ -305,11 +316,56 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
     });
   }, [slices]);
 
+  const [exportFull, setExportFull] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+
   const exportActiveSlice = useCallback(async () => {
     if (!cloud || !activeSlice) return;
-    const blob = buildPlyBlob(cloud, activeSlice.indices);
-    await saveBlob(blob, `${safeFilename(activeSlice.name)}.ply`);
-  }, [cloud, activeSlice]);
+    const fname = `${safeFilename(activeSlice.name)}.ply`;
+
+    if (!exportFull) {
+      // Subsampled (in-memory cloud) — same as before.
+      const blob = buildPlyBlob(cloud, activeSlice.indices);
+      await saveBlob(blob, fname);
+      return;
+    }
+
+    if (!sceneName) {
+      window.alert('Cannot export: no active scene id.');
+      return;
+    }
+    // Walk root → active and collect every OBB along the way (Original
+    // has no box). Order matters: each box was sized relative to the
+    // intermediate slice that came before it.
+    const byId = new Map(slices.map((s) => [s.id, s]));
+    const chain = [];
+    let cur = activeSlice;
+    while (cur) {
+      if (cur.box) chain.push(cur.box);
+      cur = cur.parentId ? byId.get(cur.parentId) : null;
+    }
+    chain.reverse();
+
+    setExportBusy(true);
+    try {
+      const r = await fetch('/api/edit/export-ply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scene: sceneName, boxes: chain }),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`server ${r.status}: ${t || r.statusText}`);
+      }
+      const blob = await r.blob();
+      await saveBlob(blob, fname);
+    } catch (err) {
+      console.error('full-density export failed:', err);
+      window.alert(`Export failed: ${err.message || err}`);
+    } finally {
+      setExportBusy(false);
+    }
+  }, [cloud, activeSlice, slices, sceneName, exportFull]);
 
   const renameSlice = useCallback((id, name) => {
     if (id === 'original') return;
@@ -377,8 +433,11 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
           onSaveSlice={saveSliceFromSelection}
           canSave={!!selBox && !!activeSlice}
           onExport={exportActiveSlice}
-          canExport={!!activeSlice && !!cloud}
+          canExport={!!activeSlice && !!cloud && !exportBusy}
           activeName={activeSlice?.name || ''}
+          exportFull={exportFull}
+          onExportFullChange={setExportFull}
+          exportBusy={exportBusy}
         />
       </div>
     </div>
@@ -390,6 +449,7 @@ function EditSidePanel({
   boxArmed, onToggleBox,
   transformMode, onTransformMode, onSaveSlice, canSave,
   onExport, canExport, activeName,
+  exportFull, onExportFullChange, exportBusy,
 }) {
   return (
     <>
@@ -451,12 +511,22 @@ function EditSidePanel({
 
         <div className="panel">
           <div className="panel-hd" style={{ textAlign: 'center' }}>Export</div>
-          <div className="panel-body" style={{ alignItems: 'center' }}>
+          <div className="panel-body" style={{ alignItems: 'center', gap: 6 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+              <input type="checkbox"
+                checked={!!exportFull}
+                onChange={(e) => onExportFullChange(e.target.checked)} />
+              Full density (server)
+            </label>
             <button className="header-btn"
               disabled={!canExport}
               onClick={onExport}
-              title={canExport ? `Download "${activeName}" as PLY` : 'Pick a slice first'}>
-              ⤓ Export active as PLY
+              title={canExport
+                ? (exportFull
+                    ? `Replay slice chain on full-density cloud and download "${activeName}.ply"`
+                    : `Download "${activeName}" as PLY (subsampled view)`)
+                : 'Pick a slice first'}>
+              {exportBusy ? '… exporting' : '⤓ Export active as PLY'}
             </button>
           </div>
         </div>

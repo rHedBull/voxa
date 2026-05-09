@@ -545,6 +545,7 @@ function MainApp() {
         )}
         {t.mode === 'edit' && (
           <EditMode key="e" cloud={cloud} theme={theme} viewerRef={viewerRef}
+            sceneName={activeScene}
             navMode={navMode} onNavModeChange={setNavMode}
             onCameraChange={onMainCameraChange} />
         )}
