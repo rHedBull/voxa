@@ -13,8 +13,9 @@ const SEL_COLOR = '#ffd24a';
 
 // Test which active-slice points fall inside an oriented box.
 // Box-local frame: subtract center, apply inverse rotation (Euler XYZ),
-// check |x| < sx/2 etc.
-function pointsInsideOBB(positions, indices, box) {
+// check |x| < sx/2 etc. `inside=false` flips the predicate (returns
+// points strictly outside the box) — used for the "delete" op.
+function pointsInsideOBB(positions, indices, box, inside = true) {
   const [cx, cy, cz] = box.center;
   const [sx, sy, sz] = box.size;
   const [rx, ry, rz] = box.rotation;
@@ -48,9 +49,8 @@ function pointsInsideOBB(positions, indices, box) {
     const lx = m00 * px + m10 * py + m20 * pz;
     const ly = m01 * px + m11 * py + m21 * pz;
     const lz = m02 * px + m12 * py + m22 * pz;
-    if (lx >= -hx && lx <= hx && ly >= -hy && ly <= hy && lz >= -hz && lz <= hz) {
-      out.push(i);
-    }
+    const hit = lx >= -hx && lx <= hx && ly >= -hy && ly <= hy && lz >= -hz && lz <= hz;
+    if (hit === inside) out.push(i);
   }
   return Uint32Array.from(out);
 }
@@ -194,8 +194,11 @@ function safeFilename(s) {
 }
 
 export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, onCameraChange, sceneName }) {
-  // Slice chain: [{ id, name, parentId, indices: Uint32Array | null }].
-  // Original is the head with indices=null (means all points).
+  // Slice chain: [{ id, name, parentId, ops }].
+  // Each op is { op: 'keep'|'delete', center, size, rotation }, applied
+  // in order against the parent's index pool. Original has parentId=null
+  // and ops=null (means "all points"). Indices are derived (memo below)
+  // so that editing an ancestor automatically reflows descendants.
   const [slices, setSlices] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [transformMode, setTransformMode] = useState('translate');
@@ -210,20 +213,39 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
       return;
     }
     _sliceSeq = 0;
-    const original = { id: 'original', name: 'Original', parentId: null, indices: null };
+    const original = { id: 'original', name: 'Original', parentId: null, ops: null };
     setSlices([original]);
     setActiveId('original');
   }, [cloud]);
+
+  // Derive each slice's index pool from its ancestors' ops. Slices are
+  // stored in insertion order, which is topological (children always come
+  // after their parent), so a single forward pass suffices.
+  const indicesById = useMemo(() => {
+    const map = new Map();
+    if (!cloud) return map;
+    for (const s of slices) {
+      if (!s.parentId) { map.set(s.id, null); continue; }
+      let cur = map.get(s.parentId);
+      if (cur === undefined) cur = null;
+      for (const op of (s.ops || [])) {
+        cur = pointsInsideOBB(cloud.positions, cur, op, op.op !== 'delete');
+      }
+      map.set(s.id, cur);
+    }
+    return map;
+  }, [cloud, slices]);
 
   const activeSlice = useMemo(
     () => slices.find((s) => s.id === activeId) || null,
     [slices, activeId]
   );
+  const activeIndices = activeSlice ? (indicesById.get(activeSlice.id) ?? null) : null;
 
   // The viewer cloud is the active slice's points only.
   const viewerCloud = useMemo(
-    () => activeSlice ? deriveCloud(cloud, activeSlice.indices) : null,
-    [cloud, activeSlice]
+    () => activeSlice ? deriveCloud(cloud, activeIndices) : null,
+    [cloud, activeSlice, activeIndices]
   );
 
   // Drop the selection box whenever the active slice changes. The user
@@ -271,9 +293,16 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
     setSelBox((b) => b ? { ...b, ...patch } : b);
   }, []);
 
+  const opFromSelBox = (kind) => ({
+    op: kind,
+    center: [...selBox.center],
+    size: [...selBox.size],
+    rotation: [...selBox.rotation],
+  });
+
   const saveSliceFromSelection = useCallback(() => {
     if (!cloud || !activeSlice || !selBox) return;
-    const survivors = pointsInsideOBB(cloud.positions, activeSlice.indices, selBox);
+    const survivors = pointsInsideOBB(cloud.positions, activeIndices, selBox);
     if (survivors.length === 0) {
       window.alert('Selection is empty — nothing to slice.');
       return;
@@ -283,18 +312,41 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
     const newSlice = {
       id, name,
       parentId: activeSlice.id,
-      indices: survivors,
-      // Snapshot the OBB used to build this slice — the server export
-      // replays the chain against the full-density cloud.
-      box: {
-        center: [...selBox.center],
-        size: [...selBox.size],
-        rotation: [...selBox.rotation],
-      },
+      // Op chain is replayed root → active by the server export so
+      // full-density survivors match what the user sees here.
+      ops: [opFromSelBox('keep')],
     };
     setSlices((arr) => [...arr, newSlice]);
     setActiveId(id);
-  }, [cloud, activeSlice, selBox, slices.length]);
+    setSelBox(null);
+  }, [cloud, activeSlice, activeIndices, selBox, slices.length]);
+
+  // Box-delete: strip the selection from the *active* slice in place
+  // (descendants reflow automatically via indicesById). Original is
+  // immutable, so we refuse there — pick or create a slice first.
+  const deleteInsideBox = useCallback(() => {
+    if (!cloud || !activeSlice || !selBox) return;
+    if (activeSlice.id === 'original') {
+      window.alert('Original is read-only — pick or create a slice first.');
+      return;
+    }
+    const survivors = pointsInsideOBB(cloud.positions, activeIndices, selBox, false);
+    if (activeIndices && survivors.length === activeIndices.length) {
+      window.alert('Selection is empty — nothing to delete.');
+      return;
+    }
+    if (survivors.length === 0) {
+      const ok = window.confirm('This will remove every point from the active slice. Continue?');
+      if (!ok) return;
+    }
+    const newOp = opFromSelBox('delete');
+    setSlices((arr) => arr.map((s) =>
+      s.id === activeSlice.id
+        ? { ...s, ops: [...(s.ops || []), newOp] }
+        : s
+    ));
+    setSelBox(null);
+  }, [cloud, activeSlice, activeIndices, selBox]);
 
   // Delete a slice + every descendant. Original cannot be deleted.
   const deleteSlice = useCallback((id) => {
@@ -325,7 +377,7 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
 
     if (!exportFull) {
       // Subsampled (in-memory cloud) — same as before.
-      const blob = buildPlyBlob(cloud, activeSlice.indices);
+      const blob = buildPlyBlob(cloud, activeIndices);
       await saveBlob(blob, fname);
       return;
     }
@@ -334,24 +386,25 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
       window.alert('Cannot export: no active scene id.');
       return;
     }
-    // Walk root → active and collect every OBB along the way (Original
-    // has no box). Order matters: each box was sized relative to the
-    // intermediate slice that came before it.
+    // Walk root → active and concatenate every op along the way. Each
+    // op was authored relative to the intermediate slice that came
+    // before it, so order matters.
     const byId = new Map(slices.map((s) => [s.id, s]));
-    const chain = [];
+    const stack = [];
     let cur = activeSlice;
     while (cur) {
-      if (cur.box) chain.push(cur.box);
+      if (cur.ops && cur.ops.length) stack.push(cur.ops);
       cur = cur.parentId ? byId.get(cur.parentId) : null;
     }
-    chain.reverse();
+    stack.reverse();
+    const ops = stack.flat();
 
     setExportBusy(true);
     try {
       const r = await fetch('/api/edit/export-ply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: sceneName, boxes: chain }),
+        body: JSON.stringify({ scene: sceneName, ops }),
       });
       if (!r.ok) {
         const t = await r.text().catch(() => '');
@@ -365,7 +418,7 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
     } finally {
       setExportBusy(false);
     }
-  }, [cloud, activeSlice, slices, sceneName, exportFull]);
+  }, [cloud, activeSlice, activeIndices, slices, sceneName, exportFull]);
 
   const renameSlice = useCallback((id, name) => {
     if (id === 'original') return;
@@ -422,7 +475,9 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
 
         <EditSidePanel
           slices={slices}
+          indicesById={indicesById}
           activeId={activeId}
+          activeIsOriginal={activeSlice?.id === 'original'}
           onPick={setActiveId}
           onDelete={deleteSlice}
           onRename={renameSlice}
@@ -431,6 +486,7 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
           transformMode={transformMode}
           onTransformMode={setTransformMode}
           onSaveSlice={saveSliceFromSelection}
+          onDeleteInBox={deleteInsideBox}
           canSave={!!selBox && !!activeSlice}
           onExport={exportActiveSlice}
           canExport={!!activeSlice && !!cloud && !exportBusy}
@@ -445,9 +501,10 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
 }
 
 function EditSidePanel({
-  slices, activeId, onPick, onDelete, onRename,
+  slices, indicesById, activeId, activeIsOriginal,
+  onPick, onDelete, onRename,
   boxArmed, onToggleBox,
-  transformMode, onTransformMode, onSaveSlice, canSave,
+  transformMode, onTransformMode, onSaveSlice, onDeleteInBox, canSave,
   onExport, canExport, activeName,
   exportFull, onExportFullChange, exportBusy,
 }) {
@@ -464,6 +521,7 @@ function EditSidePanel({
             {slices.map((s) => (
               <SliceRow key={s.id}
                 slice={s}
+                count={indicesById?.get(s.id)?.length ?? null}
                 active={s.id === activeId}
                 onPick={() => onPick(s.id)}
                 onDelete={() => onDelete(s.id)}
@@ -503,8 +561,18 @@ function EditSidePanel({
             <button className="header-btn primary"
               disabled={!canSave}
               onClick={onSaveSlice}
+              title="Create a new child slice from points inside the box"
               style={{ marginTop: 8 }}>
-              Save slice
+              Save as new slice
+            </button>
+            <button className="header-btn"
+              disabled={!canSave || activeIsOriginal}
+              onClick={onDeleteInBox}
+              title={activeIsOriginal
+                ? 'Original is read-only — pick or create a slice first'
+                : 'Remove points inside the box from the active slice (descendants reflow automatically)'}
+              style={{ marginTop: 4 }}>
+              ✕ Delete in box
             </button>
           </div>
         </div>
@@ -535,14 +603,13 @@ function EditSidePanel({
   );
 }
 
-function SliceRow({ slice, active, onPick, onDelete, onRename }) {
+function SliceRow({ slice, count, active, onPick, onDelete, onRename }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(slice.name);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => { setDraft(slice.name); }, [slice.name]);
 
   const isOriginal = slice.id === 'original';
-  const count = slice.indices ? slice.indices.length : null;
 
   const iconBtnStyle = {
     width: 22, height: 22, padding: 0,

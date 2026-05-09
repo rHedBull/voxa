@@ -1771,9 +1771,16 @@ class _ObbBox(BaseModel):
     rotation: list[float]  # [rx, ry, rz] Euler XYZ (radians), Three.js convention
 
 
+class _ObbOp(_ObbBox):
+    op: str = "keep"       # "keep" intersects, "delete" subtracts
+
+
 class ExportPlyRequest(BaseModel):
     scene: str
-    boxes: list[_ObbBox]   # applied in order; root → active. Empty = whole cloud.
+    # Applied root → active. Empty = whole cloud. `ops` is the canonical
+    # field; `boxes` is accepted as a legacy alias treated as all-keep.
+    ops: list[_ObbOp] | None = None
+    boxes: list[_ObbBox] | None = None
 
 
 def _euler_xyz_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
@@ -1810,14 +1817,25 @@ def edit_export_ply(req: ExportPlyRequest) -> Response:
     points = pc.points
     colors = pc.colors
 
+    if req.ops is not None:
+        ops = list(req.ops)
+    elif req.boxes is not None:
+        ops = [_ObbOp(op="keep", center=b.center, size=b.size, rotation=b.rotation)
+               for b in req.boxes]
+    else:
+        ops = []
+
     mask = np.ones(len(points), dtype=bool)
-    for box in req.boxes:
+    for op in ops:
         if not mask.any():
             break
         idx = np.flatnonzero(mask)
-        keep = idx[_obb_mask(points[idx], box)]
-        mask = np.zeros_like(mask)
-        mask[keep] = True
+        inside = idx[_obb_mask(points[idx], op)]
+        if op.op == "delete":
+            mask[inside] = False
+        else:
+            mask = np.zeros_like(mask)
+            mask[inside] = True
 
     sel_points = points[mask].astype(np.float32, copy=False)
     n = int(len(sel_points))
