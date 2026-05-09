@@ -118,6 +118,81 @@ function deriveCloud(original, indices) {
 let _sliceSeq = 0;
 const nextSliceId = () => `slice_${++_sliceSeq}_${Date.now().toString(36)}`;
 
+// Build a binary little-endian PLY blob from a slice. If `indices` is null
+// the whole cloud is exported. Colors are written as RGB uint8 (0-255).
+function buildPlyBlob(cloud, indices) {
+  const N = indices ? indices.length : cloud.positions.length / 3;
+  const hasColor = !!cloud.colors;
+  const header =
+    'ply\n' +
+    'format binary_little_endian 1.0\n' +
+    `element vertex ${N}\n` +
+    'property float x\n' +
+    'property float y\n' +
+    'property float z\n' +
+    (hasColor
+      ? 'property uchar red\nproperty uchar green\nproperty uchar blue\n'
+      : '') +
+    'end_header\n';
+  const stride = hasColor ? 15 : 12;
+  const buf = new ArrayBuffer(N * stride);
+  const dv = new DataView(buf);
+  for (let k = 0; k < N; k++) {
+    const i = indices ? indices[k] : k;
+    const off = k * stride;
+    dv.setFloat32(off,     cloud.positions[3*i],   true);
+    dv.setFloat32(off + 4, cloud.positions[3*i+1], true);
+    dv.setFloat32(off + 8, cloud.positions[3*i+2], true);
+    if (hasColor) {
+      const r = Math.max(0, Math.min(255, Math.round(cloud.colors[3*i]   * 255)));
+      const g = Math.max(0, Math.min(255, Math.round(cloud.colors[3*i+1] * 255)));
+      const b = Math.max(0, Math.min(255, Math.round(cloud.colors[3*i+2] * 255)));
+      dv.setUint8(off + 12, r);
+      dv.setUint8(off + 13, g);
+      dv.setUint8(off + 14, b);
+    }
+  }
+  return new Blob([header, buf], { type: 'application/octet-stream' });
+}
+
+// If the browser supports the File System Access API, open a native Save
+// dialog so the user picks both location AND filename. Otherwise fall back
+// to the standard `<a download>` flow (saves to the default download dir).
+async function saveBlob(blob, suggestedName) {
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{
+          description: 'Polygon File Format',
+          accept: { 'application/octet-stream': ['.ply'] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return true;
+    } catch (err) {
+      // User cancelled (AbortError) — silent. Anything else, fall through.
+      if (err && err.name === 'AbortError') return false;
+      console.warn('showSaveFilePicker failed, falling back:', err);
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = suggestedName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
+}
+
+function safeFilename(s) {
+  return (s || 'slice').replace(/[^a-z0-9_\-]+/gi, '_').slice(0, 64) || 'slice';
+}
+
 export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, onCameraChange }) {
   // Slice chain: [{ id, name, parentId, indices: Uint32Array | null }].
   // Original is the head with indices=null (means all points).
@@ -230,6 +305,12 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
     });
   }, [slices]);
 
+  const exportActiveSlice = useCallback(async () => {
+    if (!cloud || !activeSlice) return;
+    const blob = buildPlyBlob(cloud, activeSlice.indices);
+    await saveBlob(blob, `${safeFilename(activeSlice.name)}.ply`);
+  }, [cloud, activeSlice]);
+
   const renameSlice = useCallback((id, name) => {
     if (id === 'original') return;
     setSlices((arr) => arr.map((s) => s.id === id ? { ...s, name } : s));
@@ -295,6 +376,9 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
           onTransformMode={setTransformMode}
           onSaveSlice={saveSliceFromSelection}
           canSave={!!selBox && !!activeSlice}
+          onExport={exportActiveSlice}
+          canExport={!!activeSlice && !!cloud}
+          activeName={activeSlice?.name || ''}
         />
       </div>
     </div>
@@ -305,6 +389,7 @@ function EditSidePanel({
   slices, activeId, onPick, onDelete, onRename,
   boxArmed, onToggleBox,
   transformMode, onTransformMode, onSaveSlice, canSave,
+  onExport, canExport, activeName,
 }) {
   return (
     <>
@@ -329,16 +414,15 @@ function EditSidePanel({
       </div>
 
       {/* Right: tools */}
-      <div className="inspect-right">
+      <div className="inspect-right" style={{ width: 'auto' }}>
         <div className="panel">
-          <div className="panel-hd">Tool</div>
-          <div className="panel-body">
+          <div className="panel-hd" style={{ textAlign: 'center' }}>Tool</div>
+          <div className="panel-body" style={{ alignItems: 'center' }}>
             <button
               className={'header-btn' + (boxArmed ? ' primary' : '')}
               onClick={onToggleBox}
-              title={boxArmed ? 'Cancel (Esc)' : 'Draw a selection box'}
-              style={{ width: '100%', justifyContent: 'center' }}>
-              {boxArmed ? '◫ Box active — click to cancel' : '◫ Box select'}
+              title={boxArmed ? 'Cancel (Esc)' : 'Draw a selection box'}>
+              {boxArmed ? '◫ Cancel box (Esc)' : '◫ Box select'}
             </button>
             {boxArmed && (
               <div className="ctrl" style={{ marginTop: 8 }}>
@@ -359,8 +443,20 @@ function EditSidePanel({
             <button className="header-btn primary"
               disabled={!canSave}
               onClick={onSaveSlice}
-              style={{ width: '100%', justifyContent: 'center', marginTop: 8 }}>
-              Save selection as slice
+              style={{ marginTop: 8 }}>
+              Save slice
+            </button>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-hd" style={{ textAlign: 'center' }}>Export</div>
+          <div className="panel-body" style={{ alignItems: 'center' }}>
+            <button className="header-btn"
+              disabled={!canExport}
+              onClick={onExport}
+              title={canExport ? `Download "${activeName}" as PLY` : 'Pick a slice first'}>
+              ⤓ Export active as PLY
             </button>
           </div>
         </div>
@@ -372,10 +468,20 @@ function EditSidePanel({
 function SliceRow({ slice, active, onPick, onDelete, onRename }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(slice.name);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => { setDraft(slice.name); }, [slice.name]);
 
   const isOriginal = slice.id === 'original';
   const count = slice.indices ? slice.indices.length : null;
+
+  const iconBtnStyle = {
+    width: 22, height: 22, padding: 0,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 12, lineHeight: 1, marginLeft: 4,
+    background: 'transparent', border: '1px solid transparent',
+    color: 'inherit', opacity: 0.6, cursor: 'pointer',
+    borderRadius: 4,
+  };
 
   return (
     <div className={'inst-row' + (active ? ' selected' : '')}
@@ -402,11 +508,53 @@ function SliceRow({ slice, active, onPick, onDelete, onRename }) {
         )}
         <em>{count != null ? `${count.toLocaleString()} pts` : 'all pts'}</em>
       </div>
-      {!isOriginal && (
-        <button className="header-btn icon-only"
-          title="Delete slice (and descendants)"
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          style={{ marginLeft: 4 }}>×</button>
+      {!isOriginal && !editing && !confirmingDelete && (
+        <>
+          <button
+            title="Rename"
+            onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+            style={iconBtnStyle}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = 1; e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = 0.6; e.currentTarget.style.background = 'transparent'; }}>
+            ✎
+          </button>
+          <button
+            title="Delete slice"
+            onClick={(e) => { e.stopPropagation(); setConfirmingDelete(true); }}
+            style={iconBtnStyle}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = 1; e.currentTarget.style.color = 'oklch(0.7 0.18 25)'; e.currentTarget.style.background = 'rgba(255,80,80,0.10)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = 0.6; e.currentTarget.style.color = 'inherit'; e.currentTarget.style.background = 'transparent'; }}>
+            🗑
+          </button>
+        </>
+      )}
+      {confirmingDelete && (
+        <div onClick={(e) => e.stopPropagation()}
+             style={{
+               display: 'inline-flex', gap: 4, alignItems: 'center', marginLeft: 6,
+               padding: '2px 6px', borderRadius: 4,
+               background: 'rgba(255,80,80,0.12)',
+               border: '1px solid rgba(255,80,80,0.35)',
+               fontSize: 11,
+             }}>
+          <span style={{ opacity: 0.85 }}>Delete?</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); setConfirmingDelete(false); onDelete(); }}
+            title="Confirm delete (also removes descendants)"
+            style={{
+              padding: '2px 6px', fontSize: 11, cursor: 'pointer',
+              background: 'oklch(0.55 0.18 25)', color: 'white',
+              border: 'none', borderRadius: 3,
+            }}>OK</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setConfirmingDelete(false); }}
+            title="Cancel"
+            style={{
+              padding: '2px 6px', fontSize: 11, cursor: 'pointer',
+              background: 'transparent', color: 'inherit',
+              border: '1px solid rgba(255,255,255,0.2)', borderRadius: 3,
+            }}>Cancel</button>
+        </div>
       )}
     </div>
   );
