@@ -44,6 +44,7 @@ from scene_registry import (
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("VOXA_DATA_DIR", ROOT / "data"))
+PRESEG_RUNS_DIR = DATA_DIR / "preseg_runs"
 SCENES_DIR = DATA_DIR / "scenes"
 ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
@@ -1114,12 +1115,48 @@ class RansacParams(BaseModel):
     merge_radius_ratio: Optional[float] = None
 
 
+class Sam3RenderRun(BaseModel):
+    """One render directory found under VOXA_RENDERS_ROOT for a scene."""
+    path: str
+    name: str
+    scene: str
+    n_frames: int
+    has_orbit_target: bool
+    mtime: float
+
+
+class Sam3RendersResponse(BaseModel):
+    scene: str
+    root: str
+    root_exists: bool
+    runs: list[Sam3RenderRun]
+
+
+class Sam3Params(BaseModel):
+    """SAM3 feature-aware sub-segmentation (ransac mode only).
+
+    When ``render_dirs`` is non-empty the backend extracts per-point
+    SAM3 features from the listed render directories, then post-
+    processes large RANSAC instances by k-means in feature space so
+    they split along semantic boundaries (e.g. a single ground plane
+    splits into pipe/walkway/floor sub-regions).
+    """
+    render_dirs: list[str] = []     # absolute paths returned by /api/sam3/renders
+    fpn_level: int = 0
+    pca_dim: int = 64
+    force_recompute: bool = False
+    split_min_size: int = 3000      # only instances ≥ this many points are split
+    split_target_size: int = 5000   # target pts per sub-cluster
+    split_max_k: int = 8
+
+
 class PresegmentRequest(BaseModel):
     mode: Literal["voxel", "ransac", "model"] = "voxel"
     resolution: float = 0.05      # voxel size in scene units (voxel mode only)
     preserve_labeled: bool = True  # only re-presegment points with class_id < 0
     ransac: Optional[RansacParams] = None  # ransac mode overrides
     labeler_strict: bool = False  # ransac mode: bit-for-bit industrial_point_labeler pipeline
+    sam3: Optional[Sam3Params] = None  # ransac mode: feature-aware sub-segmentation
 
 
 class PresegmentResponse(BaseModel):
@@ -1281,6 +1318,47 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
 
     if redo_mask.any():
         sub_positions = np.asarray(positions[redo_mask], dtype=np.float64)
+        scene_id = _state.get("scene") or "_unknown"
+        ransac_params = req.ransac.model_dump(exclude_none=True) if req.ransac else None
+
+        sam3_features = None
+        sam3_seen = None
+        sam3_kwargs = {}
+        if (req.mode == "ransac" and req.sam3 is not None
+                and req.sam3.render_dirs):
+            import sam3_features as _sam3
+            root = _sam3.renders_root()
+            resolved: list[Path] = []
+            for p in req.sam3.render_dirs:
+                rp = Path(p).resolve()
+                # Enforce that paths live under the configured root
+                try:
+                    rp.relative_to(root.resolve())
+                except ValueError:
+                    raise HTTPException(
+                        400,
+                        f"render_dir {p!r} is not under VOXA_RENDERS_ROOT={root}",
+                    )
+                if not (rp / "manifest.json").exists():
+                    raise HTTPException(400, f"missing manifest.json in {p}")
+                resolved.append(rp)
+            sam3_features, sam3_seen, _meta = _sam3.extract_or_load(
+                sub_positions, scene_id,
+                render_dirs=resolved,
+                cache_dir=PRESEG_RUNS_DIR,
+                fpn_level=int(req.sam3.fpn_level),
+                pca_dim=int(req.sam3.pca_dim),
+                force=bool(req.sam3.force_recompute),
+                log=print,
+            )
+            sam3_kwargs = {
+                "feature_split_min_size": int(req.sam3.split_min_size),
+                "feature_split_target_size": int(req.sam3.split_target_size),
+                "feature_split_max_k": int(req.sam3.split_max_k),
+            }
+        else:
+            sam3_kwargs = {}
+
         sub_inst, sub_summary = _run_presegment(
             sub_positions,
             mode=req.mode,
@@ -1289,6 +1367,9 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
             resolution=float(req.resolution),
             ransac_params=req.ransac.model_dump(exclude_none=True) if req.ransac else None,
             labeler_strict=req.labeler_strict,
+            features=sam3_features,
+            feature_seen=sam3_seen,
+            **sam3_kwargs,
         )
     else:
         sub_inst = np.empty(0, dtype=np.int32)
@@ -1334,6 +1415,35 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
         hull_vertices=_b64(hull_v),
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
+    )
+
+
+@app.get("/api/sam3/renders", response_model=Sam3RendersResponse)
+def sam3_list_renders(scene: Optional[str] = None):
+    """List render runs under VOXA_RENDERS_ROOT for a scene.
+
+    ``scene`` is the bare scene name (e.g. ``smart_ais``), not the
+    tier-prefixed id. If omitted, falls back to the active scene's
+    basename.
+    """
+    import sam3_features as _sam3
+    if not scene:
+        active = _state.get("scene") or ""
+        scene = active.split("/", 1)[-1] if active else ""
+    root = _sam3.renders_root()
+    runs = _sam3.discover_render_runs(scene, root=root) if scene else []
+    return Sam3RendersResponse(
+        scene=scene or "",
+        root=str(root),
+        root_exists=root.exists(),
+        runs=[
+            Sam3RenderRun(
+                path=str(r.path), name=r.name, scene=r.scene,
+                n_frames=r.n_frames, has_orbit_target=r.has_orbit_target,
+                mtime=r.mtime,
+            )
+            for r in runs
+        ],
     )
 
 

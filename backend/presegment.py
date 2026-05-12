@@ -29,6 +29,11 @@ def presegment(
     resolution: float = 0.05,
     ransac_params: Optional[dict[str, float]] = None,
     labeler_strict: bool = False,
+    features: Optional[np.ndarray] = None,
+    feature_seen: Optional[np.ndarray] = None,
+    feature_split_min_size: int = 3000,
+    feature_split_target_size: int = 5000,
+    feature_split_max_k: int = 8,
 ) -> tuple[np.ndarray, list[dict]]:
     if mode == "voxel":
         from presegment_voxel import presegment as _run
@@ -38,6 +43,10 @@ def presegment(
         return _run(
             xyz, class_map=class_map, log=log, params=ransac_params,
             labeler_strict=labeler_strict,
+            features=features, feature_seen=feature_seen,
+            feature_split_min_size=feature_split_min_size,
+            feature_split_target_size=feature_split_target_size,
+            feature_split_max_k=feature_split_max_k,
         )
     if mode == "model":
         raise NotImplementedError(
