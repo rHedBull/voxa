@@ -142,6 +142,43 @@ class SegmentSession:
             return set()
         return set(int(v) for v in np.unique(self.instance_ids[mask]) if v >= 0)
 
+    def hide_instance(self, inst_id: int) -> None:
+        self.hidden_inst_ids.add(int(inst_id))
+
+    def unhide_instance(self, inst_id: int) -> None:
+        self.hidden_inst_ids.discard(int(inst_id))
+
+    def snap_to_preseg(self, inst_ids: list[int]) -> dict:
+        """For every point whose live instance is in inst_ids, reset its
+        instance to its preseg id (class unchanged). On the undo stack."""
+        live = np.asarray(inst_ids, dtype=np.int32)
+        mask = np.isin(self.instance_ids, live) & (self.preseg_ids >= 0)
+        indices = np.flatnonzero(mask).astype(np.int32)
+        if indices.size == 0:
+            return {"op": "snap_to_preseg", "n_affected": 0}
+        before_cls = self.class_ids[indices].copy()
+        before_inst = self.instance_ids[indices].copy()
+        after_inst = self.preseg_ids[indices].copy().astype(np.int32)
+        self.instance_ids[indices] = after_inst
+        delta = _Delta(
+            op="snap_to_preseg", indices=indices,
+            before_cls=before_cls, before_inst=before_inst,
+            after_cls=before_cls.copy(),
+            after_inst=after_inst,
+        )
+        self._undo.append(delta)
+        if len(self._undo) > self.history_cap:
+            self._undo.popleft()
+        self._redo.clear()
+        self.dirty = True
+        return {
+            "op": "snap_to_preseg",
+            "n_affected": int(indices.size),
+            "indices": indices,
+            "after_class": before_cls,
+            "after_instance": after_inst,
+        }
+
     # ── KD-tree query ──
 
     def _ensure_tree(self):
