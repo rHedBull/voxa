@@ -3,8 +3,8 @@
 
 import { useState as useStateApp, useRef as useRefApp,
          useEffect as useEffectApp, useCallback as useCallbackApp } from 'react';
-import { VoxaAPI } from './api.js';
-import { initSegState, applyDelta } from './segment-state.js';
+import { VoxaAPI, getSegmentState } from './api.js';
+import { initSegState, applyDelta, hydrateFromServerState } from './segment-state.js';
 import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
@@ -231,6 +231,14 @@ function MainApp() {
         prelabelRef.current = { classFull: null, instanceFull: null };
         setSegState(null);
       }
+
+      // Hydrate hidden-inst-ids + preseg/source fingerprints from server state.
+      // This is separate from the segLive payload (which carries hulls/labels)
+      // and merges scalar fields onto the local segState owned by the FE.
+      getSegmentState().then((srv) => {
+        if (cancel) return;
+        setSegState((s) => (s ? hydrateFromServerState(s, srv) : s));
+      }).catch(() => {});
 
       // Cuboid recommendations from prelabels are disabled — the right
       // Instances panel only ever holds user-authored cuboids. Presegments

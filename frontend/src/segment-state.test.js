@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initSegState, applyDelta, recomputeSummary, computeDiffMask } from './segment-state.js';
+import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState } from './segment-state.js';
 
 const seed = () => initSegState({
   classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
@@ -66,5 +66,30 @@ describe('computeDiffMask', () => {
     const mask = computeDiffMask(cls, cls, inst, inst);
     expect(mask).toBeInstanceOf(Uint8Array);
     expect(mask.length).toBe(5);
+  });
+});
+
+describe('hydrateFromServerState', () => {
+  it('pulls hidden + preseg fields', () => {
+    const state = { hiddenInstIds: new Set(), presegRunId: null,
+                    presegFingerprint: null, sourceFingerprint: null,
+                    dirty: false };
+    const out = hydrateFromServerState(state, {
+      has_seg: true, n_points: 100,
+      preseg_run_id: 'r1', preseg_fingerprint: 'sha256:x',
+      source_fingerprint: 'sha256:y',
+      hidden_inst_ids: [3, 7],
+      is_from_prelabel: false, dirty: true,
+    });
+    expect(out.hiddenInstIds).toEqual(new Set([3, 7]));
+    expect(out.presegRunId).toBe('r1');
+    expect(out.presegFingerprint).toBe('sha256:x');
+    expect(out.dirty).toBe(true);
+  });
+
+  it('is a no-op when has_seg is false', () => {
+    const state = { hiddenInstIds: new Set([42]), presegRunId: 'old' };
+    const out = hydrateFromServerState(state, { has_seg: false });
+    expect(out).toBe(state);
   });
 });
