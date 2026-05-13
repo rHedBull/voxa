@@ -156,28 +156,10 @@ class SegmentSession:
         indices = np.flatnonzero(mask).astype(np.int32)
         if indices.size == 0:
             return {"op": "snap_to_preseg", "n_affected": 0}
-        before_cls = self.class_ids[indices].copy()
-        before_inst = self.instance_ids[indices].copy()
-        after_inst = self.preseg_ids[indices].copy().astype(np.int32)
-        self.instance_ids[indices] = after_inst
-        delta = _Delta(
-            op="snap_to_preseg", indices=indices,
-            before_cls=before_cls, before_inst=before_inst,
-            after_cls=before_cls.copy(),
-            after_inst=after_inst,
+        return self._apply(
+            "snap_to_preseg", indices,
+            dict(after_inst=self.preseg_ids[indices].copy()),
         )
-        self._undo.append(delta)
-        if len(self._undo) > self.history_cap:
-            self._undo.popleft()
-        self._redo.clear()
-        self.dirty = True
-        return {
-            "op": "snap_to_preseg",
-            "n_affected": int(indices.size),
-            "indices": indices,
-            "after_class": before_cls,
-            "after_instance": after_inst,
-        }
 
     # ── KD-tree query ──
 
@@ -241,6 +223,9 @@ class SegmentSession:
                 else:
                     self.instance_ids[indices] = np.int32(ti)
                 self.class_ids[indices] = np.int8(tc)
+        elif op == "snap_to_preseg":
+            self.instance_ids[indices] = payload["after_inst"].astype(np.int32, copy=False)
+            # class_ids unchanged
         else:
             raise ValueError(f"unknown op: {op}")
 
