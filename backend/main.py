@@ -1499,6 +1499,41 @@ def segment_state():
     )
 
 
+class HideRequest(BaseModel):
+    inst_id: int
+
+
+class SnapToPresegRequest(BaseModel):
+    inst_ids: list[int]
+
+
+@app.post("/api/segment/hide", response_model=SegmentStateResponse)
+def segment_hide(req: HideRequest):
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "no active segment session")
+    seg.hide_instance(req.inst_id)
+    return segment_state()
+
+
+@app.delete("/api/segment/hide/{inst_id}", response_model=SegmentStateResponse)
+def segment_unhide(inst_id: int):
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "no active segment session")
+    seg.unhide_instance(inst_id)
+    return segment_state()
+
+
+@app.post("/api/segment/snap-to-preseg")
+def segment_snap_to_preseg(req: SnapToPresegRequest):
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "no active segment session")
+    out = seg.snap_to_preseg(req.inst_ids)
+    return {"n_affected": int(out["n_affected"])}
+
+
 @app.put("/api/segment/save")
 def segment_save():
     seg = _require_seg()
