@@ -144,3 +144,17 @@ def test_save_drops_unclassified_preseg(client_with_loaded_annotated_scene, scan
     # Classified point survived intact.
     assert int(arr_inst[1]) == 100
     assert int(arr_cls[1]) == 2
+
+
+def test_segment_state_surfaces_full_session_aux(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+
+    r = client.get("/api/segment/state")
+    body = r.json()
+    # Should include the 8 fields needed for FE hydration.
+    for k in ("has_seg", "n_points", "preseg_run_id", "preseg_fingerprint",
+              "source_fingerprint", "hidden_inst_ids", "is_from_prelabel",
+              "dirty"):
+        assert k in body, f"missing field: {k}"

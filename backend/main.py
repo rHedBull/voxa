@@ -1447,6 +1447,12 @@ class SegmentStateResponse(BaseModel):
     dirty: bool = False
     n_assigned: int = 0
     n_segments: int = 0
+    n_points: Optional[int] = None
+    preseg_run_id: Optional[str] = None
+    preseg_fingerprint: Optional[str] = None
+    source_fingerprint: Optional[str] = None
+    hidden_inst_ids: list[int] = []
+    is_from_prelabel: bool = False
     full_class_ids: str = ""
     full_instance_ids: str = ""
     seg_ids: str = ""
@@ -1476,6 +1482,12 @@ def segment_state():
         dirty=bool(seg.dirty),
         n_assigned=int(labeled.sum()),
         n_segments=int(np.unique(instance_ids[labeled]).size) if labeled.any() else 0,
+        n_points=int(len(seg.instance_ids)),
+        preseg_run_id=seg.preseg_run_id,
+        preseg_fingerprint=seg.preseg_fingerprint,
+        source_fingerprint=seg.source_fingerprint,
+        hidden_inst_ids=sorted(int(x) for x in seg.hidden_inst_ids),
+        is_from_prelabel=bool(seg.is_from_prelabel),
         full_class_ids=_b64(class_ids),
         full_instance_ids=_b64(instance_ids),
         seg_ids=_b64(box_ids),
