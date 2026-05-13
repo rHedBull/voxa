@@ -22,11 +22,11 @@ def compute_fingerprint(arr: np.ndarray) -> str:
     """Content-addressed sha256 of a numpy array's bytes. Stable across
     save/load (numpy preserves byte layout for fixed dtypes)."""
     h = hashlib.sha256()
-    h.update(bytes(str(arr.dtype), "ascii"))
+    h.update(bytes(arr.dtype.str, "ascii"))
     h.update(b":")
     h.update(bytes(str(arr.shape), "ascii"))
     h.update(b":")
-    h.update(arr.tobytes(order="C"))
+    h.update(np.ascontiguousarray(arr).tobytes())
     return f"sha256:{h.hexdigest()}"
 
 

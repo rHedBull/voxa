@@ -2,11 +2,20 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 
 import numpy as np
 
-from segment_io import load_prelabel
+from segment_io import (
+    atomic_write_json,
+    atomic_write_npy,
+    compute_fingerprint,
+    load_prelabel,
+    prune_history,
+    save_labels,
+)
 
 
 def _write_prelabel(scan_dir: Path, instance_ids: np.ndarray, summary: list[dict]):
@@ -63,12 +72,6 @@ def test_load_prelabel_returns_none_when_segment_missing_keys(tmp_path):
     _write_prelabel(scan_dir, np.zeros(8, dtype=np.int32),
                     [{"id": 0}])  # class_id missing
     assert load_prelabel(scan_dir, n_points=8) is None
-
-
-import os
-import re
-
-from segment_io import save_labels, prune_history
 
 
 def _read_npy(path: Path) -> np.ndarray:
@@ -198,9 +201,6 @@ def test_save_labels_rejects_class_map_version_mismatch(tmp_path):
                     write_history=False)
 
 
-from segment_io import compute_fingerprint, atomic_write_npy, atomic_write_json
-
-
 def test_compute_fingerprint_is_content_addressed():
     a = np.array([1, 2, 3], dtype=np.int32)
     b = np.array([1, 2, 3], dtype=np.int32)
@@ -208,6 +208,13 @@ def test_compute_fingerprint_is_content_addressed():
     assert compute_fingerprint(a) == compute_fingerprint(b)
     assert compute_fingerprint(a) != compute_fingerprint(c)
     assert compute_fingerprint(a).startswith("sha256:")
+
+
+def test_compute_fingerprint_handles_non_contiguous_views():
+    base = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
+    view = base.T  # non-contiguous
+    contig = np.ascontiguousarray(view)
+    assert compute_fingerprint(view) == compute_fingerprint(contig)
 
 
 def test_atomic_write_npy_round_trip(tmp_path):
