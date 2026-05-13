@@ -338,6 +338,49 @@ def test_subsample_idx_present_and_correct_when_subsampling(tmp_path, monkeypatc
     assert (np.diff(idx_arr) > 0).all()
 
 
+def test_load_recovers_in_progress_session_after_server_restart(
+    client_with_annotated_scene,
+):
+    """First load -> mutate -> simulate server restart -> second load recovers
+    the working_*.npy state via current.json commit-pointer."""
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100,
+                                       "want_full_labels": True})
+    assert r.status_code == 200, r.text
+
+    # Brush a class onto a few points via the apply/reassign endpoint.
+    import main
+    seg_before = main._state["seg"]
+    assert seg_before is not None
+    idx_b64 = base64.b64encode(np.array([0, 1, 2], dtype=np.int32).tobytes()).decode()
+    r = client.post("/api/segment/apply", json={
+        "op": "reassign",
+        "indices": idx_b64,
+        "payload": {"target_inst": -1, "target_class": 2},
+    })
+    assert r.status_code == 200, r.text
+
+    # Force-drain autosave debounce so working_* + current.json are on disk.
+    seg_before.flush_autosave()
+    assert seg_before.session_dir is not None
+    assert (seg_before.session_dir / "current.json").exists()
+    assert (seg_before.session_dir / "working_class_ids.npy").exists()
+
+    # Force-clear in-memory state to simulate a server restart.
+    main._state.update(scene=None, pc=None, seg=None)
+
+    # Reload same scene — recovery path should kick in.
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100,
+                                       "want_full_labels": True})
+    assert r.status_code == 200, r.text
+
+    # The state endpoint reports the recovered dirty session.
+    r = client.get("/api/segment/state")
+    body = r.json()
+    assert body["has_seg"] is True
+    assert body["dirty"] is True
+
+
 def test_seg_session_skipped_above_label_cap(monkeypatch, client_with_annotated_scene):
     client, scene_id = client_with_annotated_scene
     import main

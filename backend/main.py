@@ -540,16 +540,52 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
     )
     from segment_state import SegmentSession
+    from segment_io import (
+        compute_fingerprint,
+        load_session_aux,
+        load_working_arrays,
+    )
+
+    source_fp = compute_fingerprint(pc.points.astype(np.float32))
+    session_dir = src.session_dir
+
+    # Try recovering an in-progress working session (commit-pointer gated).
+    recovered = None
+    if session_dir is not None and not keep_prev_seg:
+        aux = load_session_aux(session_dir)
+        if aux is not None and aux.get("source_fingerprint") == source_fp:
+            wa = load_working_arrays(session_dir, n_points=len(pc))
+            if wa is not None:
+                recovered = (wa[0], wa[1], aux)
+
     if keep_prev_seg:
         # Carry over the existing session as-is.
         _state["seg"] = prev_seg
+    elif recovered is not None:
+        wc, wi, aux = recovered
+        seg = SegmentSession(
+            class_ids=wc,
+            instance_ids=wi,
+            positions=pc.points,
+            is_from_prelabel=bool(aux.get("is_from_prelabel", False)),
+            session_dir=session_dir,
+        )
+        seg.source_fingerprint = source_fp
+        seg.preseg_run_id = aux.get("preseg_run_id")
+        seg.preseg_fingerprint = aux.get("preseg_fingerprint")
+        seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
+        seg.dirty = bool(aux.get("dirty", False))
+        _state["seg"] = seg
     elif labels is not None and len(pc) <= MAX_LABEL_POINTS:
-        _state["seg"] = SegmentSession(
+        seg = SegmentSession(
             class_ids=labels.class_ids,
             instance_ids=labels.instance_ids,
             positions=pc.points,
             is_from_prelabel=is_from_prelabel,
+            session_dir=session_dir,
         )
+        seg.source_fingerprint = source_fp
+        _state["seg"] = seg
     else:
         _state["seg"] = None
 
@@ -1407,6 +1443,8 @@ class SegmentStateResponse(BaseModel):
     they refresh the tab. Hulls are recomputed on demand (cheap relative
     to the original RANSAC run)."""
     has_state: bool
+    has_seg: bool = False
+    dirty: bool = False
     n_assigned: int = 0
     n_segments: int = 0
     full_class_ids: str = ""
@@ -1425,7 +1463,7 @@ def segment_state():
     Used by the frontend to hydrate ``segState`` after a page reload."""
     seg = _state.get("seg")
     if seg is None:
-        return SegmentStateResponse(has_state=False)
+        return SegmentStateResponse(has_state=False, has_seg=False, dirty=False)
     instance_ids = seg.instance_ids.astype(np.int32, copy=False)
     class_ids = seg.class_ids.astype(np.int8, copy=False)
     labeled = instance_ids >= 0
@@ -1434,6 +1472,8 @@ def segment_state():
     hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
     return SegmentStateResponse(
         has_state=True,
+        has_seg=True,
+        dirty=bool(seg.dirty),
         n_assigned=int(labeled.sum()),
         n_segments=int(np.unique(instance_ids[labeled]).size) if labeled.any() else 0,
         full_class_ids=_b64(class_ids),
