@@ -159,3 +159,15 @@ def test_session_dir_for_decimated_tier(voxa_data, lidar_root):
 def test_session_dir_for_raw_tier(voxa_data, lidar_root):
     s = resolve("raw/Factory-large", voxa_data, lidar_root)
     assert s.session_dir == voxa_data / "sessions" / "raw__Factory-large"
+
+
+def test_session_dir_raises_when_data_dir_missing_for_legacy():
+    """Non-annotated tiers require data_dir; surfacing as ValueError prevents
+    writing session files to None."""
+    from scene_registry import _session_dir_for
+    with pytest.raises(ValueError, match="data_dir"):
+        _session_dir_for("legacy", "foo", None, None)
+    with pytest.raises(ValueError, match="data_dir"):
+        _session_dir_for("decimated", "foo", None, None)
+    with pytest.raises(ValueError, match="data_dir"):
+        _session_dir_for("raw", "foo", None, None)

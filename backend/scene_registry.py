@@ -34,7 +34,7 @@ class SceneSource:
     source_format: str           # 'ply' | 'glb' | 'laz'
     has_labels: bool
     has_intensity: bool
-    session_dir: Path = Path("")  # per-scene dir for session/current.json
+    session_dir: Path            # per-scene dir for session/current.json
     n_points: Optional[int] = None
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -59,7 +59,8 @@ def _session_dir_for(tier: str, name: str, scan_root: Optional[Path],
     `<data_dir>/sessions/<tier>__<name>/` (scene_id with '/' -> '__').
     """
     if tier == "annotated":
-        assert scan_root is not None
+        if scan_root is None:
+            raise ValueError("scene_registry: scan_root required for annotated tier")
         return scan_root / "session"
     if data_dir is None:
         raise ValueError("scene_registry: data_dir required for non-annotated tier")
