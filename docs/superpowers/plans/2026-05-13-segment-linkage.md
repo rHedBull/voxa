@@ -857,7 +857,62 @@ def test_load_recovers_in_progress_session_after_server_restart(
     assert body["dirty"] is True
 ```
 
-(Use the existing `fake_annotated_scene` fixture from `conftest.py` if present; else add one that builds the smallest valid SCHEMA scan dir under `tmp_data_dir`.)
+First check whether `fake_annotated_scene` exists:
+
+```bash
+grep -n "fake_annotated_scene\|tmp_data_dir" backend/tests/conftest.py
+```
+
+If absent, add this fixture skeleton to `backend/tests/conftest.py`:
+
+```python
+import json, numpy as np, pytest
+from pathlib import Path
+
+@pytest.fixture
+def tmp_data_dir(tmp_path, monkeypatch):
+    """Override VOXA_DATA_DIR before main is imported by the client fixture."""
+    monkeypatch.setenv("VOXA_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+@pytest.fixture
+def fake_annotated_scene(tmp_path) -> str:
+    """Build the smallest SCHEMA-conformant annotated scan under tmp_path.
+    Returns the scene_id voxa expects (`annotated/<name>`)."""
+    name = "fake_scene"
+    scan = tmp_path / "annotated" / name
+    (scan / "source").mkdir(parents=True)
+    # 64 trivial points forming a 4×4×4 grid.
+    import struct
+    n = 64
+    xyz = np.stack(np.meshgrid(*[np.arange(4)]*3, indexing="ij"), axis=-1).reshape(-1, 3).astype(np.float32)
+    ply_lines = [
+        "ply", "format binary_little_endian 1.0",
+        f"element vertex {n}",
+        "property float x", "property float y", "property float z",
+        "property uchar red", "property uchar green", "property uchar blue",
+        "end_header", "",
+    ]
+    body = b"".join(struct.pack("<fffBBB", *xyz[i], 200, 200, 200) for i in range(n))
+    (scan / "source" / "scan.ply").write_bytes("\n".join(ply_lines).encode() + body)
+    (scan / "labels").mkdir()
+    np.save(scan / "labels" / "gt_class_ids.npy", np.full(n, -1, dtype=np.int32))
+    np.save(scan / "labels" / "gt_segment_ids.npy", np.full(n, -1, dtype=np.int32))
+    (scan / "labels" / "gt_segment_metadata.json").write_text(json.dumps({
+        "n_points": n, "n_gt_segments": 0, "n_labeled_points": 0,
+        "class_map_version": 1, "segments": [],
+    }))
+    (scan / "meta.json").write_text(json.dumps({
+        "scan_name": name, "n_points": n, "sample_method": "asis",
+        "coords": "world", "units": "meters", "class_map_version": 1,
+    }))
+    (scan / "README.md").write_text("# fake scene\n")
+    # voxa's SceneRegistry needs lidar_root pointing at tmp_path.
+    monkeypatch_lidar_root = tmp_path  # hand to caller; client fixture sets env.
+    return f"annotated/{name}"
+```
+
+The `client` fixture in `conftest.py` already wires `VOXA_LIDAR_ROOT` from env. If it doesn't, also set `monkeypatch.setenv("VOXA_LIDAR_ROOT", str(tmp_path))` in `tmp_data_dir`.
 
 - [ ] **Step 2: Run test, expect failure (no `/api/segment/state` yet OR no recovery)**
 
@@ -1093,7 +1148,7 @@ Stop overwriting `instance_ids` directly; freeze the preseg layer and apply seed
 - Modify: `backend/main.py`
 - Test: `backend/tests/test_segment_presegment_endpoint.py`
 
-- [ ] **Step 1: Write failing test**
+- [ ] **Step 1: Write failing tests (3 tests, including label-preservation)**
 
 ```python
 def test_preseg_freezes_layer_and_seeds_instances(client, loaded_scene):
@@ -1106,38 +1161,91 @@ def test_preseg_freezes_layer_and_seeds_instances(client, loaded_scene):
 
 
 def test_reload_preseg_run_stamps_run_id(client, loaded_scene_with_preseg_run):
-    run_id = loaded_scene_with_preseg_run  # fixture-provided run id
+    run_id = loaded_scene_with_preseg_run
     r = client.post(f"/api/segment/presegment/runs/{run_id}/load")
     assert r.status_code == 200
     state = client.get("/api/segment/state").json()
     assert state["preseg_run_id"] == run_id
+
+
+def test_preseg_with_preserve_labeled_keeps_existing_labels(
+    client, loaded_scene_with_partial_labels,
+):
+    """preserve_labeled=True must leave class_ids intact on already-labeled points
+    even when a re-preseg would have overwritten them. Spec §2 behavior-matrix row 3."""
+    # Capture label state before re-preseg via a partial-state probe.
+    from main import _state
+    seg_before = _state["seg"]
+    pre_labels = seg_before.class_ids.copy()
+    labeled_idx = (pre_labels >= 0)
+    assert labeled_idx.any(), "fixture must have at least one labeled point"
+
+    r = client.post("/api/segment/presegment",
+                    json={"resolution": 0.1, "preserve_labeled": True})
+    assert r.status_code == 200
+
+    seg_after = _state["seg"]
+    # Already-labeled points keep their original class.
+    np.testing.assert_array_equal(
+        seg_after.class_ids[labeled_idx], pre_labels[labeled_idx],
+    )
 ```
 
 - [ ] **Step 2: Run tests, expect failure**
 
-Run: `.venv/bin/pytest backend/tests/test_segment_presegment_endpoint.py -v -k "freezes_layer or stamps_run_id"`
-Expected: failing — `preseg_fingerprint` is None.
+Run: `.venv/bin/pytest backend/tests/test_segment_presegment_endpoint.py -v -k "freezes_layer or stamps_run_id or preserve_labeled_keeps"`
+Expected: 3 failing — `preseg_fingerprint` is None / labels get clobbered.
 
-- [ ] **Step 3: Modify `segment_presegment` and `segment_presegment_load_run` in `main.py`**
+- [ ] **Step 3a: Replace direct instance_ids assignment with `freeze_preseg`**
 
-In `segment_presegment`, after computing `sub_inst` (the full-length int32 instance_ids array from the preseg run):
+Locate in `main.py::segment_presegment` (and `segment_presegment_load_run`) the line that writes the full-length preseg result into `seg.instance_ids` (around `seg.instance_ids[...] = sub_inst` or similar). Replace with:
 
 ```python
 seg = _state["seg"]
-# Freeze the preseg layer first (immutable, content-fingerprinted).
-seg.freeze_preseg(sub_inst.copy(), run_id=None)
-
-# Then seed instance/class arrays via the normal _apply path (undoable),
-# only on points currently unlabeled when preserve_labeled=True.
-unlabeled = (seg.class_ids < 0) if req.preserve_labeled else np.ones_like(seg.class_ids, dtype=bool)
-# Group by (instance, class) and call apply_reassign per group so each chunk
-# is one undo-able delta with consistent target class.
-# (Reuse the existing summary list to map seg id → class id.)
+seg.freeze_preseg(sub_inst.copy(), run_id=None)  # run_id=run_id for load_run
 ```
 
-For `segment_presegment_load_run`, set `run_id=run_id` in the `freeze_preseg` call.
+This stamps `preseg_ids` + fingerprint but does NOT yet touch `instance_ids` or `class_ids`. Re-run the suite — `freezes_layer_and_seeds_instances` should pass now; the other two still fail (instances un-seeded).
 
-(The existing code path that builds `class_ids` + writes `instance_ids` directly is replaced by `freeze_preseg(...)` + one or more `apply_reassign` calls grouped per class. Keep the response shape unchanged.)
+Run: `.venv/bin/pytest backend/tests/test_segment_presegment_endpoint.py::test_preseg_freezes_layer_and_seeds_instances -v`
+Expected: PASS.
+
+- [ ] **Step 3b: Seed instance/class arrays via `apply_reassign`, grouped per class**
+
+After `freeze_preseg`, add the grouped seeding. The preseg summary already maps `seg_id → class_id` (look at the existing code that built `summary` / `seg_to_label` — reuse it). Then:
+
+```python
+import numpy as np
+
+# Which points are eligible to be seeded by this preseg pass?
+if req.preserve_labeled:
+    seedable = (seg.class_ids < 0)
+else:
+    seedable = np.ones_like(seg.class_ids, dtype=bool)
+
+# seg_to_class: dict[int, int] built from `summary` (existing code).
+# Group point indices by the (preseg_id, class_id) tuple, then issue one
+# apply_reassign per group so each is a single undoable delta.
+for preseg_id, class_id in seg_to_class.items():
+    if class_id < 0:
+        continue
+    mask = seedable & (sub_inst == preseg_id)
+    if not mask.any():
+        continue
+    indices = np.flatnonzero(mask).astype(np.int32)
+    seg.apply_reassign(
+        indices,
+        target_inst=int(preseg_id),  # use preseg_id as the seed instance id
+        target_class=int(class_id),
+    )
+```
+
+This replaces the previous direct-assignment block in both endpoints. Delete the old direct-write code.
+
+- [ ] **Step 3c: Run all three preseg tests, expect PASS**
+
+Run: `.venv/bin/pytest backend/tests/test_segment_presegment_endpoint.py -v -k "freezes_layer or stamps_run_id or preserve_labeled_keeps"`
+Expected: 3 passing.
 
 - [ ] **Step 4: Run tests, expect PASS**
 
@@ -1212,6 +1320,73 @@ Expected: all green.
 ```bash
 git add backend/segment_io.py backend/main.py backend/tests/test_segment_io.py
 git commit -m "feat(save): record prelabel+source fingerprints in gt_segment_metadata"
+```
+
+---
+
+## Task 10.5: Backend fingerprint-mismatch detection on reload
+
+Spec §4: when seeding from `prelabel/` while `labels/` already exists, a fingerprint mismatch must surface a non-fatal warning. Minimal scope here: detect on the server and expose a flag through `/api/segment/state`. FE surfacing UI is out of scope (logged-only is fine).
+
+**Files:**
+- Modify: `backend/main.py`
+- Modify: `backend/segment_state.py` (add a `prelabel_fingerprint_at_label_time: Optional[str]` field for comparison)
+- Test: `backend/tests/test_load_endpoint.py`
+
+- [ ] **Step 1: Write failing test**
+
+```python
+def test_load_detects_stale_prelabel_fingerprint(client, fake_annotated_scene_with_stale_prelabel):
+    """labels/gt_segment_metadata.json was written referencing prelabel sha256:X,
+    but prelabel/ has since been re-run and now hashes to sha256:Y.
+    State must surface stale_prelabel=True."""
+    r = client.post("/api/load", json={"scene": fake_annotated_scene_with_stale_prelabel,
+                                       "want_full_labels": True})
+    assert r.status_code == 200
+    body = client.get("/api/segment/state").json()
+    assert body.get("stale_prelabel") is True
+```
+
+Add the fixture skeleton to `conftest.py` (extends `fake_annotated_scene` to write a mismatched `prelabel_fingerprint` into `gt_segment_metadata.json` and a fresh `prelabel/ransac_instance_ids.npy` that hashes differently).
+
+- [ ] **Step 2: Run test, expect failure**
+
+Run: `.venv/bin/pytest backend/tests/test_load_endpoint.py -v -k "stale_prelabel"`
+Expected: failing — `stale_prelabel` key absent.
+
+- [ ] **Step 3: Wire detection into load handler + state response**
+
+In `main.py` load handler, after hydrating `seg`, compare `gt_segment_metadata.json::prelabel_fingerprint` against the current `prelabel/ransac_instance_ids.npy` content fingerprint. Store the result:
+
+```python
+seg.stale_prelabel = (
+    saved_prelabel_fp is not None
+    and current_prelabel_fp is not None
+    and saved_prelabel_fp != current_prelabel_fp
+)
+```
+
+Add `stale_prelabel: bool = False` to `SegmentStateResponse` and `SegmentSession`. Surface it through `segment_state_get`. Log a warning when set:
+
+```python
+if seg.stale_prelabel:
+    logging.warning(
+        "scene %s: prelabel/ has been re-run since labels/ were saved "
+        "(was %s, now %s) — labels may be stale",
+        src.scene_id, saved_prelabel_fp, current_prelabel_fp,
+    )
+```
+
+- [ ] **Step 4: Run test, expect PASS**
+
+Run: `.venv/bin/pytest backend/tests/test_load_endpoint.py -v -k "stale_prelabel"`
+Expected: passing.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/main.py backend/segment_state.py backend/tests/test_load_endpoint.py backend/tests/conftest.py
+git commit -m "feat(load): detect stale prelabel fingerprint and surface via /state"
 ```
 
 ---
@@ -1328,29 +1503,60 @@ git commit -m "feat(fe): hydrate segState from /api/segment/state on scene load"
 **Files:**
 - Modify: `frontend/src/segment-tools.jsx`
 - Modify: `frontend/src/segment-state.js`
+- Test: `frontend/src/segment-state.test.js`
 
-- [ ] **Step 1: Locate the existing hide UI**
+- [ ] **Step 1: Write failing test for hide-via-API flow**
+
+Append to `frontend/src/segment-state.test.js`:
+
+```js
+import { vi } from 'vitest';
+import * as api from './api.js';
+
+test('hide flow: API call → hydrate → state has the inst_id', async () => {
+  vi.spyOn(api, 'hideInstance').mockResolvedValue({
+    has_seg: true, hidden_inst_ids: [42],
+    preseg_run_id: null, preseg_fingerprint: null, source_fingerprint: null,
+    is_from_prelabel: false, dirty: false,
+  });
+  const start = makeEmptyState(100);
+  const resp = await api.hideInstance(42);
+  const next = hydrateFromServerState(start, resp);
+  expect(next.hiddenInstIds.has(42)).toBe(true);
+});
+```
+
+- [ ] **Step 2: Run test, expect failure**
+
+Run: `npx vitest run --root frontend src/segment-state.test.js -t "hide flow"`
+Expected: failing — handler not yet wired (or `hideInstance` not invoked anywhere).
+
+- [ ] **Step 3: Locate the existing hide UI**
 
 ```bash
 grep -n "hide\|hidden" frontend/src/segment-tools.jsx
 ```
 
-- [ ] **Step 2: Replace local hide mutation with API call**
+- [ ] **Step 4: Replace local hide mutation with API call**
 
 In every handler that toggles a segment's visibility, call `hideInstance(id)` / `unhideInstance(id)`, then `setSegState((s) => hydrateFromServerState(s, response))`. Remove any local hidden-set ownership that previously lived outside `segState`.
 
-- [ ] **Step 3: Manual smoke**
+- [ ] **Step 5: Run test, expect PASS**
 
-Start dev server:
+Run: `npx vitest run --root frontend src/segment-state.test.js`
+Expected: all green.
+
+- [ ] **Step 6: Manual smoke**
+
 ```bash
 npm run dev
 ```
-Load any scene, preseg it, brush a few points, hide a segment, reload the page in the browser. Expected: hide persists.
+Load a scene → preseg → brush a few points → hide a segment → reload the browser tab. Expected: hide persists.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add frontend/src/segment-tools.jsx frontend/src/segment-state.js
+git add frontend/src/segment-tools.jsx frontend/src/segment-state.js frontend/src/segment-state.test.js
 git commit -m "feat(fe): hide/unhide routed through API; drop local hiddenSet cache"
 ```
 
