@@ -1119,10 +1119,13 @@ def _apply_ransac_result_to_session(
     keep_mask: np.ndarray,
     redo_mask: np.ndarray,
     resolution: float = 0.05,
+    run_id: Optional[str] = None,
 ):
-    """Renumber sub-instance ids above the existing max, assemble the new
-    session arrays, compute boxes + hulls, and return everything. Caller
-    is responsible for writing the session into ``_state["seg"]``."""
+    """Renumber sub-instance ids above the existing max, freeze the
+    immutable preseg layer, then seed live (instance, class) via grouped
+    ``apply_reassign`` calls so subsequent edits stay undoable and the
+    linkage layer (preseg_ids/fingerprint) is populated. Caller writes
+    the session into ``_state["seg"]``."""
     from segment_state import SegmentSession
     from segment_hulls import compute_hulls as _compute_hulls
 
@@ -1130,22 +1133,55 @@ def _apply_ransac_result_to_session(
     if id_offset and sub_inst.size:
         sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
 
-    instance_ids = existing_inst.copy()
-    instance_ids[redo_mask] = sub_inst
-
-    class_ids = existing_class.copy()
-    class_ids[redo_mask] = -1
-    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
-    for sid, cid in seg_to_class.items():
-        if cid >= 0:
-            class_ids[instance_ids == sid] = cid
+    # Build the session with only the kept (already-labeled) state; the
+    # redo region starts unlabeled. We seed it via apply_reassign below.
+    init_class = existing_class.copy()
+    init_inst = existing_inst.copy()
+    init_class[redo_mask] = -1
+    init_inst[redo_mask] = -1
 
     sess = SegmentSession(
-        class_ids=class_ids,
-        instance_ids=instance_ids.astype(np.int32),
+        class_ids=init_class.astype(np.int8),
+        instance_ids=init_inst.astype(np.int32),
         positions=positions,
         is_from_prelabel=True,
     )
+
+    # Stamp the immutable preseg layer: full-length array, -1 outside the
+    # redo region. NOT undoable.
+    preseg_full = np.full(int(positions.shape[0]), -1, dtype=np.int32)
+    preseg_full[redo_mask] = sub_inst
+    sess.freeze_preseg(preseg_full, run_id=run_id)
+
+    # Group seed reassigns by preseg_id so each (instance, class) pair
+    # becomes one undoable op. Only seed points that are currently
+    # unlabeled (the redo region after the wipe above).
+    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
+    seedable = (sess.class_ids < 0)
+    # Cover every preseg cluster present in the redo region — including
+    # those the summary didn't classify (class_id < 0). They still need
+    # an instance id so the UI renders them as segments.
+    unique_preseg = np.unique(sub_inst) if sub_inst.size else np.empty(0, dtype=np.int32)
+    for preseg_id in unique_preseg:
+        pid = int(preseg_id)
+        if pid < 0:
+            continue
+        mask = seedable & (preseg_full == pid)
+        if not mask.any():
+            continue
+        indices = np.flatnonzero(mask).astype(np.int32)
+        cid = seg_to_class.get(pid, -1)
+        # apply_reassign requires a non-None target_class when target_inst
+        # is set. Use -1 for unclassified preseg clusters (same wire value
+        # the legacy direct-write path produced).
+        sess.apply_reassign(
+            indices,
+            target_inst=pid,
+            target_class=int(cid),
+        )
+
+    instance_ids = sess.instance_ids
+    class_ids = sess.class_ids
 
     box_ids, box_centers, box_sizes = _compute_segment_boxes(
         np.asarray(positions), instance_ids

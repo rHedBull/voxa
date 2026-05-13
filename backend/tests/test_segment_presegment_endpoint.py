@@ -166,3 +166,52 @@ def test_presegment_bootstraps_from_cloud_without_session():
     finally:
         main._state["seg"] = None
         main._state["pc"] = None
+
+
+def test_preseg_freezes_layer_and_seeds_instances(client_with_synthetic_session):
+    """After preseg, the immutable preseg layer must be stamped with a
+    fingerprint so undo/redo + linkage works (Task 9)."""
+    client = client_with_synthetic_session
+    r = client.post("/api/segment/presegment", json={"resolution": 0.1})
+    assert r.status_code == 200, r.text
+
+    state = client.get("/api/segment/state").json()
+    assert state["has_seg"] is True
+    assert state["preseg_fingerprint"] is not None
+    assert state["preseg_fingerprint"].startswith("sha256:")
+
+    import main
+    seg = main._state["seg"]
+    # preseg_ids must be set, non-trivial.
+    assert seg.preseg_ids.shape == seg.instance_ids.shape
+    assert (seg.preseg_ids >= 0).any()
+
+
+def test_preseg_with_preserve_labeled_keeps_existing_labels(client_with_synthetic_session):
+    """preserve_labeled=True must leave class_ids intact on already-labeled
+    points even when a re-preseg would have overwritten them. Spec §2."""
+    import main
+    client = client_with_synthetic_session
+
+    # Brush a class onto a few points via /api/segment/apply.
+    indices_b64 = base64.b64encode(np.array([0, 1, 2], dtype=np.int32).tobytes()).decode()
+    r = client.post("/api/segment/apply", json={
+        "op": "reassign",
+        "indices": indices_b64,
+        "payload": {"target_inst": -1, "target_class": 2},
+    })
+    assert r.status_code == 200, r.text
+
+    seg_before = main._state["seg"]
+    pre_labels = seg_before.class_ids.copy()
+    labeled_idx = (pre_labels >= 0)
+    assert labeled_idx.any()
+
+    r = client.post("/api/segment/presegment",
+                    json={"resolution": 0.1, "preserve_labeled": True})
+    assert r.status_code == 200, r.text
+
+    seg_after = main._state["seg"]
+    np.testing.assert_array_equal(
+        seg_after.class_ids[labeled_idx], pre_labels[labeled_idx],
+    )
