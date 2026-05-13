@@ -139,3 +139,23 @@ def test_discover_no_lidar_root_returns_only_legacy(voxa_data):
     scenes = discover(voxa_data, None)
     assert {s.tier for s in scenes} == {"legacy"}
     assert scenes[0].name == "test_scene"
+
+
+def test_session_dir_for_annotated_tier(voxa_data, lidar_root):
+    s = resolve("annotated/munich_water_pump", voxa_data, lidar_root)
+    assert s.session_dir == lidar_root / "annotated" / "munich_water_pump" / "session"
+
+
+def test_session_dir_for_legacy_tier(voxa_data, lidar_root):
+    s = resolve("legacy/test_scene", voxa_data, lidar_root)
+    assert s.session_dir == voxa_data / "sessions" / "legacy__test_scene"
+
+
+def test_session_dir_for_decimated_tier(voxa_data, lidar_root):
+    s = resolve("decimated/Factory-large", voxa_data, lidar_root)
+    assert s.session_dir == voxa_data / "sessions" / "decimated__Factory-large"
+
+
+def test_session_dir_for_raw_tier(voxa_data, lidar_root):
+    s = resolve("raw/Factory-large", voxa_data, lidar_root)
+    assert s.session_dir == voxa_data / "sessions" / "raw__Factory-large"

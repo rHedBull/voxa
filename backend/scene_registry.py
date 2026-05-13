@@ -34,6 +34,7 @@ class SceneSource:
     source_format: str           # 'ply' | 'glb' | 'laz'
     has_labels: bool
     has_intensity: bool
+    session_dir: Path = Path("")  # per-scene dir for session/current.json
     n_points: Optional[int] = None
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -48,6 +49,22 @@ class SceneSource:
 
 def _voxa_legacy_root(data_dir: Path) -> Path:
     return data_dir / "scenes"
+
+
+def _session_dir_for(tier: str, name: str, scan_root: Optional[Path],
+                     data_dir: Optional[Path]) -> Path:
+    """Per-scene session dir for `session/current.json`.
+
+    annotated tier lives inside the SCHEMA scan dir; other tiers live under
+    `<data_dir>/sessions/<tier>__<name>/` (scene_id with '/' -> '__').
+    """
+    if tier == "annotated":
+        assert scan_root is not None
+        return scan_root / "session"
+    if data_dir is None:
+        raise ValueError("scene_registry: data_dir required for non-annotated tier")
+    scene_id_safe = f"{tier}/{name}".replace("/", "__")
+    return data_dir / "sessions" / scene_id_safe
 
 
 def _discover_legacy(data_dir: Path) -> list[SceneSource]:
@@ -70,6 +87,7 @@ def _discover_legacy(data_dir: Path) -> list[SceneSource]:
             tier="legacy", name=sd.name,
             source_path=src, source_format=fmt,
             has_labels=False, has_intensity=False,
+            session_dir=_session_dir_for("legacy", sd.name, None, data_dir),
         ))
     return out
 
@@ -126,6 +144,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
             tier="annotated", name=sd.name,
             source_path=scan, source_format="ply",
             has_labels=has_labels, has_intensity=False,
+            session_dir=_session_dir_for("annotated", sd.name, sd, None),
             n_points=n_points,
             extras={
                 "labels_dir": str(labels_dir),
@@ -142,7 +161,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
     return out
 
 
-def _discover_decimated(lidar_root: Path) -> list[SceneSource]:
+def _discover_decimated(lidar_root: Path, data_dir: Path) -> list[SceneSource]:
     root = lidar_root / "ply_viewer"
     if not root.is_dir():
         return []
@@ -152,11 +171,12 @@ def _discover_decimated(lidar_root: Path) -> list[SceneSource]:
             tier="decimated", name=p.stem,
             source_path=p, source_format="ply",
             has_labels=False, has_intensity=False,
+            session_dir=_session_dir_for("decimated", p.stem, None, data_dir),
         ))
     return out
 
 
-def _discover_raw(lidar_root: Path) -> list[SceneSource]:
+def _discover_raw(lidar_root: Path, data_dir: Path) -> list[SceneSource]:
     root = lidar_root / "laz"
     if not root.is_dir():
         return []
@@ -166,6 +186,7 @@ def _discover_raw(lidar_root: Path) -> list[SceneSource]:
             tier="raw", name=p.stem,
             source_path=p, source_format="laz",
             has_labels=False, has_intensity=True,
+            session_dir=_session_dir_for("raw", p.stem, None, data_dir),
         ))
     # Some lidar archives also drop .las next to .laz.
     for p in sorted(root.glob("*.las")):
@@ -173,6 +194,7 @@ def _discover_raw(lidar_root: Path) -> list[SceneSource]:
             tier="raw", name=p.stem,
             source_path=p, source_format="laz",
             has_labels=False, has_intensity=True,
+            session_dir=_session_dir_for("raw", p.stem, None, data_dir),
         ))
     return out
 
@@ -183,8 +205,8 @@ def discover(data_dir: Path, lidar_root: Optional[Path]) -> list[SceneSource]:
     scenes.extend(_discover_legacy(data_dir))
     if lidar_root and lidar_root.is_dir():
         scenes.extend(_discover_annotated(lidar_root))
-        scenes.extend(_discover_decimated(lidar_root))
-        scenes.extend(_discover_raw(lidar_root))
+        scenes.extend(_discover_decimated(lidar_root, data_dir))
+        scenes.extend(_discover_raw(lidar_root, data_dir))
     scenes.sort(key=lambda s: (TIER_ORDER.get(s.tier, 99), s.name.lower()))
     return scenes
 
