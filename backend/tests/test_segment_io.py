@@ -301,3 +301,40 @@ def test_load_working_arrays_returns_none_on_shape_mismatch(tmp_path):
                      class_ids=np.zeros(50, dtype=np.int8),
                      instance_ids=np.zeros(50, dtype=np.int32))
     assert load_working_arrays(session_dir, n_points=999) is None
+
+
+def test_save_labels_adds_fingerprints(tmp_path):
+    """gt_segment_metadata.json must carry prelabel_fingerprint + source_fingerprint
+    when supplied by the caller."""
+    from segment_io import save_labels
+    scan = tmp_path
+    # minimal class registry so validators pass
+    (scan / "labels").mkdir()
+    class_ids = np.full(4, -1, dtype=np.int32)
+    inst_ids = np.full(4, -1, dtype=np.int32)
+    save_labels(
+        scan,
+        class_ids=class_ids,
+        instance_ids=inst_ids,
+        write_history=False,
+        prelabel_fingerprint="sha256:abc",
+        source_fingerprint="sha256:def",
+    )
+    meta = json.loads((scan / "labels" / "gt_segment_metadata.json").read_text())
+    assert meta["prelabel_fingerprint"] == "sha256:abc"
+    assert meta["source_fingerprint"] == "sha256:def"
+
+
+def test_save_labels_omits_fingerprints_when_not_provided(tmp_path):
+    from segment_io import save_labels
+    scan = tmp_path
+    (scan / "labels").mkdir()
+    save_labels(
+        scan,
+        class_ids=np.full(4, -1, dtype=np.int32),
+        instance_ids=np.full(4, -1, dtype=np.int32),
+        write_history=False,
+    )
+    meta = json.loads((scan / "labels" / "gt_segment_metadata.json").read_text())
+    assert "prelabel_fingerprint" not in meta
+    assert "source_fingerprint" not in meta

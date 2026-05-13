@@ -205,6 +205,8 @@ def save_labels(
     positions: Optional[np.ndarray] = None,
     write_history: bool = True,
     history_keep: int = 10,
+    prelabel_fingerprint: Optional[str] = None,
+    source_fingerprint: Optional[str] = None,
 ) -> None:
     """Validate, snapshot existing labels, then write gt_*.npy + metadata.
 
@@ -237,6 +239,10 @@ def save_labels(
     np.save(labels_dir / "gt_segment_ids.npy", instance_ids.astype(np.int32))
     meta = _build_segment_metadata(class_ids, instance_ids, positions,
                                    registry=registry)
+    if prelabel_fingerprint is not None:
+        meta["prelabel_fingerprint"] = prelabel_fingerprint
+    if source_fingerprint is not None:
+        meta["source_fingerprint"] = source_fingerprint
     (labels_dir / "gt_segment_metadata.json").write_text(json.dumps(meta, indent=2))
 
 

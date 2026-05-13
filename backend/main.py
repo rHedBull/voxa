@@ -1590,6 +1590,7 @@ def segment_save():
     n_dropped = int(unclassified.sum())
     if n_dropped:
         seg.instance_ids[unclassified] = np.int32(-1)
+    seg.flush_autosave()
     try:
         from segment_io import save_labels
         save_labels(
@@ -1598,6 +1599,8 @@ def segment_save():
             instance_ids=seg.instance_ids,
             positions=seg.positions,
             write_history=write_history,
+            prelabel_fingerprint=seg.preseg_fingerprint,
+            source_fingerprint=seg.source_fingerprint,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
