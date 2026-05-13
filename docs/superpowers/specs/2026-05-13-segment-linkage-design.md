@@ -51,12 +51,12 @@ class SegmentSession:
     # Point-indexed arrays, parallel to positions[N,3]
     preseg_ids:        np.ndarray   # int32[N]; -1 = no preseg; FROZEN after freeze_preseg()
     instance_ids:      np.ndarray   # int32[N]; mutable; what the labeler edits
-    class_ids:         np.ndarray   # int8[N];  mutable
+    class_ids:         np.ndarray   # int8[N];  mutable in-memory (cast to int32 on Save → labels/gt_class_ids.npy)
     positions:         np.ndarray   # float32[N,3]; reference to pc.points
 
     # Provenance + auxiliary editor state (persisted to session/current.json)
-    preseg_run_id:        Optional[str]
-    preseg_fingerprint:   Optional[str]   # sha256 of preseg_ids.tobytes()
+    preseg_run_id:        Optional[str]   # which saved run was loaded (or None for ad-hoc preseg)
+    preseg_fingerprint:   Optional[str]   # sha256 of preseg_ids.tobytes(); content-addressed, survives renames
     source_fingerprint:   Optional[str]   # sha256 of positions.tobytes()
     hidden_inst_ids:      set[int]
     is_from_prelabel:     bool
@@ -69,7 +69,7 @@ class SegmentSession:
 
 Mutations:
 - `apply_set_class`, `apply_merge`, `apply_reassign` — operate on `class_ids` and `instance_ids` only. `preseg_ids` is immutable through every op, including undo/redo. The existing `_Delta` payload stays unchanged.
-- `freeze_preseg(ids, run_id, fingerprint)` — replaces `preseg_ids` wholesale and stamps `preseg_run_id` + `preseg_fingerprint`. Optionally seeds `instance_ids` (preseg-load behavior). **Not undoable** — it is a session-scope event, not a point-edit.
+- `freeze_preseg(ids, run_id, fingerprint, *, seed_instances: bool)` — replaces `preseg_ids` wholesale and stamps `preseg_run_id` + `preseg_fingerprint`. The freeze itself is **not undoable** (session-scope, not a point-edit). When `seed_instances=True` (preseg-load behavior, applied to all unlabeled points), the instance/class seeding is implemented as a normal `_apply("seed_preseg", ...)` that *is* on the undo stack — so an accidental "load preseg run" can be reverted point-by-point even though the frozen preseg layer remains updated. When `dirty=True` the caller (HTTP endpoint or FE) must surface a confirmation before passing `seed_instances=True`.
 - `hide(inst_id)` / `unhide(inst_id)` — mutate `hidden_inst_ids`. Triggers an auto-save of `session/current.json`. Not on the undo stack (visual affordance, not data).
 
 Resolution helpers:
@@ -117,9 +117,10 @@ Mirror the schema's `prelabel/` vs `labels/` split with a new optional `session/
 ```
 
 Auto-save policy:
-- Every successful `_apply` (class/inst mutation) writes `working_class_ids.npy` + `working_segment_ids.npy` + `current.json` atomically (write-temp + rename).
-- Every `hide` / `unhide` / `freeze_preseg` writes `current.json`.
-- Explicit Save (Ctrl+S) atomically promotes `working_*` to `labels/gt_*`, updates `gt_segment_metadata.json` (with new fingerprint fields), and clears `dirty`. `working_*` files are left in place so reload still works.
+- Every successful `_apply` (class/inst mutation, **including undo/redo**) schedules a save. Saves are coalesced with a single-flight + 250 ms trailing debounce; a pending save is replaced rather than queued. On session shutdown, the debounce is flushed.
+- Per save: write `working_class_ids.npy.tmp`, `working_segment_ids.npy.tmp` → fsync → rename each to its final name → then write `current.json.tmp` → fsync → rename. **`current.json` is the commit pointer.** On reload, a `working_*` set is honored only if `current.json` exists and references it (via `working_mtime_ns` recorded in current.json). A crash between the two npy renames leaves the old `current.json` pointing at the previous-but-consistent state — acceptable, the half-updated working set is ignored.
+- `hide` / `unhide` / `freeze_preseg` also use the debounced save path; they only need `current.json` to change but still go through the single-flight to avoid interleaving with an in-flight working_* write.
+- Explicit Save (Ctrl+S) flushes any pending debounce, then atomically promotes `working_*` to `labels/gt_*` (`gt_class_ids.npy` cast `int8 → int32`), updates `gt_segment_metadata.json` (with new fingerprint fields), and clears `dirty`. `working_*` files are left in place so reload still works; the next `_apply` will overwrite them.
 
 Reload policy (`/api/load`):
 1. Read `labels/gt_*` (existing path).
