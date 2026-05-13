@@ -6,8 +6,10 @@ undo/redo can replay without re-deriving anything.
 """
 from __future__ import annotations
 
+import threading
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -37,6 +39,8 @@ class SegmentSession:
         positions: np.ndarray,
         *,
         is_from_prelabel: bool = False,
+        session_dir: Optional[Path] = None,
+        autosave_debounce_s: float = 0.25,
     ) -> None:
         if class_ids.dtype != np.int8:
             class_ids = class_ids.astype(np.int8)
@@ -58,6 +62,10 @@ class SegmentSession:
         self._redo: deque[_Delta] = deque()
         self.history_cap: int = 100
         self.dirty: bool = False
+        self.session_dir: Optional[Path] = Path(session_dir) if session_dir else None
+        self._autosave_debounce_s = float(autosave_debounce_s)
+        self._autosave_timer: Optional[threading.Timer] = None
+        self._autosave_lock = threading.Lock()
 
     # ── Public ops ──
 
@@ -102,6 +110,7 @@ class SegmentSession:
         self.instance_ids[d.indices] = d.before_inst
         self._redo.append(d)
         self.dirty = True
+        self.schedule_autosave(write_arrays=True)
         return self._delta_payload(d, direction="undo")
 
     def redo(self) -> Optional[dict]:
@@ -112,6 +121,7 @@ class SegmentSession:
         self.instance_ids[d.indices] = d.after_inst
         self._undo.append(d)
         self.dirty = True
+        self.schedule_autosave(write_arrays=True)
         return self._delta_payload(d, direction="redo")
 
     # ── Preseg layer ──
@@ -133,6 +143,7 @@ class SegmentSession:
         self.preseg_ids = preseg_ids.astype(np.int32, copy=False)
         self.preseg_run_id = run_id
         self.preseg_fingerprint = compute_fingerprint(self.preseg_ids)
+        self.schedule_autosave(write_arrays=True)
 
     def current_inst_ids_for_preseg(self, preseg_id: int) -> set[int]:
         """Which live instance ids does preseg cluster `preseg_id` currently
@@ -144,9 +155,11 @@ class SegmentSession:
 
     def hide_instance(self, inst_id: int) -> None:
         self.hidden_inst_ids.add(int(inst_id))
+        self.schedule_autosave(write_arrays=False)
 
     def unhide_instance(self, inst_id: int) -> None:
         self.hidden_inst_ids.discard(int(inst_id))
+        self.schedule_autosave(write_arrays=False)
 
     def snap_to_preseg(self, inst_ids: list[int]) -> dict:
         """For every point whose live instance is in inst_ids, reset its
@@ -250,7 +263,54 @@ class SegmentSession:
         }
         if new_inst_id is not None:
             out["new_instance_id"] = new_inst_id
+        self.schedule_autosave(write_arrays=True)
         return out
+
+    # ── Autosave ──
+
+    def _aux_payload(self) -> dict:
+        return {
+            "schema_version": 1,
+            "preseg_run_id": self.preseg_run_id,
+            "preseg_fingerprint": self.preseg_fingerprint,
+            "source_fingerprint": self.source_fingerprint,
+            "hidden_inst_ids": sorted(int(x) for x in self.hidden_inst_ids),
+            "is_from_prelabel": bool(self.is_from_prelabel),
+            "dirty": bool(self.dirty),
+        }
+
+    def _do_autosave(self, write_arrays: bool) -> None:
+        if self.session_dir is None:
+            return
+        from segment_io import save_session_aux
+        with self._autosave_lock:
+            save_session_aux(
+                self.session_dir,
+                self._aux_payload(),
+                class_ids=self.class_ids if write_arrays else None,
+                instance_ids=self.instance_ids if write_arrays else None,
+            )
+
+    def schedule_autosave(self, *, write_arrays: bool = True) -> None:
+        if self.session_dir is None:
+            return
+        if self._autosave_debounce_s <= 0.0:
+            self._do_autosave(write_arrays)
+            return
+        if self._autosave_timer is not None:
+            self._autosave_timer.cancel()
+        self._autosave_timer = threading.Timer(
+            self._autosave_debounce_s,
+            self._do_autosave, args=(write_arrays,),
+        )
+        self._autosave_timer.daemon = True
+        self._autosave_timer.start()
+
+    def flush_autosave(self) -> None:
+        if self._autosave_timer is not None:
+            self._autosave_timer.cancel()
+            self._autosave_timer = None
+        self._do_autosave(write_arrays=True)
 
     def _delta_payload(self, d: _Delta, direction: str) -> dict:
         # Frontend reapplies these by index → (class, instance).
