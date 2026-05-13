@@ -48,6 +48,11 @@ class SegmentSession:
         self.class_ids = class_ids
         self.instance_ids = instance_ids
         self.positions = positions.astype(np.float32, copy=False)
+        self.preseg_ids: np.ndarray = np.full(n, -1, dtype=np.int32)
+        self.preseg_run_id: Optional[str] = None
+        self.preseg_fingerprint: Optional[str] = None
+        self.source_fingerprint: Optional[str] = None
+        self.hidden_inst_ids: set[int] = set()
         self.is_from_prelabel: bool = bool(is_from_prelabel)
         self._undo: deque[_Delta] = deque()
         self._redo: deque[_Delta] = deque()
@@ -108,6 +113,34 @@ class SegmentSession:
         self._undo.append(d)
         self.dirty = True
         return self._delta_payload(d, direction="redo")
+
+    # ── Preseg layer ──
+
+    def freeze_preseg(
+        self,
+        preseg_ids: np.ndarray,
+        *,
+        run_id: Optional[str] = None,
+    ) -> None:
+        """Replace the immutable preseg layer. Not undoable; this is a
+        session-scope event."""
+        from segment_io import compute_fingerprint
+        if preseg_ids.shape != self.instance_ids.shape:
+            raise ValueError(
+                f"freeze_preseg: expected {self.instance_ids.shape}, "
+                f"got {preseg_ids.shape}",
+            )
+        self.preseg_ids = preseg_ids.astype(np.int32, copy=False)
+        self.preseg_run_id = run_id
+        self.preseg_fingerprint = compute_fingerprint(self.preseg_ids)
+
+    def current_inst_ids_for_preseg(self, preseg_id: int) -> set[int]:
+        """Which live instance ids does preseg cluster `preseg_id` currently
+        cover? Resolves through any merges/reassigns since freeze_preseg."""
+        mask = self.preseg_ids == int(preseg_id)
+        if not mask.any():
+            return set()
+        return set(int(v) for v in np.unique(self.instance_ids[mask]) if v >= 0)
 
     # ── KD-tree query ──
 

@@ -124,3 +124,66 @@ def test_brush_query_depth_cull_excludes_far_points_along_ray():
         depth_cull=2.0,
     )
     assert set(got.tolist()) == {0, 1}
+
+
+def test_segment_session_has_preseg_layer():
+    import numpy as np
+    from segment_state import SegmentSession
+    pts = np.zeros((10, 3), dtype=np.float32)
+    s = SegmentSession(
+        class_ids=np.full(10, -1, dtype=np.int8),
+        instance_ids=np.full(10, -1, dtype=np.int32),
+        positions=pts,
+    )
+    assert s.preseg_ids.shape == (10,)
+    assert s.preseg_ids.dtype == np.int32
+    assert (s.preseg_ids == -1).all()
+    assert s.preseg_run_id is None
+    assert s.preseg_fingerprint is None
+
+
+def test_freeze_preseg_stamps_run_id_and_fingerprint():
+    import numpy as np
+    from segment_state import SegmentSession
+    pts = np.zeros((10, 3), dtype=np.float32)
+    s = SegmentSession(
+        class_ids=np.full(10, -1, dtype=np.int8),
+        instance_ids=np.full(10, -1, dtype=np.int32),
+        positions=pts,
+    )
+    new_pre = np.arange(10, dtype=np.int32)
+    s.freeze_preseg(new_pre, run_id="abc")
+    np.testing.assert_array_equal(s.preseg_ids, new_pre)
+    assert s.preseg_run_id == "abc"
+    assert s.preseg_fingerprint.startswith("sha256:")
+
+
+def test_freeze_preseg_immutable_through_merge():
+    import numpy as np
+    from segment_state import SegmentSession
+    pts = np.zeros((10, 3), dtype=np.float32)
+    s = SegmentSession(
+        class_ids=np.zeros(10, dtype=np.int8),
+        instance_ids=np.array([0]*5 + [1]*5, dtype=np.int32),
+        positions=pts,
+    )
+    s.freeze_preseg(np.array([0]*5 + [1]*5, dtype=np.int32))
+    s.apply_merge(source_inst=0, target_inst=1)
+    assert (s.instance_ids == 1).all()
+    np.testing.assert_array_equal(s.preseg_ids, np.array([0]*5 + [1]*5))
+
+
+def test_current_inst_ids_for_preseg_after_merge():
+    """Core bug-fix scenario: hide(preseg=0) after a merge resolves to live id 1."""
+    import numpy as np
+    from segment_state import SegmentSession
+    pts = np.zeros((10, 3), dtype=np.float32)
+    s = SegmentSession(
+        class_ids=np.zeros(10, dtype=np.int8),
+        instance_ids=np.array([0]*5 + [1]*5, dtype=np.int32),
+        positions=pts,
+    )
+    s.freeze_preseg(s.instance_ids.copy())
+    s.apply_merge(source_inst=0, target_inst=1)
+    assert s.current_inst_ids_for_preseg(0) == {1}
+    assert s.current_inst_ids_for_preseg(1) == {1}
