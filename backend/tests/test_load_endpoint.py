@@ -388,3 +388,34 @@ def test_seg_session_skipped_above_label_cap(monkeypatch, client_with_annotated_
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
     assert main._state["seg"] is None
+
+
+def test_load_detects_stale_prelabel_fingerprint(client_with_annotated_scene, tmp_path):
+    """labels/gt_segment_metadata.json was written with prelabel_fingerprint=X,
+    but prelabel/ has since been re-run and now hashes to Y. State must
+    surface stale_prelabel=True."""
+    client, scene_id = client_with_annotated_scene
+    import json
+    import numpy as np
+    from pathlib import Path
+    from main import _resolve
+    src = _resolve(scene_id)
+    scan = Path(src.source_path).parent.parent  # source/scan.ply → scan/
+    # Ensure prelabel exists with content fingerprint A.
+    (scan / "prelabel").mkdir(exist_ok=True)
+    np.save(scan / "prelabel" / "ransac_instance_ids.npy",
+            np.full(64, 0, dtype=np.int32))
+    (scan / "prelabel" / "ransac_segment_summary.json").write_text(json.dumps({
+        "segments": [{"id": 0, "class_id": 0}],
+    }))
+    # Pretend labels were seeded from a different prelabel content.
+    meta_p = scan / "labels" / "gt_segment_metadata.json"
+    meta = json.loads(meta_p.read_text())
+    meta["prelabel_fingerprint"] = "sha256:stale_value_doesnt_match_current"
+    meta_p.write_text(json.dumps(meta))
+
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 1000})
+    assert r.status_code == 200
+
+    body = client.get("/api/segment/state").json()
+    assert body.get("stale_prelabel") is True

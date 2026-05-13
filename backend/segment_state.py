@@ -57,6 +57,7 @@ class SegmentSession:
         self.preseg_fingerprint: Optional[str] = None
         self.source_fingerprint: Optional[str] = None
         self.hidden_inst_ids: set[int] = set()
+        self.stale_prelabel: bool = False
         self.is_from_prelabel: bool = bool(is_from_prelabel)
         self._undo: deque[_Delta] = deque()
         self._redo: deque[_Delta] = deque()

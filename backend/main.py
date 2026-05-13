@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import threading as _threading
 import time as _time
@@ -588,6 +589,35 @@ def load_scene(req: LoadRequest):
         _state["seg"] = seg
     else:
         _state["seg"] = None
+
+    # Detect stale prelabel: labels/gt_segment_metadata.json may carry a
+    # prelabel_fingerprint recorded when labels were seeded. If prelabel/
+    # has been re-run since (different content hash), surface this so the
+    # frontend can warn the user that their on-disk labels may be stale.
+    _seg = _state.get("seg")
+    if _seg is not None:
+        _seg.stale_prelabel = False
+        scan_dir_str = src.extras.get("scan_dir") if src.extras else None
+        if scan_dir_str is None and src.tier == "annotated":
+            scan_dir_str = str(Path(src.source_path).parent.parent)
+        if scan_dir_str is not None:
+            scan_dir = Path(scan_dir_str)
+            labels_meta_path = scan_dir / "labels" / "gt_segment_metadata.json"
+            prelabel_path = scan_dir / "prelabel" / "ransac_instance_ids.npy"
+            if labels_meta_path.exists() and prelabel_path.exists():
+                try:
+                    import json as _json
+                    saved_fp = _json.loads(labels_meta_path.read_text()).get("prelabel_fingerprint")
+                    current_fp = compute_fingerprint(np.load(prelabel_path).astype(np.int32))
+                    if saved_fp and current_fp and saved_fp != current_fp:
+                        _seg.stale_prelabel = True
+                        logging.warning(
+                            "scene %s: prelabel/ has been re-run since labels/ were saved "
+                            "(was %s, now %s) — labels may be stale",
+                            src.scene_id, saved_fp, current_fp,
+                        )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
 
     positions = sub.points.astype(np.float32)
     colors = _normalize_colors(sub)
@@ -1489,6 +1519,7 @@ class SegmentStateResponse(BaseModel):
     source_fingerprint: Optional[str] = None
     hidden_inst_ids: list[int] = []
     is_from_prelabel: bool = False
+    stale_prelabel: bool = False
     full_class_ids: str = ""
     full_instance_ids: str = ""
     seg_ids: str = ""
@@ -1524,6 +1555,7 @@ def segment_state():
         source_fingerprint=seg.source_fingerprint,
         hidden_inst_ids=sorted(int(x) for x in seg.hidden_inst_ids),
         is_from_prelabel=bool(seg.is_from_prelabel),
+        stale_prelabel=bool(getattr(seg, "stale_prelabel", False)),
         full_class_ids=_b64(class_ids),
         full_instance_ids=_b64(instance_ids),
         seg_ids=_b64(box_ids),
