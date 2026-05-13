@@ -6,7 +6,9 @@ arrays before flushing to disk.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -14,6 +16,39 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+
+def compute_fingerprint(arr: np.ndarray) -> str:
+    """Content-addressed sha256 of a numpy array's bytes. Stable across
+    save/load (numpy preserves byte layout for fixed dtypes)."""
+    h = hashlib.sha256()
+    h.update(bytes(str(arr.dtype), "ascii"))
+    h.update(b":")
+    h.update(bytes(str(arr.shape), "ascii"))
+    h.update(b":")
+    h.update(arr.tobytes(order="C"))
+    return f"sha256:{h.hexdigest()}"
+
+
+def atomic_write_npy(path: Path, arr: np.ndarray) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp, "wb") as f:
+        np.save(f, arr)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def atomic_write_json(path: Path, payload: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def load_prelabel(
