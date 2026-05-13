@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import threading as _threading
 import time as _time
@@ -540,18 +541,83 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
     )
     from segment_state import SegmentSession
+    from segment_io import (
+        compute_fingerprint,
+        load_session_aux,
+        load_working_arrays,
+    )
+
+    source_fp = compute_fingerprint(pc.points.astype(np.float32))
+    session_dir = src.session_dir
+
+    # Try recovering an in-progress working session (commit-pointer gated).
+    recovered = None
+    if session_dir is not None and not keep_prev_seg:
+        aux = load_session_aux(session_dir)
+        if aux is not None and aux.get("source_fingerprint") == source_fp:
+            wa = load_working_arrays(session_dir, n_points=len(pc))
+            if wa is not None:
+                recovered = (wa[0], wa[1], aux)
+
     if keep_prev_seg:
         # Carry over the existing session as-is.
         _state["seg"] = prev_seg
+    elif recovered is not None:
+        wc, wi, aux = recovered
+        seg = SegmentSession(
+            class_ids=wc,
+            instance_ids=wi,
+            positions=pc.points,
+            is_from_prelabel=bool(aux.get("is_from_prelabel", False)),
+            session_dir=session_dir,
+        )
+        seg.source_fingerprint = source_fp
+        seg.preseg_run_id = aux.get("preseg_run_id")
+        seg.preseg_fingerprint = aux.get("preseg_fingerprint")
+        seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
+        seg.dirty = bool(aux.get("dirty", False))
+        _state["seg"] = seg
     elif labels is not None and len(pc) <= MAX_LABEL_POINTS:
-        _state["seg"] = SegmentSession(
+        seg = SegmentSession(
             class_ids=labels.class_ids,
             instance_ids=labels.instance_ids,
             positions=pc.points,
             is_from_prelabel=is_from_prelabel,
+            session_dir=session_dir,
         )
+        seg.source_fingerprint = source_fp
+        _state["seg"] = seg
     else:
         _state["seg"] = None
+
+    # Detect stale prelabel: labels/gt_segment_metadata.json may carry a
+    # prelabel_fingerprint recorded when labels were seeded. If prelabel/
+    # has been re-run since (different content hash), surface this so the
+    # frontend can warn the user that their on-disk labels may be stale.
+    _seg = _state.get("seg")
+    if _seg is not None:
+        _seg.stale_prelabel = False
+        scan_dir_str = src.extras.get("scan_dir") if src.extras else None
+        if scan_dir_str is None and src.tier == "annotated":
+            scan_dir_str = str(Path(src.source_path).parent.parent)
+        if scan_dir_str is not None:
+            scan_dir = Path(scan_dir_str)
+            labels_meta_path = scan_dir / "labels" / "gt_segment_metadata.json"
+            prelabel_path = scan_dir / "prelabel" / "ransac_instance_ids.npy"
+            if labels_meta_path.exists() and prelabel_path.exists():
+                try:
+                    import json as _json
+                    saved_fp = _json.loads(labels_meta_path.read_text()).get("prelabel_fingerprint")
+                    current_fp = compute_fingerprint(np.load(prelabel_path).astype(np.int32))
+                    if saved_fp and current_fp and saved_fp != current_fp:
+                        _seg.stale_prelabel = True
+                        logging.warning(
+                            "scene %s: prelabel/ has been re-run since labels/ were saved "
+                            "(was %s, now %s) — labels may be stale",
+                            src.scene_id, saved_fp, current_fp,
+                        )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
 
     positions = sub.points.astype(np.float32)
     colors = _normalize_colors(sub)
@@ -1083,10 +1149,13 @@ def _apply_ransac_result_to_session(
     keep_mask: np.ndarray,
     redo_mask: np.ndarray,
     resolution: float = 0.05,
+    run_id: Optional[str] = None,
 ):
-    """Renumber sub-instance ids above the existing max, assemble the new
-    session arrays, compute boxes + hulls, and return everything. Caller
-    is responsible for writing the session into ``_state["seg"]``."""
+    """Renumber sub-instance ids above the existing max, freeze the
+    immutable preseg layer, then seed live (instance, class) via grouped
+    ``apply_reassign`` calls so subsequent edits stay undoable and the
+    linkage layer (preseg_ids/fingerprint) is populated. Caller writes
+    the session into ``_state["seg"]``."""
     from segment_state import SegmentSession
     from segment_hulls import compute_hulls as _compute_hulls
 
@@ -1094,22 +1163,55 @@ def _apply_ransac_result_to_session(
     if id_offset and sub_inst.size:
         sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
 
-    instance_ids = existing_inst.copy()
-    instance_ids[redo_mask] = sub_inst
-
-    class_ids = existing_class.copy()
-    class_ids[redo_mask] = -1
-    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
-    for sid, cid in seg_to_class.items():
-        if cid >= 0:
-            class_ids[instance_ids == sid] = cid
+    # Build the session with only the kept (already-labeled) state; the
+    # redo region starts unlabeled. We seed it via apply_reassign below.
+    init_class = existing_class.copy()
+    init_inst = existing_inst.copy()
+    init_class[redo_mask] = -1
+    init_inst[redo_mask] = -1
 
     sess = SegmentSession(
-        class_ids=class_ids,
-        instance_ids=instance_ids.astype(np.int32),
+        class_ids=init_class.astype(np.int8),
+        instance_ids=init_inst.astype(np.int32),
         positions=positions,
         is_from_prelabel=True,
     )
+
+    # Stamp the immutable preseg layer: full-length array, -1 outside the
+    # redo region. NOT undoable.
+    preseg_full = np.full(int(positions.shape[0]), -1, dtype=np.int32)
+    preseg_full[redo_mask] = sub_inst
+    sess.freeze_preseg(preseg_full, run_id=run_id)
+
+    # Group seed reassigns by preseg_id so each (instance, class) pair
+    # becomes one undoable op. Only seed points that are currently
+    # unlabeled (the redo region after the wipe above).
+    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
+    seedable = (sess.class_ids < 0)
+    # Cover every preseg cluster present in the redo region — including
+    # those the summary didn't classify (class_id < 0). They still need
+    # an instance id so the UI renders them as segments.
+    unique_preseg = np.unique(sub_inst) if sub_inst.size else np.empty(0, dtype=np.int32)
+    for preseg_id in unique_preseg:
+        pid = int(preseg_id)
+        if pid < 0:
+            continue
+        mask = seedable & (preseg_full == pid)
+        if not mask.any():
+            continue
+        indices = np.flatnonzero(mask).astype(np.int32)
+        cid = seg_to_class.get(pid, -1)
+        # apply_reassign requires a non-None target_class when target_inst
+        # is set. Use -1 for unclassified preseg clusters (same wire value
+        # the legacy direct-write path produced).
+        sess.apply_reassign(
+            indices,
+            target_inst=pid,
+            target_class=int(cid),
+        )
+
+    instance_ids = sess.instance_ids
+    class_ids = sess.class_ids
 
     box_ids, box_centers, box_sizes = _compute_segment_boxes(
         np.asarray(positions), instance_ids
@@ -1407,8 +1509,17 @@ class SegmentStateResponse(BaseModel):
     they refresh the tab. Hulls are recomputed on demand (cheap relative
     to the original RANSAC run)."""
     has_state: bool
+    has_seg: bool = False
+    dirty: bool = False
     n_assigned: int = 0
     n_segments: int = 0
+    n_points: Optional[int] = None
+    preseg_run_id: Optional[str] = None
+    preseg_fingerprint: Optional[str] = None
+    source_fingerprint: Optional[str] = None
+    hidden_inst_ids: list[int] = []
+    is_from_prelabel: bool = False
+    stale_prelabel: bool = False
     full_class_ids: str = ""
     full_instance_ids: str = ""
     seg_ids: str = ""
@@ -1425,7 +1536,7 @@ def segment_state():
     Used by the frontend to hydrate ``segState`` after a page reload."""
     seg = _state.get("seg")
     if seg is None:
-        return SegmentStateResponse(has_state=False)
+        return SegmentStateResponse(has_state=False, has_seg=False, dirty=False)
     instance_ids = seg.instance_ids.astype(np.int32, copy=False)
     class_ids = seg.class_ids.astype(np.int8, copy=False)
     labeled = instance_ids >= 0
@@ -1434,8 +1545,17 @@ def segment_state():
     hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
     return SegmentStateResponse(
         has_state=True,
+        has_seg=True,
+        dirty=bool(seg.dirty),
         n_assigned=int(labeled.sum()),
         n_segments=int(np.unique(instance_ids[labeled]).size) if labeled.any() else 0,
+        n_points=int(len(seg.instance_ids)),
+        preseg_run_id=seg.preseg_run_id,
+        preseg_fingerprint=seg.preseg_fingerprint,
+        source_fingerprint=seg.source_fingerprint,
+        hidden_inst_ids=sorted(int(x) for x in seg.hidden_inst_ids),
+        is_from_prelabel=bool(seg.is_from_prelabel),
+        stale_prelabel=bool(getattr(seg, "stale_prelabel", False)),
         full_class_ids=_b64(class_ids),
         full_instance_ids=_b64(instance_ids),
         seg_ids=_b64(box_ids),
@@ -1445,6 +1565,41 @@ def segment_state():
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
     )
+
+
+class HideRequest(BaseModel):
+    inst_id: int
+
+
+class SnapToPresegRequest(BaseModel):
+    inst_ids: list[int]
+
+
+@app.post("/api/segment/hide", response_model=SegmentStateResponse)
+def segment_hide(req: HideRequest):
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "no active segment session")
+    seg.hide_instance(req.inst_id)
+    return segment_state()
+
+
+@app.delete("/api/segment/hide/{inst_id}", response_model=SegmentStateResponse)
+def segment_unhide(inst_id: int):
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "no active segment session")
+    seg.unhide_instance(inst_id)
+    return segment_state()
+
+
+@app.post("/api/segment/snap-to-preseg")
+def segment_snap_to_preseg(req: SnapToPresegRequest):
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "no active segment session")
+    out = seg.snap_to_preseg(req.inst_ids)
+    return {"n_affected": int(out["n_affected"])}
 
 
 @app.put("/api/segment/save")
@@ -1467,6 +1622,7 @@ def segment_save():
     n_dropped = int(unclassified.sum())
     if n_dropped:
         seg.instance_ids[unclassified] = np.int32(-1)
+    seg.flush_autosave()
     try:
         from segment_io import save_labels
         save_labels(
@@ -1475,6 +1631,8 @@ def segment_save():
             instance_ids=seg.instance_ids,
             positions=seg.positions,
             write_history=write_history,
+            prelabel_fingerprint=seg.preseg_fingerprint,
+            source_fingerprint=seg.source_fingerprint,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

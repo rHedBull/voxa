@@ -144,3 +144,86 @@ def test_save_drops_unclassified_preseg(client_with_loaded_annotated_scene, scan
     # Classified point survived intact.
     assert int(arr_inst[1]) == 100
     assert int(arr_cls[1]) == 2
+
+
+# ── Task 8: hide / unhide / snap-to-preseg ───────────────────────────────────
+
+def test_hide_unhide_round_trip(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 1000})
+    assert r.status_code == 200
+
+    # Brush a class onto a few points so we have a real instance id.
+    r = client.post("/api/segment/apply", json={
+        "op": "reassign", "indices": _b64_int32([0, 1, 2]),
+        "payload": {"target_inst": -1, "target_class": 2},
+    })
+    assert r.status_code == 200, r.text
+    new_inst = r.json()["new_instance_id"]
+
+    r = client.post("/api/segment/hide", json={"inst_id": new_inst})
+    assert r.status_code == 200
+    body = r.json()
+    assert new_inst in body["hidden_inst_ids"]
+
+    r = client.delete(f"/api/segment/hide/{new_inst}")
+    assert r.status_code == 200
+    body = r.json()
+    assert new_inst not in body["hidden_inst_ids"]
+
+
+def test_hide_unknown_inst_id_still_recorded(client_with_annotated_scene):
+    """hide stores whatever int you give it; resolution is FE concern."""
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 1000})
+    assert r.status_code == 200
+    r = client.post("/api/segment/hide", json={"inst_id": 999})
+    assert r.status_code == 200
+    body = r.json()
+    assert 999 in body["hidden_inst_ids"]
+
+
+def test_snap_to_preseg_endpoint(client_with_annotated_scene):
+    """Set up: freeze a preseg with two ids, merge 0→1, snap [1]
+    back to preseg. Reach into _state.seg to set up the preseg layer."""
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 1000})
+    assert r.status_code == 200
+
+    import main
+    seg = main._state["seg"]
+    n = len(seg.instance_ids)
+    preseg = np.full(n, -1, dtype=np.int32)
+    preseg[: n // 2] = 0
+    preseg[n // 2 :] = 1
+    seg.freeze_preseg(preseg)
+    seg.instance_ids[:] = preseg
+    seg.apply_merge(source_inst=0, target_inst=1)
+    assert (seg.instance_ids == 1).all()
+
+    r = client.post("/api/segment/snap-to-preseg", json={"inst_ids": [1]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["n_affected"] == n
+    assert (seg.instance_ids[: n // 2] == 0).all()
+    assert (seg.instance_ids[n // 2 :] == 1).all()
+
+
+def test_hide_409_when_no_active_seg(client):
+    """No load yet → no _state.seg → 409."""
+    r = client.post("/api/segment/hide", json={"inst_id": 0})
+    assert r.status_code == 409
+
+
+def test_segment_state_surfaces_full_session_aux(client_with_annotated_scene):
+    client, scene_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+
+    r = client.get("/api/segment/state")
+    body = r.json()
+    # Should include the 8 fields needed for FE hydration.
+    for k in ("has_seg", "n_points", "preseg_run_id", "preseg_fingerprint",
+              "source_fingerprint", "hidden_inst_ids", "is_from_prelabel",
+              "dirty"):
+        assert k in body, f"missing field: {k}"

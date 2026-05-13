@@ -266,3 +266,35 @@ export function b64ToInt32(b64)   { return new Int32Array(b64ToBuf(b64)); }
 export function newId(prefix = 'inst') {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
+
+export async function getSegmentState() {
+  const r = await fetch('/api/segment/state');
+  if (!r.ok) throw new Error(`segment/state ${r.status}`);
+  return r.json();
+}
+
+export async function hideInstance(instId) {
+  const r = await fetch('/api/segment/hide', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ inst_id: instId }),
+  });
+  if (!r.ok) throw new Error(`hide ${r.status}`);
+  return r.json();
+}
+
+export async function unhideInstance(instId) {
+  const r = await fetch(`/api/segment/hide/${instId}`, { method: 'DELETE' });
+  if (!r.ok) throw new Error(`unhide ${r.status}`);
+  return r.json();
+}
+
+export async function snapToPreseg(instIds) {
+  const r = await fetch('/api/segment/snap-to-preseg', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ inst_ids: instIds }),
+  });
+  if (!r.ok) throw new Error(`snap ${r.status}`);
+  return r.json();
+}

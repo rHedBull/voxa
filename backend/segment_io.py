@@ -6,7 +6,9 @@ arrays before flushing to disk.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -14,6 +16,39 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+
+def compute_fingerprint(arr: np.ndarray) -> str:
+    """Content-addressed sha256 of a numpy array's bytes. Stable across
+    save/load (numpy preserves byte layout for fixed dtypes)."""
+    h = hashlib.sha256()
+    h.update(bytes(arr.dtype.str, "ascii"))
+    h.update(b":")
+    h.update(bytes(str(arr.shape), "ascii"))
+    h.update(b":")
+    h.update(np.ascontiguousarray(arr).tobytes())
+    return f"sha256:{h.hexdigest()}"
+
+
+def atomic_write_npy(path: Path, arr: np.ndarray) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp, "wb") as f:
+        np.save(f, arr)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def atomic_write_json(path: Path, payload: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def load_prelabel(
@@ -170,6 +205,8 @@ def save_labels(
     positions: Optional[np.ndarray] = None,
     write_history: bool = True,
     history_keep: int = 10,
+    prelabel_fingerprint: Optional[str] = None,
+    source_fingerprint: Optional[str] = None,
 ) -> None:
     """Validate, snapshot existing labels, then write gt_*.npy + metadata.
 
@@ -202,6 +239,10 @@ def save_labels(
     np.save(labels_dir / "gt_segment_ids.npy", instance_ids.astype(np.int32))
     meta = _build_segment_metadata(class_ids, instance_ids, positions,
                                    registry=registry)
+    if prelabel_fingerprint is not None:
+        meta["prelabel_fingerprint"] = prelabel_fingerprint
+    if source_fingerprint is not None:
+        meta["source_fingerprint"] = source_fingerprint
     (labels_dir / "gt_segment_metadata.json").write_text(json.dumps(meta, indent=2))
 
 
@@ -215,3 +256,65 @@ def prune_history(history_dir: Path, *, keep: int = 10) -> None:
     timestamped.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for p in timestamped[keep:]:
         shutil.rmtree(p)
+
+
+SESSION_SCHEMA_VERSION = 1
+
+
+def save_session_aux(
+    session_dir: Path,
+    aux: dict,
+    *,
+    class_ids: Optional[np.ndarray] = None,
+    instance_ids: Optional[np.ndarray] = None,
+) -> None:
+    """Atomically persist editor session state.
+
+    Order: working_*.npy first, then current.json (commit pointer). On a
+    crash between the npy renames and current.json rename, the next reload
+    sees the previous-consistent current.json and ignores any half-updated
+    working_*.
+    """
+    session_dir.mkdir(parents=True, exist_ok=True)
+    if class_ids is not None:
+        atomic_write_npy(session_dir / "working_class_ids.npy",
+                         class_ids.astype(np.int8, copy=False))
+    if instance_ids is not None:
+        atomic_write_npy(session_dir / "working_segment_ids.npy",
+                         instance_ids.astype(np.int32, copy=False))
+    payload = dict(aux)
+    payload.setdefault("schema_version", SESSION_SCHEMA_VERSION)
+    payload["saved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    atomic_write_json(session_dir / "current.json", payload)
+
+
+def load_session_aux(session_dir: Path) -> Optional[dict]:
+    """Read current.json or return None if absent/unreadable."""
+    p = session_dir / "current.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def load_working_arrays(
+    session_dir: Path, n_points: int,
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Return (class_ids int8, instance_ids int32) iff current.json exists
+    AND both working files are present AND shapes match n_points."""
+    if load_session_aux(session_dir) is None:
+        return None
+    cp = session_dir / "working_class_ids.npy"
+    ip = session_dir / "working_segment_ids.npy"
+    if not (cp.exists() and ip.exists()):
+        return None
+    try:
+        ci = np.load(cp).astype(np.int8, copy=False)
+        ii = np.load(ip).astype(np.int32, copy=False)
+    except (OSError, ValueError):
+        return None
+    if ci.shape != (n_points,) or ii.shape != (n_points,):
+        return None
+    return ci, ii

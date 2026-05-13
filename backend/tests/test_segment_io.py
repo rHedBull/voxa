@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 
 import numpy as np
 
-from segment_io import load_prelabel
+from segment_io import (
+    atomic_write_json,
+    atomic_write_npy,
+    compute_fingerprint,
+    load_prelabel,
+    load_session_aux,
+    load_working_arrays,
+    prune_history,
+    save_labels,
+    save_session_aux,
+)
 
 
 def _write_prelabel(scan_dir: Path, instance_ids: np.ndarray, summary: list[dict]):
@@ -63,12 +75,6 @@ def test_load_prelabel_returns_none_when_segment_missing_keys(tmp_path):
     _write_prelabel(scan_dir, np.zeros(8, dtype=np.int32),
                     [{"id": 0}])  # class_id missing
     assert load_prelabel(scan_dir, n_points=8) is None
-
-
-import os
-import re
-
-from segment_io import save_labels, prune_history
 
 
 def _read_npy(path: Path) -> np.ndarray:
@@ -198,6 +204,39 @@ def test_save_labels_rejects_class_map_version_mismatch(tmp_path):
                     write_history=False)
 
 
+def test_compute_fingerprint_is_content_addressed():
+    a = np.array([1, 2, 3], dtype=np.int32)
+    b = np.array([1, 2, 3], dtype=np.int32)
+    c = np.array([1, 2, 4], dtype=np.int32)
+    assert compute_fingerprint(a) == compute_fingerprint(b)
+    assert compute_fingerprint(a) != compute_fingerprint(c)
+    assert compute_fingerprint(a).startswith("sha256:")
+
+
+def test_compute_fingerprint_handles_non_contiguous_views():
+    base = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
+    view = base.T  # non-contiguous
+    contig = np.ascontiguousarray(view)
+    assert compute_fingerprint(view) == compute_fingerprint(contig)
+
+
+def test_atomic_write_npy_round_trip(tmp_path):
+    p = tmp_path / "x.npy"
+    arr = np.arange(100, dtype=np.int32)
+    atomic_write_npy(p, arr)
+    assert p.exists()
+    assert not (tmp_path / "x.npy.tmp").exists()
+    np.testing.assert_array_equal(np.load(p), arr)
+
+
+def test_atomic_write_json_round_trip(tmp_path):
+    p = tmp_path / "x.json"
+    atomic_write_json(p, {"a": 1, "b": [2, 3]})
+    assert p.exists()
+    assert not (tmp_path / "x.json.tmp").exists()
+    assert json.loads(p.read_text()) == {"a": 1, "b": [2, 3]}
+
+
 def test_prune_history_keeps_only_timestamped_dirs(tmp_path):
     hist = tmp_path / "annotation_history"
     hist.mkdir()
@@ -213,3 +252,89 @@ def test_prune_history_keeps_only_timestamped_dirs(tmp_path):
     remaining = sorted(p.name for p in hist.iterdir())
     assert "manual-backup" in remaining
     assert sum(1 for n in remaining if re.match(r"^\d{8}_\d{6}$", n)) == 10
+
+
+def test_session_aux_round_trip(tmp_path):
+    session_dir = tmp_path / "session"
+    class_ids = np.full(100, -1, dtype=np.int8)
+    class_ids[10:20] = 2
+    inst_ids = np.full(100, -1, dtype=np.int32)
+    inst_ids[10:20] = 7
+    aux = {
+        "schema_version": 1,
+        "preseg_run_id": "20260513-100000",
+        "preseg_fingerprint": "sha256:abc",
+        "source_fingerprint": "sha256:def",
+        "hidden_inst_ids": [7],
+        "is_from_prelabel": False,
+        "dirty": True,
+    }
+    save_session_aux(session_dir, aux, class_ids=class_ids, instance_ids=inst_ids)
+    assert (session_dir / "current.json").exists()
+    assert (session_dir / "working_class_ids.npy").exists()
+    assert (session_dir / "working_segment_ids.npy").exists()
+
+    out = load_session_aux(session_dir)
+    assert out is not None
+    assert out["preseg_run_id"] == "20260513-100000"
+    assert out["hidden_inst_ids"] == [7]
+
+    wc, wi = load_working_arrays(session_dir, n_points=100)
+    np.testing.assert_array_equal(wc, class_ids)
+    np.testing.assert_array_equal(wi, inst_ids)
+
+
+def test_load_working_arrays_returns_none_without_current_json(tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    # Working arrays present but no current.json → ignore (commit-pointer rule).
+    atomic_write_npy(session_dir / "working_class_ids.npy",
+                     np.zeros(50, dtype=np.int8))
+    atomic_write_npy(session_dir / "working_segment_ids.npy",
+                     np.zeros(50, dtype=np.int32))
+    assert load_working_arrays(session_dir, n_points=50) is None
+
+
+def test_load_working_arrays_returns_none_on_shape_mismatch(tmp_path):
+    session_dir = tmp_path / "session"
+    save_session_aux(session_dir, {"schema_version": 1},
+                     class_ids=np.zeros(50, dtype=np.int8),
+                     instance_ids=np.zeros(50, dtype=np.int32))
+    assert load_working_arrays(session_dir, n_points=999) is None
+
+
+def test_save_labels_adds_fingerprints(tmp_path):
+    """gt_segment_metadata.json must carry prelabel_fingerprint + source_fingerprint
+    when supplied by the caller."""
+    from segment_io import save_labels
+    scan = tmp_path
+    # minimal class registry so validators pass
+    (scan / "labels").mkdir()
+    class_ids = np.full(4, -1, dtype=np.int32)
+    inst_ids = np.full(4, -1, dtype=np.int32)
+    save_labels(
+        scan,
+        class_ids=class_ids,
+        instance_ids=inst_ids,
+        write_history=False,
+        prelabel_fingerprint="sha256:abc",
+        source_fingerprint="sha256:def",
+    )
+    meta = json.loads((scan / "labels" / "gt_segment_metadata.json").read_text())
+    assert meta["prelabel_fingerprint"] == "sha256:abc"
+    assert meta["source_fingerprint"] == "sha256:def"
+
+
+def test_save_labels_omits_fingerprints_when_not_provided(tmp_path):
+    from segment_io import save_labels
+    scan = tmp_path
+    (scan / "labels").mkdir()
+    save_labels(
+        scan,
+        class_ids=np.full(4, -1, dtype=np.int32),
+        instance_ids=np.full(4, -1, dtype=np.int32),
+        write_history=False,
+    )
+    meta = json.loads((scan / "labels" / "gt_segment_metadata.json").read_text())
+    assert "prelabel_fingerprint" not in meta
+    assert "source_fingerprint" not in meta
