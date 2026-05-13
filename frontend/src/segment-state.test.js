@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, test, expect, vi } from 'vitest';
+import * as api from './api.js';
 import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState } from './segment-state.js';
 
 const seed = () => initSegState({
@@ -91,5 +92,43 @@ describe('hydrateFromServerState', () => {
     const state = { hiddenInstIds: new Set([42]), presegRunId: 'old' };
     const out = hydrateFromServerState(state, { has_seg: false });
     expect(out).toBe(state);
+  });
+});
+
+describe('hide/unhide API contract', () => {
+  test('hide flow: API call → hydrate → state has the inst_id', async () => {
+    vi.spyOn(api, 'hideInstance').mockResolvedValue({
+      has_seg: true,
+      hidden_inst_ids: [42],
+      preseg_run_id: null,
+      preseg_fingerprint: null,
+      source_fingerprint: null,
+      is_from_prelabel: false,
+      dirty: false,
+    });
+    const start = { hiddenInstIds: new Set(), presegRunId: null,
+                    presegFingerprint: null, sourceFingerprint: null,
+                    dirty: false };
+    const resp = await api.hideInstance(42);
+    const next = hydrateFromServerState(start, resp);
+    expect(next.hiddenInstIds.has(42)).toBe(true);
+  });
+
+  test('unhide flow: API call → hydrate → state no longer has the inst_id', async () => {
+    vi.spyOn(api, 'unhideInstance').mockResolvedValue({
+      has_seg: true,
+      hidden_inst_ids: [],
+      preseg_run_id: null,
+      preseg_fingerprint: null,
+      source_fingerprint: null,
+      is_from_prelabel: false,
+      dirty: false,
+    });
+    const start = { hiddenInstIds: new Set([42]), presegRunId: null,
+                    presegFingerprint: null, sourceFingerprint: null,
+                    dirty: false };
+    const resp = await api.unhideInstance(42);
+    const next = hydrateFromServerState(start, resp);
+    expect(next.hiddenInstIds.has(42)).toBe(false);
   });
 });
