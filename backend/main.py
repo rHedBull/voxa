@@ -1860,54 +1860,40 @@ def _obb_mask(points: np.ndarray, box: _ObbBox) -> np.ndarray:
     return np.all(np.abs(local) <= half + 1e-6, axis=1)
 
 
-@app.post("/api/edit/export-ply")
-def edit_export_ply(req: ExportPlyRequest) -> Response:
-    pc = _state.get("pc")
-    scene = _state.get("scene")
-    if pc is None or scene is None:
-        raise HTTPException(409, "no scene loaded")
-    if req.scene != scene:
-        raise HTTPException(409, f"scene mismatch — server has '{scene}', request was '{req.scene}'")
-
-    points = pc.points
-    colors = pc.colors
-
-    if req.ops is not None:
-        ops = list(req.ops)
-    elif req.boxes is not None:
-        ops = [_ObbOp(op="keep", center=b.center, size=b.size, rotation=b.rotation)
-               for b in req.boxes]
-    else:
-        ops = []
-
-    mask = np.ones(len(points), dtype=bool)
+def _ops_chain_mask(display_xyz: np.ndarray, ops: list) -> np.ndarray:
+    """Replay the box-select op chain on points in display (y-up + recentered)
+    frame. Returns a boolean keep-mask."""
+    mask = np.ones(len(display_xyz), dtype=bool)
     for op in ops:
         if not mask.any():
             break
         idx = np.flatnonzero(mask)
-        inside = idx[_obb_mask(points[idx], op)]
+        inside = idx[_obb_mask(display_xyz[idx], op)]
         if op.op == "delete":
             mask[inside] = False
         else:
             mask = np.zeros_like(mask)
             mask[inside] = True
+    return mask
 
-    sel_points = points[mask]
-    # Undo the load-time recenter + z-up→y-up rotation so the saved PLY
-    # is in the source-file frame, not the Three.js display frame.
-    offset = np.asarray(_state.get("recenter_offset") or [0.0, 0.0, 0.0], dtype=np.float64)
-    src = _state.get("source")
-    scene_is_z_up = bool(src is not None and _scene_is_z_up(src))
-    sel_points = sel_points.astype(np.float64, copy=True)
+
+def _to_display_frame(xyz: np.ndarray, scene_is_z_up: bool,
+                      offset: np.ndarray) -> np.ndarray:
+    """Recreate the load-time z-up→y-up rotation + recenter so source-frame
+    points align with OBB ops authored in the display frame."""
+    out = xyz.astype(np.float64, copy=True)
     if scene_is_z_up:
-        sel_points = _y_up_to_z_up_xyz(sel_points)
+        # (x, y, z) → (x, z, -y)
+        out = np.column_stack([out[:, 0], out[:, 2], -out[:, 1]])
     if np.any(offset):
-        sel_points = sel_points + offset
-    sel_points = sel_points.astype(np.float32, copy=False)
-    n = int(len(sel_points))
-    has_color = colors is not None
-    sel_colors = colors[mask].astype(np.uint8, copy=False) if has_color else None
+        out = out - offset
+    return out
 
+
+def _ply_response_bytes(xyz: np.ndarray, rgb: Optional[np.ndarray]) -> bytes:
+    """Encode (N, 3) xyz + optional (N, 3) uint8 rgb as binary PLY."""
+    n = int(len(xyz))
+    has_color = rgb is not None
     header = (
         "ply\n"
         "format binary_little_endian 1.0\n"
@@ -1918,17 +1904,124 @@ def edit_export_ply(req: ExportPlyRequest) -> Response:
         + ("property uchar red\nproperty uchar green\nproperty uchar blue\n" if has_color else "")
         + "end_header\n"
     ).encode("ascii")
-
+    xyz_f32 = xyz.astype("<f4", copy=False)
     if has_color:
         dt = np.dtype([("xyz", "<f4", 3), ("rgb", "u1", 3)])
         rec = np.empty(n, dtype=dt)
-        rec["xyz"] = sel_points
-        rec["rgb"] = sel_colors
+        rec["xyz"] = xyz_f32
+        rec["rgb"] = rgb.astype(np.uint8, copy=False)
         body = rec.tobytes()
     else:
-        body = sel_points.astype("<f4", copy=False).tobytes()
+        body = xyz_f32.tobytes()
+    return header + body
 
-    return Response(content=header + body, media_type="application/octet-stream")
+
+def _stream_laz_keep(src_path: Path, ops: list, scene_is_z_up: bool,
+                     offset: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    """Walk the LAZ at native density, applying the box-op chain in display
+    frame; accumulate kept points in source frame."""
+    from lidar_io import _laz_chunk_iter  # type: ignore
+
+    kept_xyz: list[np.ndarray] = []
+    kept_rgb: list[np.ndarray] = []
+    rgb_present = True
+    for _hdr, chunk in _laz_chunk_iter(src_path, chunk_size=1_000_000):
+        xyz_src = np.column_stack([
+            np.asarray(chunk.x, dtype=np.float64),
+            np.asarray(chunk.y, dtype=np.float64),
+            np.asarray(chunk.z, dtype=np.float64),
+        ])
+        try:
+            r = np.asarray(chunk.red, dtype=np.uint32)
+            g = np.asarray(chunk.green, dtype=np.uint32)
+            b = np.asarray(chunk.blue, dtype=np.uint32)
+        except (AttributeError, ValueError):
+            rgb_present = False
+            r = g = b = None
+
+        display = _to_display_frame(xyz_src, scene_is_z_up, offset)
+        mask = _ops_chain_mask(display, ops)
+        if not mask.any():
+            continue
+        kept_xyz.append(xyz_src[mask])
+        if rgb_present and r is not None:
+            cmax = int(max(r.max(initial=0), g.max(initial=0), b.max(initial=0)))
+            if cmax > 255:
+                r8 = (r[mask] >> 8).astype(np.uint8)
+                g8 = (g[mask] >> 8).astype(np.uint8)
+                b8 = (b[mask] >> 8).astype(np.uint8)
+            else:
+                r8 = r[mask].astype(np.uint8)
+                g8 = g[mask].astype(np.uint8)
+                b8 = b[mask].astype(np.uint8)
+            kept_rgb.append(np.column_stack([r8, g8, b8]))
+
+    if not kept_xyz:
+        return np.zeros((0, 3), dtype=np.float64), None
+    xyz_out = np.concatenate(kept_xyz, axis=0)
+    rgb_out = np.concatenate(kept_rgb, axis=0) if (rgb_present and kept_rgb) else None
+    return xyz_out, rgb_out
+
+
+@app.post("/api/edit/export-ply")
+def edit_export_ply(req: ExportPlyRequest) -> Response:
+    """Export the active slice as a PLY at native source density.
+
+    Replays the slice's box-op chain (authored in the y-up + recentered
+    display frame) against the source data at native resolution — re-
+    reading the full source PLY or streaming the source LAZ chunk-by-
+    chunk — so the saved file contains every source point that survives
+    the slice, not just the in-memory viewer subsample. Output is written
+    in the source-file frame (scan.ply / LAZ coordinates 1:1)."""
+    scene = _state.get("scene")
+    src = _state.get("source")
+    if scene is None or src is None:
+        raise HTTPException(409, "no scene loaded")
+    if req.scene != scene:
+        raise HTTPException(409, f"scene mismatch — server has '{scene}', request was '{req.scene}'")
+
+    if req.ops is not None:
+        ops = list(req.ops)
+    elif req.boxes is not None:
+        ops = [_ObbOp(op="keep", center=b.center, size=b.size, rotation=b.rotation)
+               for b in req.boxes]
+    else:
+        ops = []
+
+    offset = np.asarray(_state.get("recenter_offset") or [0.0, 0.0, 0.0], dtype=np.float64)
+    scene_is_z_up = bool(_scene_is_z_up(src))
+
+    if src.source_format == "laz":
+        kept_xyz, kept_rgb = _stream_laz_keep(src.source_path, ops, scene_is_z_up, offset)
+    elif src.source_format == "ply":
+        from point_cloud import load_ply  # type: ignore
+        full_pc, _ = load_ply(src.source_path)
+        source_xyz = np.asarray(full_pc.points, dtype=np.float64)
+        display = _to_display_frame(source_xyz, scene_is_z_up, offset)
+        mask = _ops_chain_mask(display, ops)
+        kept_xyz = source_xyz[mask]
+        kept_rgb = (full_pc.colors[mask].astype(np.uint8, copy=False)
+                    if full_pc.colors is not None else None)
+    else:
+        # GLB-sampled scenes: the sampled cloud _is_ the source — invert
+        # the load-time transforms on the in-memory pc to land back in the
+        # mesh frame.
+        pc = _state.get("pc")
+        if pc is None:
+            raise HTTPException(409, "no scene loaded")
+        display = np.asarray(pc.points, dtype=np.float64)
+        mask = _ops_chain_mask(display, ops)
+        kept = display[mask]
+        if np.any(offset):
+            kept = kept + offset
+        if scene_is_z_up:
+            kept = _y_up_to_z_up_xyz(kept)
+        kept_xyz = kept
+        kept_rgb = (pc.colors[mask].astype(np.uint8, copy=False)
+                    if pc.colors is not None else None)
+
+    return Response(content=_ply_response_bytes(kept_xyz, kept_rgb),
+                    media_type="application/octet-stream")
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────
