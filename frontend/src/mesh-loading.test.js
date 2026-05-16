@@ -16,6 +16,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(__dirname, '__fixtures__');
@@ -64,3 +65,44 @@ describe('GLTFLoader on registry-eligible GLBs', () => {
     expect(countMeshes(gltf.scene)).toBe(0);
   });
 });
+
+describe('EXT_meshopt_compression handling', () => {
+  // The voxa build pipeline writes EXT_meshopt_compression on every
+  // production GLB (mesh.r05.glb / mesh.r05.small.glb / mesh.optimized
+  // .glb). GLTFLoader requires MeshoptDecoder to be registered up-front
+  // — when it isn't, the loader throws *inside the Promise* and the
+  // viewer's onError handler logs it but the meshGroup stays empty, so
+  // the symptom is "mesh window is black with floor + axes." Fixture
+  // built with `gltfpack -i valid_mesh.glb -o meshopt_compressed.glb -cc`
+  // so it matches the bit-for-bit shape the pipeline emits.
+  let meshoptBuf;
+
+  beforeAll(async () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    meshoptBuf = bufferToArrayBuffer(
+      await readFile(join(__dirname, '__fixtures__', 'meshopt_compressed.glb')),
+    );
+  });
+
+  it('vanilla GLTFLoader (no decoder) cannot load a meshopt-compressed GLB', async () => {
+    // Regression guard: prove the failure mode exists. If a future three
+    // release ships a built-in decoder this test will start failing —
+    // that would be a good time to revisit viewer.jsx and drop the
+    // explicit setMeshoptDecoder wiring.
+    const loader = new GLTFLoader();
+    await expect(parseGlbWith(loader, meshoptBuf)).rejects.toThrow(/setMeshoptDecoder|meshopt/i);
+  });
+
+  it('GLTFLoader with MeshoptDecoder loads the compressed GLB', async () => {
+    await MeshoptDecoder.ready;
+    const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+    const gltf = await parseGlbWith(loader, meshoptBuf);
+    expect(countMeshes(gltf.scene)).toBeGreaterThan(0);
+  });
+});
+
+function parseGlbWith(loader, arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    loader.parse(arrayBuffer, '', resolve, reject);
+  });
+}

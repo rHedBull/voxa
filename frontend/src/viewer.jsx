@@ -13,6 +13,7 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 // Converts a pointer event + bounding rect to normalized device coords [-1,1].
@@ -1331,7 +1332,12 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     if (!showMesh || !meshUrl || s.meshUrlLoaded === meshUrl) return;
 
     let cancelled = false;
-    const loader = new GLTFLoader();
+    // The build pipeline writes EXT_meshopt_compression buffers (the
+    // r05 / r05.small / .optimized GLB variants all use it). Without the
+    // decoder registered, GLTFLoader throws "setMeshoptDecoder must be
+    // called before loading compressed files" inside the loader Promise
+    // and the mesh silently never appears.
+    const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
     loader.load(
       meshUrl,
       (gltf) => {
