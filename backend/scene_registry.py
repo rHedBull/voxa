@@ -101,9 +101,15 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
     for sd in sorted(root.iterdir()):
         if not sd.is_dir():
             continue
-        scan = sd / "source" / "scan.ply"
-        if not scan.exists():
+        source_dir = sd / "source"
+        if not source_dir.is_dir():
             continue
+        scan = source_dir / "scan.ply"
+        if not scan.exists():
+            plys = sorted(source_dir.glob("*.ply"))
+            if not plys:
+                continue
+            scan = plys[0]
         labels_dir = sd / "labels"
         gt_class = labels_dir / "gt_class_ids.npy"
         gt_seg = labels_dir / "gt_segment_ids.npy"
