@@ -1723,22 +1723,32 @@ def segment_save():
         os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
         not in ("1", "true", "yes", "on")
     )
-    # Drop unclassified preseg points (inst≥0, class=-1) so a save during
-    # partial labeling succeeds: invariant 3 requires class==-1 ⟺ inst==-1,
-    # and the preseg suggestion isn't authoritative until the user picks a
-    # class for it. Mutating in place keeps in-memory state consistent with
-    # what's about to land on disk.
-    unclassified = (seg.instance_ids >= 0) & (seg.class_ids == -1)
+    # Build a sanitized snapshot for labels/ on the side; do NOT touch
+    # in-memory state. SCHEMA invariant 3 (class==-1 ⟺ inst==-1, see
+    # segment_io._validate_invariants) requires stripping preseg-only
+    # points (inst≥0, class=-1) on export because preseg is a suggestion,
+    # not authoritative GT. The SegmentSession itself is the working
+    # canvas with active preseg colors, so it MUST keep its full
+    # instance_ids. The previous in-place mutation collapsed every
+    # prelabel-derived segment into -1 on save AND leaked through the
+    # session/working_*.npy autosave (which happens to run after this),
+    # so reload couldn't recover preseg either.
+    out_class = seg.class_ids
+    out_inst = seg.instance_ids
+    unclassified = (out_inst >= 0) & (out_class == -1)
     n_dropped = int(unclassified.sum())
     if n_dropped:
-        seg.instance_ids[unclassified] = np.int32(-1)
+        out_inst = out_inst.copy()
+        out_inst[unclassified] = np.int32(-1)
+    # Autosave first so the recovery file reflects the unmutated working
+    # canvas, independent of the labels/ export.
     seg.flush_autosave()
     try:
         from segment_io import save_labels
         save_labels(
             scan_dir,
-            class_ids=seg.class_ids,
-            instance_ids=seg.instance_ids,
+            class_ids=out_class,
+            instance_ids=out_inst,
             positions=seg.positions,
             write_history=write_history,
             prelabel_fingerprint=seg.preseg_fingerprint,
@@ -1747,9 +1757,9 @@ def segment_save():
     except ValueError as e:
         raise HTTPException(400, str(e))
     seg.dirty = False
-    labeled = seg.instance_ids >= 0
+    labeled = out_inst >= 0
     n_labeled_points = int(labeled.sum())
-    n_segments = int(np.unique(seg.instance_ids[labeled]).size) if labeled.any() else 0
+    n_segments = int(np.unique(out_inst[labeled]).size) if labeled.any() else 0
     return {
         "ok": True,
         "n_labeled_points": n_labeled_points,
