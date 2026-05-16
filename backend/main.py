@@ -44,6 +44,15 @@ from scene_registry import (
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("VOXA_DATA_DIR", ROOT / "data"))
+PRESEG_RUNS_DIR = DATA_DIR / "preseg_runs"
+
+
+def _is_under(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 SCENES_DIR = DATA_DIR / "scenes"
 ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
@@ -1114,12 +1123,48 @@ class RansacParams(BaseModel):
     merge_radius_ratio: Optional[float] = None
 
 
+class Sam3RenderRun(BaseModel):
+    """One render directory found under VOXA_RENDERS_ROOT for a scene."""
+    path: str
+    name: str
+    scene: str
+    n_frames: int
+    has_orbit_target: bool
+    mtime: float
+
+
+class Sam3RendersResponse(BaseModel):
+    scene: str
+    root: str
+    root_exists: bool
+    runs: list[Sam3RenderRun]
+
+
+class Sam3Params(BaseModel):
+    """SAM3 feature-aware sub-segmentation (ransac mode only).
+
+    When ``render_dirs`` is non-empty the backend extracts per-point
+    SAM3 features from the listed render directories, then post-
+    processes large RANSAC instances by k-means in feature space so
+    they split along semantic boundaries (e.g. a single ground plane
+    splits into pipe/walkway/floor sub-regions).
+    """
+    render_dirs: list[str] = []     # absolute paths returned by /api/sam3/renders
+    fpn_level: int = 0
+    pca_dim: int = 64
+    force_recompute: bool = False
+    split_min_size: int = 3000      # only instances ≥ this many points are split
+    split_target_size: int = 5000   # target pts per sub-cluster
+    split_max_k: int = 8
+
+
 class PresegmentRequest(BaseModel):
     mode: Literal["voxel", "ransac", "model"] = "voxel"
     resolution: float = 0.05      # voxel size in scene units (voxel mode only)
     preserve_labeled: bool = True  # only re-presegment points with class_id < 0
     ransac: Optional[RansacParams] = None  # ransac mode overrides
     labeler_strict: bool = False  # ransac mode: bit-for-bit industrial_point_labeler pipeline
+    sam3: Optional[Sam3Params] = None  # ransac mode: feature-aware sub-segmentation
 
 
 class PresegmentResponse(BaseModel):
@@ -1281,6 +1326,55 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
 
     if redo_mask.any():
         sub_positions = np.asarray(positions[redo_mask], dtype=np.float64)
+        scene_id = _state.get("scene") or "_unknown"
+        ransac_params = req.ransac.model_dump(exclude_none=True) if req.ransac else None
+
+        sam3_features = None
+        sam3_seen = None
+        sam3_kwargs = {}
+        if (req.mode == "ransac" and req.sam3 is not None
+                and req.sam3.render_dirs):
+            import sam3_features as _sam3
+            # SCHEMA v1.2: renders live under <scan_dir>/renders/. Accept
+            # any render_dir that is either inside the active scene's
+            # renders/ tree OR under the legacy VOXA_RENDERS_ROOT fallback.
+            src = _resolve(scene_id) if "/" in scene_id else None
+            scan_dir_str = src.extras.get("scan_dir") if src and src.extras else None
+            allowed_roots: list[Path] = []
+            if scan_dir_str:
+                allowed_roots.append((Path(scan_dir_str) / "renders").resolve())
+            allowed_roots.append(_sam3.renders_root().resolve())
+            resolved: list[Path] = []
+            for p in req.sam3.render_dirs:
+                rp = Path(p).resolve()
+                if not any(_is_under(rp, root) for root in allowed_roots):
+                    raise HTTPException(
+                        400,
+                        f"render_dir {p!r} is not under any allowed root: {allowed_roots}",
+                    )
+                if not (rp / "manifest.json").exists():
+                    raise HTTPException(400, f"missing manifest.json in {p}")
+                resolved.append(rp)
+            # Cache features under <scan_dir>/sam3/ when we have one
+            # (SCHEMA v1.2); else legacy PRESEG_RUNS_DIR fallback.
+            cache_dir = (Path(scan_dir_str) / "sam3") if scan_dir_str else PRESEG_RUNS_DIR
+            sam3_features, sam3_seen, _meta = _sam3.extract_or_load(
+                sub_positions, scene_id,
+                render_dirs=resolved,
+                cache_dir=cache_dir,
+                fpn_level=int(req.sam3.fpn_level),
+                pca_dim=int(req.sam3.pca_dim),
+                force=bool(req.sam3.force_recompute),
+                log=print,
+            )
+            sam3_kwargs = {
+                "feature_split_min_size": int(req.sam3.split_min_size),
+                "feature_split_target_size": int(req.sam3.split_target_size),
+                "feature_split_max_k": int(req.sam3.split_max_k),
+            }
+        else:
+            sam3_kwargs = {}
+
         sub_inst, sub_summary = _run_presegment(
             sub_positions,
             mode=req.mode,
@@ -1289,6 +1383,9 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
             resolution=float(req.resolution),
             ransac_params=req.ransac.model_dump(exclude_none=True) if req.ransac else None,
             labeler_strict=req.labeler_strict,
+            features=sam3_features,
+            feature_seen=sam3_seen,
+            **sam3_kwargs,
         )
     else:
         sub_inst = np.empty(0, dtype=np.int32)
@@ -1334,6 +1431,44 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
         hull_vertices=_b64(hull_v),
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
+    )
+
+
+@app.get("/api/sam3/renders", response_model=Sam3RendersResponse)
+def sam3_list_renders(scene: Optional[str] = None):
+    """List render runs for a scene from ``<scan_dir>/renders/`` (SCHEMA
+    v1.2). When the active scene is annotated, ``scan_dir`` is resolved
+    via the registry; otherwise we fall back to legacy
+    ``VOXA_RENDERS_ROOT/<scene>/``. ``scene`` is the bare scene name; if
+    omitted we use the active scene's basename.
+    """
+    import sam3_features as _sam3
+    active_scene_id = _state.get("scene") or ""
+    if not scene:
+        scene = active_scene_id.split("/", 1)[-1] if active_scene_id else ""
+    scan_dir: Optional[Path] = None
+    if active_scene_id and "/" in active_scene_id:
+        try:
+            src = _resolve(active_scene_id)
+            sd = src.extras.get("scan_dir") if src.extras else None
+            if sd:
+                scan_dir = Path(sd)
+        except HTTPException:
+            scan_dir = None
+    runs = _sam3.discover_render_runs(scene or "", scan_dir=scan_dir) if (scene or scan_dir) else []
+    root = scan_dir / "renders" if scan_dir is not None else _sam3.renders_root()
+    return Sam3RendersResponse(
+        scene=scene or "",
+        root=str(root),
+        root_exists=root.exists(),
+        runs=[
+            Sam3RenderRun(
+                path=str(r.path), name=r.name, scene=r.scene,
+                n_frames=r.n_frames, has_orbit_target=r.has_orbit_target,
+                mtime=r.mtime,
+            )
+            for r in runs
+        ],
     )
 
 
@@ -1613,22 +1748,32 @@ def segment_save():
         os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
         not in ("1", "true", "yes", "on")
     )
-    # Drop unclassified preseg points (inst≥0, class=-1) so a save during
-    # partial labeling succeeds: invariant 3 requires class==-1 ⟺ inst==-1,
-    # and the preseg suggestion isn't authoritative until the user picks a
-    # class for it. Mutating in place keeps in-memory state consistent with
-    # what's about to land on disk.
-    unclassified = (seg.instance_ids >= 0) & (seg.class_ids == -1)
+    # Build a sanitized snapshot for labels/ on the side; do NOT touch
+    # in-memory state. SCHEMA invariant 3 (class==-1 ⟺ inst==-1, see
+    # segment_io._validate_invariants) requires stripping preseg-only
+    # points (inst≥0, class=-1) on export because preseg is a suggestion,
+    # not authoritative GT. The SegmentSession itself is the working
+    # canvas with active preseg colors, so it MUST keep its full
+    # instance_ids. The previous in-place mutation collapsed every
+    # prelabel-derived segment into -1 on save AND leaked through the
+    # session/working_*.npy autosave (which happens to run after this),
+    # so reload couldn't recover preseg either.
+    out_class = seg.class_ids
+    out_inst = seg.instance_ids
+    unclassified = (out_inst >= 0) & (out_class == -1)
     n_dropped = int(unclassified.sum())
     if n_dropped:
-        seg.instance_ids[unclassified] = np.int32(-1)
+        out_inst = out_inst.copy()
+        out_inst[unclassified] = np.int32(-1)
+    # Autosave first so the recovery file reflects the unmutated working
+    # canvas, independent of the labels/ export.
     seg.flush_autosave()
     try:
         from segment_io import save_labels
         save_labels(
             scan_dir,
-            class_ids=seg.class_ids,
-            instance_ids=seg.instance_ids,
+            class_ids=out_class,
+            instance_ids=out_inst,
             positions=seg.positions,
             write_history=write_history,
             prelabel_fingerprint=seg.preseg_fingerprint,
@@ -1637,15 +1782,122 @@ def segment_save():
     except ValueError as e:
         raise HTTPException(400, str(e))
     seg.dirty = False
-    labeled = seg.instance_ids >= 0
+    labeled = out_inst >= 0
     n_labeled_points = int(labeled.sum())
-    n_segments = int(np.unique(seg.instance_ids[labeled]).size) if labeled.any() else 0
+    n_segments = int(np.unique(out_inst[labeled]).size) if labeled.any() else 0
     return {
         "ok": True,
         "n_labeled_points": n_labeled_points,
         "n_segments": n_segments,
         "n_dropped_preseg": n_dropped,
     }
+
+
+# ── Edit-mode full-density slice export ─────────────────────────────────────
+# The frontend's Edit mode operates on the subsampled cloud, so its
+# slice indices only address `len(sub.points)` points. To export the
+# raw-density survivors, the client sends the chain of oriented selection
+# boxes used to build the active slice; we replay that chain against the
+# in-memory full-density `pc.points` and stream a binary PLY back.
+
+class _ObbBox(BaseModel):
+    center: list[float]    # [cx, cy, cz] in recentered scene units
+    size: list[float]      # [sx, sy, sz]
+    rotation: list[float]  # [rx, ry, rz] Euler XYZ (radians), Three.js convention
+
+
+class _ObbOp(_ObbBox):
+    op: str = "keep"       # "keep" intersects, "delete" subtracts
+
+
+class ExportPlyRequest(BaseModel):
+    scene: str
+    # Applied root → active. Empty = whole cloud. `ops` is the canonical
+    # field; `boxes` is accepted as a legacy alias treated as all-keep.
+    ops: list[_ObbOp] | None = None
+    boxes: list[_ObbBox] | None = None
+
+
+def _euler_xyz_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
+    """Three.js Euler XYZ → 3x3 rotation matrix (Rz · Ry · Rx)."""
+    cx, sx = np.cos(rx), np.sin(rx)
+    cy, sy = np.cos(ry), np.sin(ry)
+    cz, sz = np.cos(rz), np.sin(rz)
+    return np.array([
+        [cy * cz,  sx * sy * cz - cx * sz,  cx * sy * cz + sx * sz],
+        [cy * sz,  sx * sy * sz + cx * cz,  cx * sy * sz - sx * cz],
+        [-sy,      sx * cy,                 cx * cy],
+    ], dtype=np.float64)
+
+
+def _obb_mask(points: np.ndarray, box: _ObbBox) -> np.ndarray:
+    c = np.asarray(box.center, dtype=np.float64)
+    s = np.asarray(box.size, dtype=np.float64)
+    R = _euler_xyz_matrix(*box.rotation)
+    # local = R^T · (p - c)  → vectorized as (p - c) @ R
+    local = (points.astype(np.float64) - c) @ R
+    half = s / 2.0
+    return np.all(np.abs(local) <= half + 1e-6, axis=1)
+
+
+@app.post("/api/edit/export-ply")
+def edit_export_ply(req: ExportPlyRequest) -> Response:
+    pc = _state.get("pc")
+    scene = _state.get("scene")
+    if pc is None or scene is None:
+        raise HTTPException(409, "no scene loaded")
+    if req.scene != scene:
+        raise HTTPException(409, f"scene mismatch — server has '{scene}', request was '{req.scene}'")
+
+    points = pc.points
+    colors = pc.colors
+
+    if req.ops is not None:
+        ops = list(req.ops)
+    elif req.boxes is not None:
+        ops = [_ObbOp(op="keep", center=b.center, size=b.size, rotation=b.rotation)
+               for b in req.boxes]
+    else:
+        ops = []
+
+    mask = np.ones(len(points), dtype=bool)
+    for op in ops:
+        if not mask.any():
+            break
+        idx = np.flatnonzero(mask)
+        inside = idx[_obb_mask(points[idx], op)]
+        if op.op == "delete":
+            mask[inside] = False
+        else:
+            mask = np.zeros_like(mask)
+            mask[inside] = True
+
+    sel_points = points[mask].astype(np.float32, copy=False)
+    n = int(len(sel_points))
+    has_color = colors is not None
+    sel_colors = colors[mask].astype(np.uint8, copy=False) if has_color else None
+
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        + ("property uchar red\nproperty uchar green\nproperty uchar blue\n" if has_color else "")
+        + "end_header\n"
+    ).encode("ascii")
+
+    if has_color:
+        dt = np.dtype([("xyz", "<f4", 3), ("rgb", "u1", 3)])
+        rec = np.empty(n, dtype=dt)
+        rec["xyz"] = sel_points
+        rec["rgb"] = sel_colors
+        body = rec.tobytes()
+    else:
+        body = sel_points.astype("<f4", copy=False).tobytes()
+
+    return Response(content=header + body, media_type="application/octet-stream")
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────

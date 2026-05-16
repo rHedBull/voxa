@@ -422,6 +422,66 @@ def _estimate_normals(points, *, knn=30, orient_k=15):
 
 # ── main entrypoint ───────────────────────────────────────────────────
 
+def _feature_split_instances(
+    instance_ids: np.ndarray,
+    features: np.ndarray,
+    seen: np.ndarray,
+    *,
+    min_size: int,
+    target_size: int,
+    max_k: int,
+    log: Callable[[str], None],
+) -> np.ndarray:
+    """Split large RANSAC instances into sub-clusters by feature k-means.
+
+    Bias is toward over-segmentation: an instance is split when it is
+    large AND most of its points carry features. Sub-clusters smaller
+    than 5% of the parent are rejected and k is decremented once.
+    """
+    from sklearn.cluster import MiniBatchKMeans  # local import (heavy)
+
+    out = instance_ids.copy()
+    next_id = int(out.max()) + 1 if out.max() >= 0 else 0
+    n_split_inst = 0
+    n_added_clusters = 0
+    for inst_id in range(int(out.max()) + 1):
+        idx = np.where(out == inst_id)[0]
+        if idx.size < min_size:
+            continue
+        has = seen[idx] > 0
+        if has.sum() < idx.size * 0.5:
+            continue
+        k = int(np.clip(round(idx.size / max(target_size, 1)), 1, max_k))
+        if k <= 1:
+            continue
+        X = features[idx][has].astype(np.float32)
+        km = MiniBatchKMeans(n_clusters=k, random_state=0,
+                              batch_size=2048, n_init=3)
+        sub = km.fit_predict(X)
+        counts = np.bincount(sub, minlength=k)
+        if (counts < max(20, int(0.05 * has.sum()))).any():
+            k = max(1, k - 1)
+            if k == 1:
+                continue
+            km = MiniBatchKMeans(n_clusters=k, random_state=0,
+                                  batch_size=2048, n_init=3)
+            sub = km.fit_predict(X)
+        # Points with features → their sub cluster; without features → 0.
+        local = np.zeros(idx.size, dtype=np.int32)
+        local[has] = sub
+        # Leave first sub-cluster as the original id, allocate new ids for the rest.
+        new_ids = np.array(
+            [inst_id] + [next_id + j for j in range(k - 1)], dtype=np.int32,
+        )
+        next_id += k - 1
+        out[idx] = new_ids[local]
+        n_split_inst += 1
+        n_added_clusters += k - 1
+    log(f"  feature split: {n_split_inst} instances → "
+        f"+{n_added_clusters} sub-clusters")
+    return out
+
+
 def presegment(
     xyz: np.ndarray,
     *,
@@ -429,6 +489,12 @@ def presegment(
     log: Callable[[str], None] = print,
     params: Optional[dict[str, float]] = None,
     labeler_strict: bool = False,
+    stage_callback: Optional[Callable[[str, np.ndarray], None]] = None,
+    features: Optional[np.ndarray] = None,
+    feature_seen: Optional[np.ndarray] = None,
+    feature_split_min_size: int = 3000,
+    feature_split_target_size: int = 5000,
+    feature_split_max_k: int = 8,
 ) -> tuple[np.ndarray, list[dict]]:
     """Run RANSAC presegmentation.
 
@@ -818,4 +884,33 @@ def presegment(
 
     log(f"Done: {len(summary)} segments, "
         f"{int((instance_ids >= 0).sum())}/{n_total} points assigned")
+
+    if features is not None and feature_seen is not None:
+        if features.shape[0] != n_total or feature_seen.shape[0] != n_total:
+            log(f"  WARNING: feature array length mismatch "
+                f"(features={features.shape[0]}, seen={feature_seen.shape[0]}, "
+                f"N={n_total}) — skipping feature split")
+        else:
+            instance_ids = _feature_split_instances(
+                instance_ids, features, feature_seen,
+                min_size=int(feature_split_min_size),
+                target_size=int(feature_split_target_size),
+                max_k=int(feature_split_max_k),
+                log=log,
+            )
+            # Rebuild summary stubs for new sub-cluster ids so n_segments
+            # reflects the split. Existing primitive entries keep their id;
+            # we append minimal stubs for the newly-allocated ones.
+            existing_ids = {s.get("id") for s in summary if "id" in s}
+            max_id = int(instance_ids.max())
+            for new_id in range(max_id + 1):
+                if new_id in existing_ids:
+                    continue
+                summary.append({
+                    "id": int(new_id),
+                    "class_id": -1,
+                    "label": "sam3_subcluster",
+                    "n_points": int((instance_ids == new_id).sum()),
+                })
+
     return instance_ids, summary

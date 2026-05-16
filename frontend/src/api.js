@@ -175,10 +175,17 @@ export const VoxaAPI = {
       hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
     };
   },
-  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true, ransacParams = null, labelerStrict = false } = {}) {
+  async sam3ListRenders(scene = null) {
+    const qs = scene ? `?scene=${encodeURIComponent(scene)}` : '';
+    const r = await fetch(`/api/sam3/renders${qs}`);
+    if (!r.ok) throw new Error(`sam3ListRenders failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async segPresegment({ mode = 'voxel', resolution = 0.05, preserveLabeled = true, ransacParams = null, labelerStrict = false, sam3 = null } = {}) {
     const body = { mode, resolution, preserve_labeled: preserveLabeled };
     if (ransacParams && Object.keys(ransacParams).length > 0) body.ransac = ransacParams;
     if (labelerStrict) body.labeler_strict = true;
+    if (sam3 && sam3.render_dirs && sam3.render_dirs.length > 0) body.sam3 = sam3;
     const r = await fetch('/api/segment/presegment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

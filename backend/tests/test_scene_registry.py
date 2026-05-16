@@ -171,3 +171,191 @@ def test_session_dir_raises_when_data_dir_missing_for_legacy():
         _session_dir_for("decimated", "foo", None, None)
     with pytest.raises(ValueError, match="data_dir"):
         _session_dir_for("raw", "foo", None, None)
+
+
+# ── Mesh discovery + GLB scene-graph validity ──────────────────────────────
+#
+# Backstory: SMART-AIS scans ship a `mesh.optimized.glb` whose scene root has
+# no children that reference the mesh node — GLTFLoader loads an empty scene
+# and the mesh-companion window shows only the floor + axes. Registry should
+# (a) prefer the canonical `mesh.glb`, (b) fall back to `mesh.r05*.glb`
+# variants which are known good, and (c) NOT pick `mesh.optimized.glb` even
+# if it's the only file present.
+
+
+def _valid_glb_bytes() -> bytes:
+    """Hand-built minimal binary glTF: 1 triangle, scene → node → mesh.
+
+    Uses pygltflib so we exercise the same writer the build pipeline uses.
+    """
+    import struct
+    from pygltflib import (
+        GLTF2, Scene, Node, Mesh, Primitive, Attributes, Accessor,
+        BufferView, Buffer, ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER, FLOAT,
+        UNSIGNED_INT, SCALAR, VEC3,
+    )
+    # 3 verts (one triangle) + 3 indices
+    verts = struct.pack('<9f', 0, 0, 0,  1, 0, 0,  0, 1, 0)
+    idx = struct.pack('<3I', 0, 1, 2)
+    blob = verts + idx
+    g = GLTF2()
+    g.buffers = [Buffer(byteLength=len(blob))]
+    g.bufferViews = [
+        BufferView(buffer=0, byteOffset=0, byteLength=len(verts), target=ARRAY_BUFFER),
+        BufferView(buffer=0, byteOffset=len(verts), byteLength=len(idx), target=ELEMENT_ARRAY_BUFFER),
+    ]
+    g.accessors = [
+        Accessor(bufferView=0, componentType=FLOAT, count=3, type=VEC3,
+                 min=[0, 0, 0], max=[1, 1, 0]),
+        Accessor(bufferView=1, componentType=UNSIGNED_INT, count=3, type=SCALAR),
+    ]
+    g.meshes = [Mesh(primitives=[Primitive(attributes=Attributes(POSITION=0), indices=1)])]
+    g.nodes = [Node(mesh=0)]
+    g.scenes = [Scene(nodes=[0])]
+    g.scene = 0
+    g.set_binary_blob(blob)
+    return b"".join(g.save_to_bytes())
+
+
+def _broken_glb_bytes() -> bytes:
+    """GLB with the mesh node orphaned from the scene root.
+
+    Mirrors the actual `mesh.optimized.glb` bug: scene → 'world' node which
+    has no children; the mesh-bearing node[0] is unreachable from any scene
+    root, so GLTFLoader's `gltf.scene` is an empty Group.
+    """
+    import struct
+    from pygltflib import (
+        GLTF2, Scene, Node, Mesh, Primitive, Attributes, Accessor,
+        BufferView, Buffer, ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER, FLOAT,
+        UNSIGNED_INT, SCALAR, VEC3,
+    )
+    verts = struct.pack('<9f', 0, 0, 0,  1, 0, 0,  0, 1, 0)
+    idx = struct.pack('<3I', 0, 1, 2)
+    blob = verts + idx
+    g = GLTF2()
+    g.buffers = [Buffer(byteLength=len(blob))]
+    g.bufferViews = [
+        BufferView(buffer=0, byteOffset=0, byteLength=len(verts), target=ARRAY_BUFFER),
+        BufferView(buffer=0, byteOffset=len(verts), byteLength=len(idx), target=ELEMENT_ARRAY_BUFFER),
+    ]
+    g.accessors = [
+        Accessor(bufferView=0, componentType=FLOAT, count=3, type=VEC3,
+                 min=[0, 0, 0], max=[1, 1, 0]),
+        Accessor(bufferView=1, componentType=UNSIGNED_INT, count=3, type=SCALAR),
+    ]
+    g.meshes = [Mesh(primitives=[Primitive(attributes=Attributes(POSITION=0), indices=1)])]
+    # node[0] has the mesh but is orphaned; scene root points at node[1]
+    # ('world') which has no children — same shape as mesh.optimized.glb.
+    g.nodes = [Node(mesh=0), Node(name="world")]
+    g.scenes = [Scene(nodes=[1])]
+    g.scene = 0
+    g.set_binary_blob(blob)
+    return b"".join(g.save_to_bytes())
+
+
+def _glb_has_reachable_mesh(path: Path) -> bool:
+    """Sanity-check helper: a GLB whose scene root reaches at least one
+    mesh-bearing node. The companion test uses this to assert that our
+    `_broken_glb_bytes` writer actually produces the bug we're guarding
+    against — without this we'd just be testing filename plumbing."""
+    from pygltflib import GLTF2
+    g = GLTF2().load(str(path))
+    if not g.scenes or g.scene is None:
+        return False
+    seen, stack = set(), list(g.scenes[g.scene].nodes or [])
+    while stack:
+        i = stack.pop()
+        if i in seen:
+            continue
+        seen.add(i)
+        n = g.nodes[i]
+        if n.mesh is not None:
+            return True
+        stack.extend(n.children or [])
+    return False
+
+
+def _scan_with_mesh(scan_dir: Path, *mesh_files: tuple[str, bytes]) -> None:
+    """Build a minimal annotated scan and drop the given mesh files into
+    `source/`. `mesh_files` is a sequence of (filename, glb_bytes)."""
+    _make_annotated(scan_dir)
+    src = scan_dir / "source"
+    src.mkdir(parents=True, exist_ok=True)
+    for fname, blob in mesh_files:
+        (src / fname).write_bytes(blob)
+
+
+def test_glb_helpers_round_trip(tmp_path):
+    """Sanity: our valid GLB has a reachable mesh; our broken GLB does not.
+    Without this the registry tests below could pass for the wrong reason."""
+    valid = tmp_path / "v.glb"; valid.write_bytes(_valid_glb_bytes())
+    broken = tmp_path / "b.glb"; broken.write_bytes(_broken_glb_bytes())
+    assert _glb_has_reachable_mesh(valid)
+    assert not _glb_has_reachable_mesh(broken)
+
+
+def test_registry_picks_canonical_mesh_glb(tmp_path):
+    """SCHEMA v1.2: the registry only honors `<scan>/source/mesh.glb`.
+    Build pipelines that emit other names (mesh.optimized.glb,
+    mesh.r05*.glb, etc.) must rename or symlink to the canonical name
+    to be picked up — keeps the registry trivial and prevents a single
+    broken GLB from being silently advertised as the scene mesh."""
+    lidar = tmp_path / "lidar"
+    _scan_with_mesh(lidar / "annotated" / "scan_a", ("mesh.glb", _valid_glb_bytes()))
+    s = resolve("annotated/scan_a", tmp_path / "data", lidar)
+    assert s.has_mesh
+    assert s.extras["mesh_path"].endswith("/source/mesh.glb")
+
+
+def test_registry_ignores_non_canonical_glb_variants(tmp_path):
+    """Build-pipeline variants under non-canonical names are NOT picked
+    up — including the broken mesh.optimized.glb shape from the older
+    pipeline. The registry doesn't guess which variant is good."""
+    lidar = tmp_path / "lidar"
+    _scan_with_mesh(lidar / "annotated" / "scan_b",
+                    ("mesh.r05.glb", _valid_glb_bytes()),
+                    ("mesh.r05.small.glb", _valid_glb_bytes()),
+                    ("mesh.optimized.glb", _broken_glb_bytes()))
+    s = resolve("annotated/scan_b", tmp_path / "data", lidar)
+    assert not s.has_mesh
+    assert s.extras["mesh_path"] is None
+
+
+# ── SAM3 render discovery via SCHEMA v1.2 per-scene renders/ ────────────────
+
+
+def test_sam3_renders_discovery_via_scan_dir(tmp_path):
+    """SCHEMA v1.2: SAM3 render runs live under `<scan>/renders/<run>/`
+    next to a manifest.json. discover_render_runs should find them when
+    given the scan dir, with no env-var or external root involved."""
+    from sam3_features import discover_render_runs
+    lidar = tmp_path / "lidar"
+    scan = lidar / "annotated" / "scene_with_renders"
+    _make_annotated(scan)
+    run = scan / "renders" / "orbit01__ultra__20260101-000000"
+    run.mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps({
+        "scene": "scene_with_renders",
+        "frames": [
+            {"file": "frame_000.png", "position": [0, 0, 0], "target": [1, 0, 0]},
+            {"file": "frame_001.png", "position": [0, 0, 1], "target": [1, 0, 0]},
+        ],
+    }))
+    # An empty sibling without manifest.json is ignored (not a render run).
+    (scan / "renders" / "incomplete").mkdir()
+
+    runs = discover_render_runs("scene_with_renders", scan_dir=scan)
+    assert len(runs) == 1
+    assert runs[0].name == "orbit01__ultra__20260101-000000"
+    assert runs[0].n_frames == 2
+    assert runs[0].has_orbit_target is True
+
+
+def test_sam3_renders_discovery_empty_scan(tmp_path):
+    """No renders/ dir → empty list (not an error)."""
+    from sam3_features import discover_render_runs
+    lidar = tmp_path / "lidar"
+    scan = lidar / "annotated" / "no_renders"
+    _make_annotated(scan)
+    assert discover_render_runs("no_renders", scan_dir=scan) == []

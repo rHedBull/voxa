@@ -8,6 +8,7 @@ import { initSegState, applyDelta, hydrateFromServerState } from './segment-stat
 import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
+import { EditMode } from './mode-edit.jsx';
 import { useTweaks, TweaksPanel, TweakSection, TweakRadio } from './tweaks-panel.jsx';
 import { MeshCompanion } from './mesh-companion.jsx';
 import { openChannel, postState, postCamera, isMeshCompanion } from './mesh-sync.js';
@@ -23,7 +24,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 const INITIAL_TWEAKS = (() => {
   try {
     const m = localStorage.getItem('voxa.mode');
-    if (m && ['inspect', 'label', 'compare'].includes(m)) {
+    if (m && ['inspect', 'label', 'compare', 'edit'].includes(m)) {
       return { ...TWEAK_DEFAULTS, mode: m };
     }
   } catch { /* private mode / no localStorage */ }
@@ -45,6 +46,11 @@ const MODE_META = {
     label: 'Compare',
     sub: 'Side-by-side ground truth vs prediction diff',
     color: 'oklch(0.75 0.16 60)',
+  },
+  edit: {
+    label: 'Edit',
+    sub: 'Per-point editing surface',
+    color: 'oklch(0.72 0.16 320)',
   },
 };
 
@@ -537,6 +543,12 @@ function MainApp() {
             navMode={navMode} onNavModeChange={setNavMode}
             gtInstances={gtInstances} predInstances={predInstances} />
         )}
+        {t.mode === 'edit' && (
+          <EditMode key="e" cloud={cloud} theme={theme} viewerRef={viewerRef}
+            sceneName={activeScene}
+            navMode={navMode} onNavModeChange={setNavMode}
+            onCameraChange={onMainCameraChange} />
+        )}
       </div>
 
       <TweaksPanel title="Tweaks">
@@ -546,6 +558,7 @@ function MainApp() {
             { value: 'inspect', label: 'Inspect' },
             { value: 'label',   label: 'Label' },
             { value: 'compare', label: 'Compare' },
+            { value: 'edit',    label: 'Edit' },
           ]}
           onChange={(v) => setTweak('mode', v)} />
         <TweakSection label="Appearance" />

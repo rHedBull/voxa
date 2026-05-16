@@ -284,6 +284,7 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
             fontSize: 12, color: 'var(--text, #ddd)',
           }}
         >
+          {/* ── Mode picker ─────────────────────────────────── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ opacity: 0.7 }}>Mode</span>
             {[
