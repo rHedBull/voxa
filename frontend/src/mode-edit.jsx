@@ -545,8 +545,7 @@ function EditSidePanel({
   const fullCountEstimate = (exportCount && subsampledTotal)
     ? Math.round(exportCount * (fullTotal / subsampledTotal))
     : 0;
-  const displayedCount = exportFull ? fullCountEstimate : subsampleCount;
-  const isEstimate = exportFull && fullTotal > subsampledTotal;
+  const isEstimate = fullTotal > subsampledTotal;
   return (
     <>
       {/* Left: slice list */}
@@ -635,17 +634,26 @@ function EditSidePanel({
                 : 'Pick a slice first'}>
               {exportBusy ? '… exporting' : '⤓ Export active as PLY'}
             </button>
-            <div style={{
-                fontSize: 11, opacity: 0.7, marginTop: 2,
-                fontVariantNumeric: 'tabular-nums', textAlign: 'center',
-              }}
-              title={isEstimate
-                ? `≈ ${displayedCount.toLocaleString()} pts (estimated from subsample ratio ${subsampleCount.toLocaleString()}/${subsampledTotal.toLocaleString()} × ${fullTotal.toLocaleString()})`
-                : `${displayedCount.toLocaleString()} pts will be written`}>
-              {canExport
-                ? `${isEstimate ? '~' : ''}${_fmtCount(displayedCount)} pts ${exportFull ? '· full density' : '· subsampled'}`
-                : '—'}
-            </div>
+            {canExport && (
+              <div style={{
+                  fontSize: 11, opacity: 0.85, marginTop: 2,
+                  fontVariantNumeric: 'tabular-nums', textAlign: 'center',
+                  lineHeight: 1.4,
+                }}>
+                <div title={`${subsampleCount.toLocaleString()} pts (exact: in-memory mask)`}>
+                  subsampled <b>{_fmtCount(subsampleCount)}</b>
+                  <span style={{ opacity: 0.55 }}>{` / ${_fmtCount(subsampledTotal)} loaded`}</span>
+                </div>
+                <div title={`≈ ${fullCountEstimate.toLocaleString()} pts (estimate: ${subsampleCount.toLocaleString()}/${subsampledTotal.toLocaleString()} × ${fullTotal.toLocaleString()})`}>
+                  full density <b>{isEstimate ? '~' : ''}{_fmtCount(fullCountEstimate)}</b>
+                  <span style={{ opacity: 0.55 }}>{` / ${_fmtCount(fullTotal)} source`}</span>
+                </div>
+                <div style={{ opacity: 0.6, marginTop: 2 }}>
+                  ⤓ will write{' '}
+                  <b>{isEstimate && exportFull ? '~' : ''}{_fmtCount(exportFull ? fullCountEstimate : subsampleCount)}</b>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
