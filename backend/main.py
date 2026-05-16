@@ -45,6 +45,14 @@ from scene_registry import (
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("VOXA_DATA_DIR", ROOT / "data"))
 PRESEG_RUNS_DIR = DATA_DIR / "preseg_runs"
+
+
+def _is_under(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 SCENES_DIR = DATA_DIR / "scenes"
 ANNOT_DIR = DATA_DIR / "annotations"
 CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml"))
@@ -1327,25 +1335,33 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
         if (req.mode == "ransac" and req.sam3 is not None
                 and req.sam3.render_dirs):
             import sam3_features as _sam3
-            root = _sam3.renders_root()
+            # SCHEMA v1.2: renders live under <scan_dir>/renders/. Accept
+            # any render_dir that is either inside the active scene's
+            # renders/ tree OR under the legacy VOXA_RENDERS_ROOT fallback.
+            src = _resolve(scene_id) if "/" in scene_id else None
+            scan_dir_str = src.extras.get("scan_dir") if src and src.extras else None
+            allowed_roots: list[Path] = []
+            if scan_dir_str:
+                allowed_roots.append((Path(scan_dir_str) / "renders").resolve())
+            allowed_roots.append(_sam3.renders_root().resolve())
             resolved: list[Path] = []
             for p in req.sam3.render_dirs:
                 rp = Path(p).resolve()
-                # Enforce that paths live under the configured root
-                try:
-                    rp.relative_to(root.resolve())
-                except ValueError:
+                if not any(_is_under(rp, root) for root in allowed_roots):
                     raise HTTPException(
                         400,
-                        f"render_dir {p!r} is not under VOXA_RENDERS_ROOT={root}",
+                        f"render_dir {p!r} is not under any allowed root: {allowed_roots}",
                     )
                 if not (rp / "manifest.json").exists():
                     raise HTTPException(400, f"missing manifest.json in {p}")
                 resolved.append(rp)
+            # Cache features under <scan_dir>/sam3/ when we have one
+            # (SCHEMA v1.2); else legacy PRESEG_RUNS_DIR fallback.
+            cache_dir = (Path(scan_dir_str) / "sam3") if scan_dir_str else PRESEG_RUNS_DIR
             sam3_features, sam3_seen, _meta = _sam3.extract_or_load(
                 sub_positions, scene_id,
                 render_dirs=resolved,
-                cache_dir=PRESEG_RUNS_DIR,
+                cache_dir=cache_dir,
                 fpn_level=int(req.sam3.fpn_level),
                 pca_dim=int(req.sam3.pca_dim),
                 force=bool(req.sam3.force_recompute),
@@ -1420,18 +1436,27 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
 
 @app.get("/api/sam3/renders", response_model=Sam3RendersResponse)
 def sam3_list_renders(scene: Optional[str] = None):
-    """List render runs under VOXA_RENDERS_ROOT for a scene.
-
-    ``scene`` is the bare scene name (e.g. ``smart_ais``), not the
-    tier-prefixed id. If omitted, falls back to the active scene's
-    basename.
+    """List render runs for a scene from ``<scan_dir>/renders/`` (SCHEMA
+    v1.2). When the active scene is annotated, ``scan_dir`` is resolved
+    via the registry; otherwise we fall back to legacy
+    ``VOXA_RENDERS_ROOT/<scene>/``. ``scene`` is the bare scene name; if
+    omitted we use the active scene's basename.
     """
     import sam3_features as _sam3
+    active_scene_id = _state.get("scene") or ""
     if not scene:
-        active = _state.get("scene") or ""
-        scene = active.split("/", 1)[-1] if active else ""
-    root = _sam3.renders_root()
-    runs = _sam3.discover_render_runs(scene, root=root) if scene else []
+        scene = active_scene_id.split("/", 1)[-1] if active_scene_id else ""
+    scan_dir: Optional[Path] = None
+    if active_scene_id and "/" in active_scene_id:
+        try:
+            src = _resolve(active_scene_id)
+            sd = src.extras.get("scan_dir") if src.extras else None
+            if sd:
+                scan_dir = Path(sd)
+        except HTTPException:
+            scan_dir = None
+    runs = _sam3.discover_render_runs(scene or "", scan_dir=scan_dir) if (scene or scan_dir) else []
+    root = scan_dir / "renders" if scan_dir is not None else _sam3.renders_root()
     return Sam3RendersResponse(
         scene=scene or "",
         root=str(root),

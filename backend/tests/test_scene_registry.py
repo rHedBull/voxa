@@ -296,6 +296,11 @@ def test_glb_helpers_round_trip(tmp_path):
 
 
 def test_registry_picks_canonical_mesh_glb(tmp_path):
+    """SCHEMA v1.2: the registry only honors `<scan>/source/mesh.glb`.
+    Build pipelines that emit other names (mesh.optimized.glb,
+    mesh.r05*.glb, etc.) must rename or symlink to the canonical name
+    to be picked up — keeps the registry trivial and prevents a single
+    broken GLB from being silently advertised as the scene mesh."""
     lidar = tmp_path / "lidar"
     _scan_with_mesh(lidar / "annotated" / "scan_a", ("mesh.glb", _valid_glb_bytes()))
     s = resolve("annotated/scan_a", tmp_path / "data", lidar)
@@ -303,50 +308,54 @@ def test_registry_picks_canonical_mesh_glb(tmp_path):
     assert s.extras["mesh_path"].endswith("/source/mesh.glb")
 
 
-def test_registry_falls_back_to_r05(tmp_path):
+def test_registry_ignores_non_canonical_glb_variants(tmp_path):
+    """Build-pipeline variants under non-canonical names are NOT picked
+    up — including the broken mesh.optimized.glb shape from the older
+    pipeline. The registry doesn't guess which variant is good."""
     lidar = tmp_path / "lidar"
-    _scan_with_mesh(lidar / "annotated" / "scan_b", ("mesh.r05.glb", _valid_glb_bytes()))
-    s = resolve("annotated/scan_b", tmp_path / "data", lidar)
-    assert s.has_mesh
-    assert s.extras["mesh_path"].endswith("/source/mesh.r05.glb")
-
-
-def test_registry_falls_back_to_r05_small(tmp_path):
-    lidar = tmp_path / "lidar"
-    _scan_with_mesh(lidar / "annotated" / "scan_c", ("mesh.r05.small.glb", _valid_glb_bytes()))
-    s = resolve("annotated/scan_c", tmp_path / "data", lidar)
-    assert s.has_mesh
-    assert s.extras["mesh_path"].endswith("/source/mesh.r05.small.glb")
-
-
-def test_registry_prefers_canonical_over_r05(tmp_path):
-    lidar = tmp_path / "lidar"
-    _scan_with_mesh(lidar / "annotated" / "scan_d",
-                    ("mesh.glb", _valid_glb_bytes()),
-                    ("mesh.r05.glb", _valid_glb_bytes()))
-    s = resolve("annotated/scan_d", tmp_path / "data", lidar)
-    assert s.extras["mesh_path"].endswith("/source/mesh.glb")
-
-
-def test_registry_skips_broken_optimized_glb_when_only_choice(tmp_path):
-    """The bug: when only `mesh.optimized.glb` exists and it's broken, the
-    registry must NOT advertise has_mesh=True — otherwise the frontend opens
-    the mesh companion against an empty scene graph and shows a black window.
-    Currently enforced by hard-coded filename exclusion, not graph inspection."""
-    lidar = tmp_path / "lidar"
-    _scan_with_mesh(lidar / "annotated" / "scan_e",
+    _scan_with_mesh(lidar / "annotated" / "scan_b",
+                    ("mesh.r05.glb", _valid_glb_bytes()),
+                    ("mesh.r05.small.glb", _valid_glb_bytes()),
                     ("mesh.optimized.glb", _broken_glb_bytes()))
-    s = resolve("annotated/scan_e", tmp_path / "data", lidar)
+    s = resolve("annotated/scan_b", tmp_path / "data", lidar)
     assert not s.has_mesh
     assert s.extras["mesh_path"] is None
 
 
-def test_registry_prefers_r05_when_broken_optimized_present(tmp_path):
-    """Real-world case: SMART-AIS scans ship both files; we must take r05."""
+# ── SAM3 render discovery via SCHEMA v1.2 per-scene renders/ ────────────────
+
+
+def test_sam3_renders_discovery_via_scan_dir(tmp_path):
+    """SCHEMA v1.2: SAM3 render runs live under `<scan>/renders/<run>/`
+    next to a manifest.json. discover_render_runs should find them when
+    given the scan dir, with no env-var or external root involved."""
+    from sam3_features import discover_render_runs
     lidar = tmp_path / "lidar"
-    _scan_with_mesh(lidar / "annotated" / "scan_f",
-                    ("mesh.optimized.glb", _broken_glb_bytes()),
-                    ("mesh.r05.glb", _valid_glb_bytes()))
-    s = resolve("annotated/scan_f", tmp_path / "data", lidar)
-    assert s.has_mesh
-    assert s.extras["mesh_path"].endswith("/source/mesh.r05.glb")
+    scan = lidar / "annotated" / "scene_with_renders"
+    _make_annotated(scan)
+    run = scan / "renders" / "orbit01__ultra__20260101-000000"
+    run.mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps({
+        "scene": "scene_with_renders",
+        "frames": [
+            {"file": "frame_000.png", "position": [0, 0, 0], "target": [1, 0, 0]},
+            {"file": "frame_001.png", "position": [0, 0, 1], "target": [1, 0, 0]},
+        ],
+    }))
+    # An empty sibling without manifest.json is ignored (not a render run).
+    (scan / "renders" / "incomplete").mkdir()
+
+    runs = discover_render_runs("scene_with_renders", scan_dir=scan)
+    assert len(runs) == 1
+    assert runs[0].name == "orbit01__ultra__20260101-000000"
+    assert runs[0].n_frames == 2
+    assert runs[0].has_orbit_target is True
+
+
+def test_sam3_renders_discovery_empty_scan(tmp_path):
+    """No renders/ dir → empty list (not an error)."""
+    from sam3_features import discover_render_runs
+    lidar = tmp_path / "lidar"
+    scan = lidar / "annotated" / "no_renders"
+    _make_annotated(scan)
+    assert discover_render_runs("no_renders", scan_dir=scan) == []

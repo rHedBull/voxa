@@ -27,6 +27,12 @@ from typing import Callable, Optional
 import numpy as np
 
 
+# Render discovery is per-scene-directory now: renders live under
+# `<scan_dir>/renders/<run_id>/` per lidar/SCHEMA.md v1.2. The
+# VOXA_RENDERS_ROOT env + DEFAULT_RENDERS_ROOT path are retained only as
+# a transitional back-stop for callers that pass an explicit scene name
+# (e.g. the /api/sam3/renders HTTP surface) — they're ignored when a
+# scan_dir is provided directly. Remove once no caller relies on env.
 RENDERS_ROOT_ENV = "VOXA_RENDERS_ROOT"
 DEFAULT_RENDERS_ROOT = Path(
     "/home/hendrik/coding/engine/product/walker/robot-patrol-sim/renders"
@@ -61,9 +67,20 @@ def renders_root() -> Path:
 
 
 def discover_render_runs(scene_name: str,
-                         root: Optional[Path] = None) -> list[RenderRun]:
-    root = root or renders_root()
-    base = root / scene_name
+                         root: Optional[Path] = None,
+                         scan_dir: Optional[Path] = None) -> list[RenderRun]:
+    """List render runs for a scene.
+
+    Preferred: pass ``scan_dir`` — runs are discovered under
+    ``<scan_dir>/renders/<run>/manifest.json`` (lidar/SCHEMA.md v1.2).
+    Legacy: when ``scan_dir`` is None, falls back to
+    ``<root or renders_root()>/<scene_name>/`` for callers that haven't
+    moved to the per-scan layout yet.
+    """
+    if scan_dir is not None:
+        base = Path(scan_dir) / "renders"
+    else:
+        base = (root or renders_root()) / scene_name
     if not base.exists():
         return []
     runs: list[RenderRun] = []

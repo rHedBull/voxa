@@ -109,19 +109,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
         gt_seg = labels_dir / "gt_segment_ids.npy"
         seg_meta = labels_dir / "gt_segment_metadata.json"
         meta_path = sd / "meta.json"
-        # Prefer the canonical name; fall back to known-valid build
-        # variants. mesh.optimized.glb from the older build pipeline ships
-        # with a broken scene graph (mesh node orphaned from the scene
-        # root, so GLTFLoader loads an empty scene) and is intentionally
-        # NOT in the fallback list — drop it for individual scans where
-        # only the .optimized variant exists, until that build is fixed.
         mesh_path = sd / "source" / "mesh.glb"
-        if not mesh_path.exists():
-            for cand in ("mesh.r05.glb", "mesh.r05.small.glb"):
-                p = sd / "source" / cand
-                if p.exists():
-                    mesh_path = p
-                    break
         has_labels = gt_class.exists() and gt_seg.exists()
         n_points = None
         # is_z_up: PLYs sampled from a glTF mesh inherit the GLB's Y-up
