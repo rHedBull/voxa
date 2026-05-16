@@ -512,10 +512,22 @@ export function EditMode({ cloud, theme, viewerRef, navMode, onNavModeChange, on
           exportFull={exportFull}
           onExportFullChange={setExportFull}
           exportBusy={exportBusy}
+          exportCount={activeIndices ? activeIndices.length : 0}
+          subsampledTotal={cloud?.numSubsampled ?? 0}
+          fullTotal={cloud?.numPointsTotal ?? cloud?.numPoints ?? 0}
         />
       </div>
     </div>
   );
+}
+
+function _fmtCount(n) {
+  if (n == null || !isFinite(n)) return '—';
+  if (n >= 1e7) return `${(n / 1e6).toFixed(0)}M`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e4) return `${(n / 1e3).toFixed(0)}k`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
 }
 
 function EditSidePanel({
@@ -525,7 +537,16 @@ function EditSidePanel({
   transformMode, onTransformMode, onSaveSlice, onDeleteInBox, canSave,
   onExport, canExport, activeName,
   exportFull, onExportFullChange, exportBusy,
+  exportCount, subsampledTotal, fullTotal,
 }) {
+  // Subsampled export = exact count (in-memory mask).
+  // Full-density export = estimate: scale by source/subsample ratio.
+  const subsampleCount = exportCount || 0;
+  const fullCountEstimate = (exportCount && subsampledTotal)
+    ? Math.round(exportCount * (fullTotal / subsampledTotal))
+    : 0;
+  const displayedCount = exportFull ? fullCountEstimate : subsampleCount;
+  const isEstimate = exportFull && fullTotal > subsampledTotal;
   return (
     <>
       {/* Left: slice list */}
@@ -614,6 +635,17 @@ function EditSidePanel({
                 : 'Pick a slice first'}>
               {exportBusy ? '… exporting' : '⤓ Export active as PLY'}
             </button>
+            <div style={{
+                fontSize: 11, opacity: 0.7, marginTop: 2,
+                fontVariantNumeric: 'tabular-nums', textAlign: 'center',
+              }}
+              title={isEstimate
+                ? `≈ ${displayedCount.toLocaleString()} pts (estimated from subsample ratio ${subsampleCount.toLocaleString()}/${subsampledTotal.toLocaleString()} × ${fullTotal.toLocaleString()})`
+                : `${displayedCount.toLocaleString()} pts will be written`}>
+              {canExport
+                ? `${isEstimate ? '~' : ''}${_fmtCount(displayedCount)} pts ${exportFull ? '· full density' : '· subsampled'}`
+                : '—'}
+            </div>
           </div>
         </div>
       </div>
