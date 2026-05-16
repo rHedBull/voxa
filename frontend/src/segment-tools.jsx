@@ -47,11 +47,6 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
   const [optStatus, setOptStatus] = useState('idle'); // 'idle' | 'running' | 'done' | 'aborted' | 'error'
   const [optInfo, setOptInfo] = useState(null);
   const optTimerRef = useRef(null);
-  // Run-new state (SAM3 feature-aware sub-segmentation)
-  const [runMode, setRunMode] = useState('ransac');
-  const [sam3Info, setSam3Info] = useState(null);    // {scene, root, root_exists, runs}
-  const [sam3Picked, setSam3Picked] = useState(() => new Set());  // Set<absolutePath>
-  const [forceRecompute, setForceRecompute] = useState(false);
   const popRef = useRef(null);
   const btnRef = useRef(null);
   const disabled = !cloud || busy;
@@ -61,11 +56,6 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
   useEffect(() => () => {
     if (optTimerRef.current) { clearInterval(optTimerRef.current); optTimerRef.current = null; }
   }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    refreshSam3();
-  }, [open, cloud?.recenterOffset]);
 
   useEffect(() => {
     if (!open) return;
@@ -151,82 +141,6 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
       // Point colouring while preseg is active is handled inside Viewer
       // (it overrides ``colorMode`` to use the same segment-id hue as the
       // hull mesh). Nothing to switch here.
-    } catch (e) {
-      setError(String(e.message || e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function refreshSam3() {
-    try {
-      const info = await VoxaAPI.sam3ListRenders();
-      setSam3Info(info);
-      // Default: select all runs newest-first; user can uncheck.
-      setSam3Picked(new Set((info.runs || []).map((r) => r.path)));
-    } catch {
-      setSam3Info(null);
-      setSam3Picked(new Set());
-    }
-  }
-
-  function toggleSam3Pick(path) {
-    setSam3Picked((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
-      return next;
-    });
-  }
-
-  function selectAllSam3(yes) {
-    if (!sam3Info) return;
-    setSam3Picked(yes ? new Set(sam3Info.runs.map((r) => r.path)) : new Set());
-  }
-
-  async function runNewPreseg() {
-    if (!cloud || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const sam3 = (runMode === 'ransac' && sam3Picked.size > 0)
-        ? {
-            render_dirs: Array.from(sam3Picked),
-            force_recompute: forceRecompute,
-          }
-        : null;
-      const res = await VoxaAPI.segPresegment({
-        mode: runMode,
-        preserveLabeled: true,
-        sam3,
-      });
-      setStats({ nSegments: res.nSegments, meanSize: res.meanSegSize ?? 0 });
-      if (prelabelRef) {
-        prelabelRef.current = {
-          classFull: res.fullClassIds.slice(),
-          instanceFull: res.fullInstanceIds.slice(),
-        };
-      }
-      setSegState(initSegState({
-        classFull: res.fullClassIds,
-        instanceFull: res.fullInstanceIds,
-        isFromPrelabel: true,
-        segBoxes: (res.segIds && res.segCenters && res.segSizes)
-          ? { segIds: res.segIds, segCenters: res.segCenters, segSizes: res.segSizes } : null,
-        segHulls: (res.hullVertices && res.hullFaces && res.hullFaceSeg)
-          ? { vertices: res.hullVertices, faces: res.hullFaces, faceSeg: res.hullFaceSeg } : null,
-      }));
-      if (setCloud && cloud) {
-        const subIdx = cloud.subsampleIdx;
-        const subN = (cloud.positions?.length || 0) / 3;
-        const subClass = new Int8Array(subN);
-        const subInst = new Int32Array(subN);
-        for (let p = 0; p < subN; p++) {
-          const f = subIdx ? subIdx[p] : p;
-          subClass[p] = res.fullClassIds[f];
-          subInst[p] = res.fullInstanceIds[f];
-        }
-        setCloud({ ...cloud, classIds: subClass, instanceIds: subInst, isFromPrelabel: true });
-      }
     } catch (e) {
       setError(String(e.message || e));
     } finally {
@@ -370,92 +284,6 @@ export function PresegmentButton({ segState, setSegState, prelabelRef, cloud, se
             fontSize: 12, color: 'var(--text, #ddd)',
           }}
         >
-          {/* ── Run new preseg (SAM3 feature-aware) ─────────── */}
-          <div style={{ borderBottom: '1px solid var(--panel-border, #333)', paddingBottom: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ opacity: 0.7, flex: 1 }}>Run new preseg</span>
-              <select
-                value={runMode}
-                disabled={busy}
-                onChange={(e) => setRunMode(e.target.value)}
-                style={{ background: '#222', color: '#ddd', border: '1px solid #444', borderRadius: 3, fontSize: 11, padding: '1px 3px' }}
-              >
-                <option value="voxel">voxel</option>
-                <option value="ransac">ransac</option>
-              </select>
-            </div>
-            {runMode === 'ransac' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginLeft: 2 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ opacity: 0.6, fontSize: 10, flex: 1 }}>
-                    SAM3 renders {sam3Info ? `(${sam3Info.runs?.length ?? 0} found)` : ''}
-                  </span>
-                  <button type="button" className="tool-btn" disabled={busy}
-                    style={{ width: 'auto', padding: '0 6px', fontSize: 10 }}
-                    onClick={() => selectAllSam3(true)} title="Select all">all</button>
-                  <button type="button" className="tool-btn" disabled={busy}
-                    style={{ width: 'auto', padding: '0 6px', fontSize: 10 }}
-                    onClick={() => selectAllSam3(false)} title="Clear selection">none</button>
-                  <button type="button" className="tool-btn" disabled={busy}
-                    style={{ width: 'auto', padding: '0 6px', fontSize: 10 }}
-                    onClick={refreshSam3} title="Refresh">↻</button>
-                </div>
-                {sam3Info && !sam3Info.root_exists && (
-                  <div style={{ fontSize: 10, color: '#f88' }}>
-                    VOXA_RENDERS_ROOT missing: {sam3Info.root}
-                  </div>
-                )}
-                {sam3Info && sam3Info.root_exists && (sam3Info.runs?.length ?? 0) === 0 && (
-                  <div style={{ fontSize: 10, opacity: 0.6 }}>
-                    No runs found for scene "{sam3Info.scene}" under {sam3Info.root}
-                  </div>
-                )}
-                {sam3Info && (sam3Info.runs?.length ?? 0) > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '24vh', overflowY: 'auto', fontSize: 11 }}>
-                    {sam3Info.runs.map((r) => {
-                      const ageS = Math.max(0, Date.now() / 1000 - r.mtime);
-                      const age = ageS < 60 ? `${Math.round(ageS)}s`
-                        : ageS < 3600 ? `${Math.round(ageS / 60)}m`
-                        : ageS < 86400 ? `${Math.round(ageS / 3600)}h`
-                        : `${Math.round(ageS / 86400)}d`;
-                      return (
-                        <label key={r.path} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title={r.path}>
-                          <input type="checkbox" checked={sam3Picked.has(r.path)}
-                            disabled={busy}
-                            onChange={() => toggleSam3Pick(r.path)} />
-                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {r.name}
-                          </span>
-                          <span style={{ opacity: 0.55, fontSize: 10 }}>
-                            {r.n_frames}f · {r.has_orbit_target ? 'orbit' : 'route'} · {age}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-                {sam3Info && sam3Picked.size > 0 && (
-                  <label style={{ fontSize: 10, opacity: 0.75, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <input type="checkbox" checked={forceRecompute}
-                      disabled={busy}
-                      onChange={(e) => setForceRecompute(e.target.checked)} />
-                    force recompute features
-                  </label>
-                )}
-              </div>
-            )}
-            <button
-              type="button"
-              className="tool-btn"
-              style={{ width: 'auto', padding: '3px 10px', fontSize: 11, alignSelf: 'flex-start' }}
-              disabled={disabled}
-              onClick={runNewPreseg}
-              title={runMode === 'ransac' && sam3Picked.size > 0
-                ? `Run RANSAC + SAM3 features (${sam3Picked.size} render run${sam3Picked.size === 1 ? '' : 's'})`
-                : `Run ${runMode} preseg`}
-            >Run {runMode}{runMode === 'ransac' && sam3Picked.size > 0 ? ` + SAM3 ×${sam3Picked.size}` : ''}</button>
-          </div>
-
           {/* ── Mode picker ─────────────────────────────────── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ opacity: 0.7 }}>Mode</span>
