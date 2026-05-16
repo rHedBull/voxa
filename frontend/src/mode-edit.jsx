@@ -123,6 +123,13 @@ const nextSliceId = () => `slice_${++_sliceSeq}_${Date.now().toString(36)}`;
 function buildPlyBlob(cloud, indices) {
   const N = indices ? indices.length : cloud.positions.length / 3;
   const hasColor = !!cloud.colors;
+  // Undo the load-time z-up→y-up rotation + recenter so the saved PLY
+  // is in the source-file frame, not the Three.js display frame.
+  // Voxa backend applies (x, y, z) → (x, z, -y) on load when scene_is_z_up.
+  // Inverse: (x, y, z) → (x, -z, y), then add back the recenter offset.
+  const zUp = !!cloud.sceneIsZUp;
+  const off0 = cloud.recenterOffset || [0, 0, 0];
+  const ox = +off0[0] || 0, oy = +off0[1] || 0, oz = +off0[2] || 0;
   const header =
     'ply\n' +
     'format binary_little_endian 1.0\n' +
@@ -140,9 +147,20 @@ function buildPlyBlob(cloud, indices) {
   for (let k = 0; k < N; k++) {
     const i = indices ? indices[k] : k;
     const off = k * stride;
-    dv.setFloat32(off,     cloud.positions[3*i],   true);
-    dv.setFloat32(off + 4, cloud.positions[3*i+1], true);
-    dv.setFloat32(off + 8, cloud.positions[3*i+2], true);
+    const px = cloud.positions[3*i];
+    const py = cloud.positions[3*i+1];
+    const pz = cloud.positions[3*i+2];
+    let outX, outY, outZ;
+    if (zUp) {
+      outX =  px;
+      outY = -pz;
+      outZ =  py;
+    } else {
+      outX = px; outY = py; outZ = pz;
+    }
+    dv.setFloat32(off,     outX + ox, true);
+    dv.setFloat32(off + 4, outY + oy, true);
+    dv.setFloat32(off + 8, outZ + oz, true);
     if (hasColor) {
       const r = Math.max(0, Math.min(255, Math.round(cloud.colors[3*i]   * 255)));
       const g = Math.max(0, Math.min(255, Math.round(cloud.colors[3*i+1] * 255)));

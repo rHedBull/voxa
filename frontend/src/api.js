@@ -19,6 +19,7 @@ export function decodeLoadResponse(j) {
     recenterOffset: j.recenter_offset || [0, 0, 0],
     meshUrl: j.mesh_url || null,
     meshIsZUp: !!j.mesh_is_z_up,
+    sceneIsZUp: !!j.scene_is_z_up,
     fullClassIds: j.full_class_ids ? b64ToInt8(j.full_class_ids) : null,
     fullInstanceIds: j.full_instance_ids ? b64ToInt32(j.full_instance_ids) : null,
     fullPositions: j.full_positions ? b64ToFloat32(j.full_positions) : null,

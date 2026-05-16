@@ -81,6 +81,8 @@ app.add_middleware(
 # most workflows are scene-at-a-time anyway.
 _state: dict[str, Any] = {
     "scene": None,
+    "source": None,         # SceneSource (kept so /api/edit/export-ply can
+                            # check is_z_up and reverse the load-time rotation)
     "pc": None,             # PointCloud (recentered)
     "mesh": None,           # trimesh.Trimesh or None
     "subsample_idx": None,  # indices into the original cloud (or None)
@@ -133,6 +135,8 @@ class LoadResponse(BaseModel):
     recenter_offset: list[float] = [0.0, 0.0, 0.0]
     mesh_url: Optional[str] = None    # /api/mesh/<id> when a GLB exists
     mesh_is_z_up: bool = False        # frontend rotates the GLB only if true
+    scene_is_z_up: bool = False       # true if backend applied z-up→y-up on load;
+                                      # frontend must invert when exporting a PLY
     full_class_ids: Optional[str] = None     # b64 Int8, full-res
     full_instance_ids: Optional[str] = None  # b64 Int32, full-res
     full_positions: Optional[str] = None     # b64 Float32 (xyz, recentered), full-res
@@ -423,6 +427,20 @@ def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
     )
 
 
+def _y_up_to_z_up_xyz(pts: np.ndarray) -> np.ndarray:
+    """Inverse of `_z_up_to_y_up`'s mapping applied to a raw (N, 3) array.
+
+    (x, y, z)_y_up → (x, -z, y)_z_up. Used on export so saved PLYs come out
+    in the source-file (LAS/scanner Z-up) frame instead of the in-memory
+    Three.js display frame.
+    """
+    out = np.empty_like(pts)
+    out[:, 0] = pts[:, 0]
+    out[:, 1] = -pts[:, 2]
+    out[:, 2] = pts[:, 1]
+    return out
+
+
 def _filter_tiny_segments(labels, min_points: int):
     """Reset (class_id, instance_id) to (-1, -1) for any point belonging
     to an instance with fewer than ``min_points`` points. Keeps the
@@ -542,6 +560,7 @@ def load_scene(req: LoadRequest):
 
     _state.update(
         scene=src.scene_id,
+        source=src,
         pc=pc,
         mesh=mesh,
         subsample_idx=idx,
@@ -685,6 +704,7 @@ def load_scene(req: LoadRequest):
         recenter_offset=offset,
         mesh_url=_mesh_url_for(src),
         mesh_is_z_up=is_z_up if src.has_mesh else False,
+        scene_is_z_up=is_z_up,
         subsample_idx=subsample_idx_b64,
         **full_payload,
     )
@@ -1872,7 +1892,18 @@ def edit_export_ply(req: ExportPlyRequest) -> Response:
             mask = np.zeros_like(mask)
             mask[inside] = True
 
-    sel_points = points[mask].astype(np.float32, copy=False)
+    sel_points = points[mask]
+    # Undo the load-time recenter + z-up→y-up rotation so the saved PLY
+    # is in the source-file frame, not the Three.js display frame.
+    offset = np.asarray(_state.get("recenter_offset") or [0.0, 0.0, 0.0], dtype=np.float64)
+    src = _state.get("source")
+    scene_is_z_up = bool(src is not None and _scene_is_z_up(src))
+    sel_points = sel_points.astype(np.float64, copy=True)
+    if scene_is_z_up:
+        sel_points = _y_up_to_z_up_xyz(sel_points)
+    if np.any(offset):
+        sel_points = sel_points + offset
+    sel_points = sel_points.astype(np.float32, copy=False)
     n = int(len(sel_points))
     has_color = colors is not None
     sel_colors = colors[mask].astype(np.uint8, copy=False) if has_color else None
