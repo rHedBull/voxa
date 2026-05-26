@@ -76,8 +76,19 @@ prototyping feature extraction), not a scale limit: `.venv` (same Open3D version
 different build) runs full 3M without crashing, and stage 2 runs under `.venv`
 anyway. So there is no inherent ~500k ceiling.
 
-For memory-constrained machines, or clouds near/over the 5M label cap (where full
-preseg would approach ~30 GB), pass `--preseg-points N`. Stage 2 then:
+### Safety guards
+
+Both stages read the PLY vertex count from the header first (no multi-GB load):
+
+- **> 5M (`VOXA_MAX_LABEL_POINTS`) → refused.** A prelabel for a cloud voxa can't
+  load for labeling is useless, and the load/extraction would OOM. Downsample
+  `source/scan.ply` first. (This is the `smart_ais_clean` clobbered-156M case.)
+- **Within the labelable range, full-res is bounded by RAM.** Stage 2 estimates a
+  safe full-res ceiling (~85% of total RAM at ~6.5 GB per million points) and, if
+  the cloud exceeds it, auto-subsamples to the ceiling + NN-propagates with a
+  warning. On a 32 GB box the ceiling is ~4.3M, so a 3M cloud runs full-res.
+
+To force a specific size, pass `--preseg-points N`. Stage 2 then:
 
 1. presegments a random N-point subsample (with the matching subset of features), then
 2. propagates instance ids to the full cloud via nearest-neighbour (`scipy.spatial.cKDTree`).

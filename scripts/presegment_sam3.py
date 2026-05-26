@@ -28,6 +28,7 @@ warnings.filterwarnings("ignore")
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -38,10 +39,44 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from preseg.presegment import presegment  # noqa: E402
+from app.constants import MAX_LABEL_POINTS  # noqa: E402
 
-# 0 = presegment the full cloud (default). Set a positive value to subsample +
-# NN-propagate (for memory-constrained machines or very large clouds).
+# 0 = presegment the full cloud, bounded by a RAM-safe ceiling (see
+# _ram_safe_ceiling). A positive value forces a subsample of that size.
 DEFAULT_PRESEG_POINTS = 0
+
+# RANSAC preseg peaks around this much resident memory per point (measured:
+# ~19.5 GB RSS for 3M points). Used to pick a safe full-res ceiling.
+BYTES_PER_POINT = 6_500
+
+
+def _ply_vertex_count(path: Path) -> int:
+    """Read the vertex count from a binary PLY header without loading points.
+
+    Lets us reject oversized clouds before a multi-GB load would OOM.
+    """
+    with open(path, "rb") as f:
+        for _ in range(60):  # headers are short; bail out defensively
+            line = f.readline()
+            if not line or line.strip() == b"end_header":
+                break
+            if line.startswith(b"element vertex"):
+                return int(line.split()[2])
+    raise ValueError(f"no 'element vertex' in PLY header: {path}")
+
+
+def _ram_safe_ceiling() -> int:
+    """Largest full-res preseg this machine can run without thrashing.
+
+    Budgets ~85% of total RAM at BYTES_PER_POINT, clamped to
+    [500k, MAX_LABEL_POINTS]. Clouds above this are subsampled + propagated.
+    """
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError):
+        total = 16e9
+    est = int(0.85 * total / BYTES_PER_POINT)
+    return max(500_000, min(est, MAX_LABEL_POINTS))
 
 
 def classes_from_yaml(config_path: Path) -> dict[str, int]:
@@ -82,6 +117,17 @@ def main() -> int:
         print(f"ERROR: prelabel already exists in {out_dir} (use --force)", file=sys.stderr)
         return 1
 
+    # Cheap header check BEFORE the multi-GB load: a prelabel for a cloud over
+    # the label cap is unusable (voxa refuses to load it for labeling), and the
+    # load itself would OOM on a 100M+ cloud.
+    n_header = _ply_vertex_count(ply_path)
+    if n_header > MAX_LABEL_POINTS:
+        print(f"ERROR: {ply_path} has {n_header:,} points > label cap "
+              f"{MAX_LABEL_POINTS:,}.\n       Voxa can't load this for labeling, so a "
+              f"prelabel would be unusable. Downsample source/scan.ply first "
+              f"(see docs/point-cloud-sizing.md).", file=sys.stderr)
+        return 4
+
     from scenes.point_cloud import load_ply
     print(f"[load] {ply_path}")
     pc, _ = load_ply(ply_path)
@@ -101,6 +147,15 @@ def main() -> int:
 
     class_map = classes_from_yaml(args.config)
     cap = args.preseg_points
+    if cap == 0:
+        # Full-res by default, but don't exceed what RAM can handle.
+        ceiling = _ram_safe_ceiling()
+        if n > ceiling:
+            cap = ceiling
+            print(f"[preseg] {n:,} points > RAM-safe full-res ceiling "
+                  f"{ceiling:,} (~{BYTES_PER_POINT*n/1e9:.0f} GB needed) — "
+                  f"subsampling to {ceiling:,} + NN-propagate. Pass "
+                  f"--preseg-points to override.")
     if cap and n > cap:
         rng = np.random.default_rng(args.seed)
         sub = np.sort(rng.choice(n, cap, replace=False))
