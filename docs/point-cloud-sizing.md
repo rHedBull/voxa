@@ -10,11 +10,14 @@ env-overridable; defaults live in `backend/app/constants.py`.
 |-------|---------------|---------|-------|------------------------|
 | Load (source sampling) | stride/voxel to ≥ `max(max_points, 50_000)` | — | `backend/scenes/lidar_io.py` (`load_laz`), `point_cloud.py` (`load_glb`) | RAM while reading LAZ/GLB |
 | **Label** | 5,000,000 | `VOXA_MAX_LABEL_POINTS` | `backend/routes/load.py`, `routes/preseg.py` | per-point label arrays + session memory |
-| **Viewer** | 3,000,000 | `VOXA_MAX_POINTS` | `backend/app/core.py` (`_safe_subsample`) | Three.js / GPU render + wire payload |
+| **Viewer** | = label cap (5M) | `VOXA_MAX_POINTS` | `backend/app/core.py` (`_safe_subsample`) | Three.js / GPU render + wire payload |
 | Preseg | full cloud, RAM-bounded; >5M refused | `--preseg-points` | `scripts/presegment_sam3.py` | RAM/time; unloadable above label cap ([presegmentation](presegmentation.md)) |
 | Recommendation | 200,000 | `subsample_n` (request field) | `backend/routes/preseg.py` (`/optimize`) | parameter-search speed |
 
-The chain in size order: **load (RAM) → label (5M) → viewer (3M) → recommend (200k)**.
+The chain in size order: **load (RAM) → label = viewer (5M) → recommend (200k)**.
+The viewer cap defaults to the label cap, so what's rendered == what's labelable —
+no viewer/label gap. Set `VOXA_MAX_POINTS` lower if rendering that many points is
+too heavy on a given machine.
 
 Preseg runs on the full cloud by default (~6 min / ~20 GB at 3M under `.venv`),
 guarded two ways: clouds **over the 5M label cap are refused** (a prelabel voxa
@@ -40,15 +43,16 @@ Labels always operate on the **full** loaded cloud; the viewer may see a subset.
   - `full_*` + `subsample_idx` (opt-in via `want_full_labels`) — full-resolution
     arrays plus an index mapping each view row back to its full-cloud index.
 
-Because the viewer cap (3M) now matches typical scan sizes, `_safe_subsample`
-**no-ops for clouds ≤ 3M**: `subsample_idx` is `null` and the view arrays already
-are the full arrays. Subsampling only kicks in for clouds between the viewer cap
-and the label cap.
+Because the viewer cap defaults to the label cap, `_safe_subsample`
+**no-ops for any labelable cloud** (≤ 5M): `subsample_idx` is `null` and the view
+arrays already are the full arrays. Subsampling only kicks in for clouds *above*
+the label cap, which load view-only (no labeling session) anyway.
 
 ### Wire-payload note
 
-A 3M-point load is ~72 MB (positions + colors, base64). Fine on localhost; heavy
-over a network. Lower `VOXA_MAX_POINTS` if serving remotely.
+A load ships ~24 bytes/point (positions + colors, base64): ~72 MB at 3M, ~120 MB
+at the 5M cap. Fine on localhost; heavy over a network. Lower `VOXA_MAX_POINTS` if
+serving remotely or if rendering 5M points strains the GPU.
 
 ## Density vs. point count
 
