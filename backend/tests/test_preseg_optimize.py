@@ -2,7 +2,7 @@ import threading
 
 import numpy as np
 import pytest
-from preseg_optimize import SEARCH_SPACE, run_study, score_segmentation
+from preseg.preseg_optimize import SEARCH_SPACE, run_study, score_segmentation
 
 
 def _plane_xyz(n=2000, rng=None):
@@ -99,7 +99,7 @@ def test_score_penalises_too_many_segments():
 
 
 def test_search_space_mirrors_ransac_defaults():
-    from presegment_ransac import RANSAC_DEFAULTS
+    from preseg.presegment_ransac import RANSAC_DEFAULTS
     assert set(SEARCH_SPACE.keys()) == set(RANSAC_DEFAULTS.keys())
 
 

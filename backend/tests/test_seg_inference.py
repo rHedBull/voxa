@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from seg_inference import (
+from labeling.seg_inference import (
     _ransac_class_for_segment,
     _read_ransac_artifacts,
     _write_prelabel_cache,
@@ -131,7 +131,7 @@ def test_predict_for_scene_returns_none_when_repo_missing(tmp_path, monkeypatch)
     monkeypatch.setenv("VOXA_MERGE_MODEL", str(tmp_path / "no.pkl"))
     # Module-level paths are read at import time — reload to pick up the env.
     import importlib
-    import seg_inference
+    import labeling.seg_inference as seg_inference
     importlib.reload(seg_inference)
     assert seg_inference.predict_for_scene(tmp_path, n_points=10, class_map={}) is None
 
@@ -139,7 +139,8 @@ def test_predict_for_scene_returns_none_when_repo_missing(tmp_path, monkeypatch)
 def test_predict_for_scene_returns_none_when_no_artifacts(tmp_path, monkeypatch):
     """Even with a real model bundle, missing RANSAC artifacts → None."""
     monkeypatch.setenv("VOXA_MERGE_MODEL", str(tmp_path / "no.pkl"))
-    import importlib, seg_inference
+    import importlib
+    import labeling.seg_inference as seg_inference
     importlib.reload(seg_inference)
     # No fresh_run/segmentation/ directory at all.
     assert seg_inference.predict_for_scene(tmp_path, n_points=10,

@@ -56,7 +56,7 @@ def lidar_client(tmp_path, monkeypatch):
     # identity (ClassDef-from-old-load isn't ClassDef-from-new-load), so we
     # mutate the module attribute directly instead.
     import main
-    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     return TestClient(main.app)
 
 
@@ -131,7 +131,7 @@ def test_load_prefer_prelabel_skips_gt(lidar_client, tmp_path, monkeypatch):
                      {"id": 7, "class_id": 1, "label": "tank"}],
     }))
 
-    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
 
     # Default load → GT wins, is_from_prelabel=False.
     gt_body = lidar_client.post("/api/load",
@@ -181,7 +181,7 @@ def test_mesh_endpoint_serves_glb_when_present(lidar_client, tmp_path, monkeypat
     # Pretend mesh — content body doesn't matter for these assertions.
     (scan / "source" / "mesh.glb").write_bytes(b"glTF\x02\x00\x00\x00")
 
-    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
 
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/withmesh", "max_points": 10}).json()
@@ -226,7 +226,7 @@ def test_annotated_z_up_swap_when_source_is_laz(lidar_client, tmp_path, monkeypa
     (scan_dir / "meta.json").write_text(
         '{"scan_name": "tall_laz", "n_points": 10, "source_laz": "x.laz"}')
 
-    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/tall_laz", "max_points": 100}).json()
     extents = [body["bbox_max"][i] - body["bbox_min"][i] for i in range(3)]
@@ -246,7 +246,7 @@ def test_annotated_no_swap_when_source_is_glb(lidar_client, tmp_path, monkeypatc
     (scan_dir / "meta.json").write_text(
         '{"scan_name": "tall_glb", "n_points": 10, "source_mesh": "source/mesh.glb"}')
 
-    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/tall_glb", "max_points": 100}).json()
     extents = [body["bbox_max"][i] - body["bbox_min"][i] for i in range(3)]
@@ -316,7 +316,7 @@ def test_subsample_idx_present_and_correct_when_subsampling(tmp_path, monkeypatc
     (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
     (scan_dir / "meta.json").write_text('{"scan_name": "big", "n_points": 20}')
 
-    monkeypatch.setattr(main, "LIDAR_ROOT", lidar, raising=False)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     client = TestClient(main.app)
 
     max_pts = 5
@@ -384,7 +384,7 @@ def test_load_recovers_in_progress_session_after_server_restart(
 def test_seg_session_skipped_above_label_cap(monkeypatch, client_with_annotated_scene):
     client, scene_id = client_with_annotated_scene
     import main
-    monkeypatch.setattr(main, "MAX_LABEL_POINTS", 1, raising=False)
+    monkeypatch.setattr("app.constants.MAX_LABEL_POINTS", 1, raising=False)
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
     assert main._state["seg"] is None

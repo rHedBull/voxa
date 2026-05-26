@@ -35,7 +35,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from presegment import presegment  # noqa: E402
+from preseg.presegment import presegment  # noqa: E402
 
 DEFAULT_PRESEG_POINTS = 500_000
 
@@ -77,7 +77,7 @@ def main() -> int:
         print(f"ERROR: prelabel already exists in {out_dir} (use --force)", file=sys.stderr)
         return 1
 
-    from point_cloud import load_ply
+    from scenes.point_cloud import load_ply
     print(f"[load] {ply_path}")
     pc, _ = load_ply(ply_path)
     xyz = np.asarray(pc.points, dtype=np.float64)

@@ -36,10 +36,10 @@ def presegment(
     feature_split_max_k: int = 8,
 ) -> tuple[np.ndarray, list[dict]]:
     if mode == "voxel":
-        from presegment_voxel import presegment as _run
+        from preseg.presegment_voxel import presegment as _run
         return _run(xyz, class_map=class_map, log=log, resolution=resolution)
     if mode == "ransac":
-        from presegment_ransac import presegment as _run
+        from preseg.presegment_ransac import presegment as _run
         return _run(
             xyz, class_map=class_map, log=log, params=ransac_params,
             labeler_strict=labeler_strict,

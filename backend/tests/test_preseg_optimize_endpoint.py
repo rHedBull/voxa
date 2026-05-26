@@ -3,7 +3,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 import main
-from point_cloud import PointCloud
+from scenes.point_cloud import PointCloud
 
 
 client = TestClient(main.app)

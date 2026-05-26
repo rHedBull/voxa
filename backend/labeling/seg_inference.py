@@ -189,7 +189,7 @@ def predict_for_scene(scan_dir: Path, n_points: int,
         return None
 
     # The merge model needs xyz too. Read it from the SCHEMA scan.
-    from point_cloud import load_ply
+    from scenes.point_cloud import load_ply
     pc, _mesh = load_ply(scan_dir / "source" / "scan.ply")
     if len(pc) != n_points:
         return None

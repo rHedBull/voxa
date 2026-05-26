@@ -172,7 +172,7 @@ def run_study(
     class_map: Optional[dict[str, int]] = None,
 ) -> dict:
     import optuna
-    from presegment_ransac import presegment as _ransac
+    from preseg.presegment_ransac import presegment as _ransac
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 

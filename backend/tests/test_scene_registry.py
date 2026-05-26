@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from plyfile import PlyData, PlyElement
 
-from scene_registry import discover, resolve
+from scenes.scene_registry import discover, resolve
 
 
 def _write_tiny_ply(path: Path, n: int = 8) -> None:
@@ -164,7 +164,7 @@ def test_session_dir_for_raw_tier(voxa_data, lidar_root):
 def test_session_dir_raises_when_data_dir_missing_for_legacy():
     """Non-annotated tiers require data_dir; surfacing as ValueError prevents
     writing session files to None."""
-    from scene_registry import _session_dir_for
+    from scenes.scene_registry import _session_dir_for
     with pytest.raises(ValueError, match="data_dir"):
         _session_dir_for("legacy", "foo", None, None)
     with pytest.raises(ValueError, match="data_dir"):
@@ -329,7 +329,7 @@ def test_sam3_renders_discovery_via_scan_dir(tmp_path):
     """SCHEMA v1.2: SAM3 render runs live under `<scan>/renders/<run>/`
     next to a manifest.json. discover_render_runs should find them when
     given the scan dir, with no env-var or external root involved."""
-    from sam3_features import discover_render_runs
+    from preseg.sam3_features import discover_render_runs
     lidar = tmp_path / "lidar"
     scan = lidar / "annotated" / "scene_with_renders"
     _make_annotated(scan)
@@ -354,7 +354,7 @@ def test_sam3_renders_discovery_via_scan_dir(tmp_path):
 
 def test_sam3_renders_discovery_empty_scan(tmp_path):
     """No renders/ dir → empty list (not an error)."""
-    from sam3_features import discover_render_runs
+    from preseg.sam3_features import discover_render_runs
     lidar = tmp_path / "lidar"
     scan = lidar / "annotated" / "no_renders"
     _make_annotated(scan)

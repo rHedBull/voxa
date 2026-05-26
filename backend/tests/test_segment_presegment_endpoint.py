@@ -40,7 +40,7 @@ def client_with_synthetic_session():
     """TestClient + ``main`` with a SegmentSession loaded directly into _state."""
     from fastapi.testclient import TestClient
     import main
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
 
     rng = np.random.default_rng(11)
     xyz = _make_scene(rng)
@@ -147,7 +147,7 @@ def test_presegment_bootstraps_from_cloud_without_session():
     SegmentSession from the cloud's points and runs presegmentation."""
     from fastapi.testclient import TestClient
     import main
-    from point_cloud import PointCloud
+    from scenes.point_cloud import PointCloud
 
     rng = np.random.default_rng(13)
     xyz = _make_scene(rng)

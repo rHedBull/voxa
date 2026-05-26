@@ -40,7 +40,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from presegment import presegment  # noqa: E402
+from preseg.presegment import presegment  # noqa: E402
 
 
 def _classes_from_yaml(config_path: Path) -> dict[str, int]:
@@ -74,7 +74,7 @@ def _resolve_scene(arg: str) -> tuple[Path, Path]:
         return p.parent, p
 
     # Treat as scene id via voxa's registry
-    from scene_registry import resolve
+    from scenes.scene_registry import resolve
     data_dir = Path(os.environ.get("VOXA_DATA_DIR", str(ROOT / "data")))
     lidar_root = Path(os.environ.get("VOXA_LIDAR_ROOT",
                                      "/home/hendrik/coding/engine/data/lidar"))
@@ -91,7 +91,7 @@ def _resolve_scene(arg: str) -> tuple[Path, Path]:
 
 def _load_xyz(ply_path: Path) -> np.ndarray:
     """Load just XYZ from a PLY. Uses voxa's loader for consistency."""
-    from point_cloud import load_ply
+    from scenes.point_cloud import load_ply
     pc, _mesh = load_ply(ply_path)
     return np.asarray(pc.points, dtype=np.float64)
 

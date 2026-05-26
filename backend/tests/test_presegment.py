@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("open3d")
 
-from presegment import presegment  # noqa: E402
+from preseg.presegment import presegment  # noqa: E402
 
 
 def _make_cloud(n: int, *, rng: np.random.Generator) -> np.ndarray:
