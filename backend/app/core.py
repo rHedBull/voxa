@@ -1,0 +1,625 @@
+"""Shared backend core: in-memory state + all request helpers.
+
+Route modules `from app.core import *` to get state, helpers, and the
+common toolkit (numpy, fastapi errors, scene loaders, ...)."""
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import os
+import threading as _threading
+import time as _time
+import uuid
+from pathlib import Path
+from typing import Any, Literal, Optional
+
+import numpy as np
+import yaml
+from fastapi import HTTPException, Response
+from fastapi.responses import FileResponse
+
+from scenes.lidar_io import LabelArrays, load_annotated, load_laz, load_laz_region
+from scenes.point_cloud import PointCloud, load_glb, load_ply
+from scenes.scene_registry import (
+   SceneSource, discover, load_lidar_root_from_env,
+   resolve as resolve_scene,
+)
+
+from app import constants  # for live LIDAR_ROOT lookups (tests monkeypatch it)
+from app.constants import *  # noqa: F401,F403
+from app.schemas import *  # noqa: F401,F403
+
+
+_state: dict[str, Any] = {
+    "scene": None,
+    "source": None,         # SceneSource (kept so /api/edit/export-ply can
+                            # check is_z_up and reverse the load-time rotation)
+    "pc": None,             # PointCloud (recentered)
+    "mesh": None,           # trimesh.Trimesh or None
+    "subsample_idx": None,  # indices into the original cloud (or None)
+    "intensity": None,      # full-resolution intensity array (or None)
+    "labels": None,         # LabelArrays (or None)
+    "recenter_offset": [0.0, 0.0, 0.0],
+    "seg": None,            # SegmentSession | None
+}
+
+def _annotation_path(scene: str, kind: str) -> Path:
+    if kind not in ("gt", "pred"):
+        raise HTTPException(400, f"Invalid kind: {kind}")
+    fname = "ground_truth.json" if kind == "gt" else "predictions.json"
+    # Annotation files key off the scene name (without tier) so that legacy
+    # bare-name lookups continue to work. Tier collisions in this dir are
+    # acceptable for now — Compare mode is cuboid-only and only legacy scenes
+    # produce cuboid GT/pred today.
+    safe = scene.replace("/", "__")
+    return ANNOT_DIR / safe / fname
+
+def _resolve(scene_id: str) -> SceneSource:
+    try:
+        return resolve_scene(scene_id, DATA_DIR, constants.LIDAR_ROOT)
+    except KeyError:
+        raise HTTPException(404, f"Scene not found: {scene_id}")
+
+def _safe_subsample(
+    pc: PointCloud,
+    max_points: int,
+    intensity: Optional[np.ndarray] = None,
+    labels: Optional[LabelArrays] = None,
+) -> tuple[PointCloud, np.ndarray | None, Optional[np.ndarray], Optional[LabelArrays]]:
+    n = len(pc)
+    if n <= max_points:
+        return pc, None, intensity, labels
+    rng = np.random.default_rng(7)
+    idx = rng.choice(n, size=max_points, replace=False)
+    idx.sort()
+    sub = PointCloud(
+        points=pc.points[idx],
+        colors=pc.colors[idx] if pc.colors is not None else None,
+        labels=pc.labels[idx] if pc.labels is not None else None,
+        instance_ids=pc.instance_ids[idx] if pc.instance_ids is not None else None,
+    )
+    sub_intensity = intensity[idx] if intensity is not None else None
+    sub_labels: Optional[LabelArrays] = None
+    if labels is not None:
+        sub_labels = LabelArrays(
+            class_ids=labels.class_ids[idx],
+            instance_ids=labels.instance_ids[idx],
+        )
+    return sub, idx, sub_intensity, sub_labels
+
+def _normalize_colors(pc: PointCloud) -> np.ndarray:
+    """Return Nx3 float32 in 0..1 for the frontend."""
+    if pc.colors is None:
+        return np.full((len(pc), 3), 0.55, dtype=np.float32)
+    c = pc.colors.astype(np.float32) / 255.0
+    return c
+
+def _b64(arr: np.ndarray) -> str:
+    return base64.b64encode(np.ascontiguousarray(arr).tobytes()).decode()
+
+def _recenter(pc: PointCloud) -> tuple[PointCloud, list[float]]:
+    """Subtract the bbox centroid so float32 stays precise in Three.js.
+
+    LAS UTM coordinates can reach 7 digits, which is at the edge of float32
+    precision and shows up as visible jitter. Returns the recentered cloud
+    plus the offset that was subtracted so any future export can restore
+    world coords."""
+    if len(pc) == 0:
+        return pc, [0.0, 0.0, 0.0]
+    center = pc.points.mean(axis=0)
+    # Only recenter if the magnitude is large enough to matter; small scenes
+    # near the origin shouldn't have their coords mutated for nothing.
+    if float(np.max(np.abs(center))) < 1e3:
+        return pc, [0.0, 0.0, 0.0]
+    new_points = (pc.points - center).astype(np.float32)
+    return PointCloud(
+        points=new_points,
+        colors=pc.colors,
+        labels=pc.labels,
+        instance_ids=pc.instance_ids,
+        face_indices=pc.face_indices,
+    ), center.astype(np.float32).tolist()
+
+def _iou_aabb(a: Cuboid, b: Cuboid) -> float:
+    """Axis-aligned IoU. Cuboid rotation is ignored — adequate for scoring
+    industrial-pose annotations where rotation is usually small. Returns 0
+    if either instance lacks a box (e.g. pointset)."""
+    if a.center is None or a.size is None or b.center is None or b.size is None:
+        return 0.0
+    a_min = np.array(a.center) - np.array(a.size) / 2
+    a_max = np.array(a.center) + np.array(a.size) / 2
+    b_min = np.array(b.center) - np.array(b.size) / 2
+    b_max = np.array(b.center) + np.array(b.size) / 2
+    inter_min = np.maximum(a_min, b_min)
+    inter_max = np.minimum(a_max, b_max)
+    inter = np.maximum(0.0, inter_max - inter_min).prod()
+    vol_a = np.array(a.size).prod()
+    vol_b = np.array(b.size).prod()
+    union = vol_a + vol_b - inter
+    return float(inter / union) if union > 0 else 0.0
+
+def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
+    """Rotate a Z-up point cloud (LAS / surveying convention) into the
+    Three.js Y-up frame so the floor sits below the cloud as expected.
+
+    Right-handed Z-up (X right, Y depth, Z up) → right-handed Y-up
+    (X right, Y up, Z back). Mapping: (x, y, z) → (x, z, -y).
+    Per-point label / instance arrays carry over unchanged.
+    """
+    pts = pc.points
+    new_pts = np.empty_like(pts)
+    new_pts[:, 0] = pts[:, 0]
+    new_pts[:, 1] = pts[:, 2]
+    new_pts[:, 2] = -pts[:, 1]
+    return PointCloud(
+        points=new_pts,
+        colors=pc.colors,
+        labels=pc.labels,
+        instance_ids=pc.instance_ids,
+        face_indices=pc.face_indices,
+    )
+
+def _y_up_to_z_up_xyz(pts: np.ndarray) -> np.ndarray:
+    """Inverse of `_z_up_to_y_up`'s mapping applied to a raw (N, 3) array.
+
+    (x, y, z)_y_up → (x, -z, y)_z_up. Used on export so saved PLYs come out
+    in the source-file (LAS/scanner Z-up) frame instead of the in-memory
+    Three.js display frame.
+    """
+    out = np.empty_like(pts)
+    out[:, 0] = pts[:, 0]
+    out[:, 1] = -pts[:, 2]
+    out[:, 2] = pts[:, 1]
+    return out
+
+def _filter_tiny_segments(labels, min_points: int):
+    """Reset (class_id, instance_id) to (-1, -1) for any point belonging
+    to an instance with fewer than ``min_points`` points. Keeps the
+    arrays in-place-friendly: returns a fresh LabelArrays so the caller
+    can swap without mutating the loader's outputs."""
+    from scenes.lidar_io import LabelArrays
+    inst = np.asarray(labels.instance_ids, dtype=np.int32)
+    cls = np.asarray(labels.class_ids, dtype=np.int8)
+    if inst.size == 0 or min_points <= 1:
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    labeled = inst >= 0
+    if not labeled.any():
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    ids, counts = np.unique(inst[labeled], return_counts=True)
+    drop_ids = ids[counts < int(min_points)]
+    if drop_ids.size == 0:
+        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
+    drop_mask = np.isin(inst, drop_ids)
+    new_cls = cls.copy()
+    new_inst = inst.copy()
+    new_cls[drop_mask] = -1
+    new_inst[drop_mask] = -1
+    return LabelArrays(class_ids=new_cls, instance_ids=new_inst)
+
+def _scene_is_z_up(src: SceneSource) -> bool:
+    """Decide whether the scene's source frame is Z-up (surveying / LAS).
+
+    - legacy: author-defined, treated as Y-up.
+    - decimated, raw: pulled from LAZ, always Z-up.
+    - annotated: depends on what the PLY was sampled from.
+      `meta.json::source_mesh` (a glTF) → Y-up.
+      `meta.json::source_laz` → Z-up.
+      Default Z-up if the meta is missing or ambiguous.
+    """
+    if src.tier == "legacy":
+        return False
+    if src.tier in ("decimated", "raw"):
+        return True
+    return bool(src.extras.get("is_z_up", True))
+
+def _load_scene_source(src: SceneSource, max_points: int, *,
+                       prefer_prelabel: bool = False):
+    """Dispatch to the right loader.
+
+    Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances,
+             n_labeled_points, is_from_prelabel, n_source_total).
+
+    `n_source_total` is the source file's true point count when it differs
+    from the loaded count (LAZ stride-samples at read time); None when the
+    loaded count already matches the on-disk count.
+    """
+    if src.tier == "annotated":
+        a = load_annotated(src, constants.LIDAR_ROOT, prefer_prelabel=prefer_prelabel)
+        n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
+        palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
+        return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
+                n_labeled, bool(a.is_from_prelabel), None)
+
+    if src.tier == "raw":
+        pc, intensity, n_source_total = load_laz(src.source_path, max_points=max(max_points, 50_000))
+        return (pc, None, intensity, None, None, None, None, None, False, n_source_total)
+
+    # legacy + decimated → reuse the existing loaders
+    if src.source_format == "glb":
+        pc, mesh = load_glb(src.source_path, num_samples=max(max_points, 50_000))
+        return (pc, mesh, None, None, None, None, None, None, False, None)
+    pc, _ = load_ply(src.source_path)
+    return (pc, None, None, None, None, None, None, None, False, None)
+
+def _mesh_url_for(src: SceneSource) -> Optional[str]:
+    """Cache-bust the mesh URL with the GLB's mtime, so a rebuilt mesh.glb
+    is treated as a fresh resource by both HTTP caches and Three.js's
+    GLTFLoader cache (which keys on URL)."""
+    if not src.has_mesh:
+        return None
+    mesh_path = src.extras.get("mesh_path")
+    try:
+        mtime = int(os.path.getmtime(mesh_path)) if mesh_path else 0
+    except OSError:
+        mtime = 0
+    return f"/api/mesh/{src.scene_id}?v={mtime}"
+
+def _require_seg():
+    seg = _state.get("seg")
+    if seg is None:
+        raise HTTPException(409, "No segment session loaded — load an annotated scene first")
+    return seg
+
+def _serialize_apply(out: dict) -> dict:
+    body = {"op": out["op"], "n_affected": out["n_affected"], "dirty": True}
+    if "new_instance_id" in out:
+        body["new_instance_id"] = int(out["new_instance_id"])
+    if "indices" in out:
+        body["indices"] = _b64(out["indices"].astype(np.int32))
+        body["after_class"] = _b64(out["after_class"].astype(np.int8))
+        body["after_instance"] = _b64(out["after_instance"].astype(np.int32))
+    return body
+
+def _serialize_delta(out: dict) -> dict:
+    return {
+        "op": out["op"], "direction": out["direction"],
+        "n_affected": out["n_affected"],
+        "indices": _b64(out["indices"].astype(np.int32)),
+        "after_class": _b64(out["after_class"].astype(np.int8)),
+        "after_instance": _b64(out["after_instance"].astype(np.int32)),
+    }
+
+def _decode_indices_or_400(req: "ApplyRequest") -> np.ndarray:
+    if req.indices is None:
+        raise HTTPException(400, f"op '{req.op}' requires 'indices' (b64 Int32)")
+    return np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
+
+def _coerce_class_id(v):
+    """Accept either int class id or string class name from the frontend.
+    The labels palette uses string ids ('pipe', 'beam', ...); the seg
+    state stores int8 class ids. Map names → ids via the configured
+    classes.yaml so both wire formats work."""
+    if v is None:
+        return None
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    name_to_id = _voxa_class_name_to_id()
+    key = str(v).lower()
+    if key not in name_to_id:
+        raise ValueError(f"unknown class name: {v!r}")
+    return name_to_id[key]
+
+def _voxa_class_name_to_id() -> dict[str, int]:
+    """Build {class-name-lower: int-id} from the configured classes.yaml.
+
+    Mirrors the enumeration order used by ``get_config()`` so id↔name
+    stays consistent with the palette the frontend renders.
+    """
+    if not CONFIG_PATH.exists():
+        return {}
+    raw = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    return {str(name).lower(): i
+            for i, name in enumerate((raw.get("classes") or {}).keys())}
+
+def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> tuple:
+    """Compute per-segment bounding box as center + size (float32).
+
+    Returns (seg_ids int32[N], centers float32[N,3], sizes float32[N,3]).
+    Vectorised via argsort + reduceat: O(n log n) not O(n_seg × n_points).
+    """
+    pos = np.asarray(positions, dtype=np.float32)
+    mask = instance_ids >= 0
+    if not mask.any():
+        empty3 = np.empty((0, 3), dtype=np.float32)
+        return np.empty(0, dtype=np.int32), empty3, empty3
+    pos_v = pos[mask]
+    ids_v = instance_ids[mask]
+    order = np.argsort(ids_v, kind='stable')
+    ids_s = ids_v[order]
+    pos_s = pos_v[order]
+    unique_ids, starts = np.unique(ids_s, return_index=True)
+    mins = np.minimum.reduceat(pos_s, starts)
+    maxs = np.maximum.reduceat(pos_s, starts)
+    centers = ((mins + maxs) / 2).astype(np.float32)
+    sizes = np.maximum(maxs - mins, 0.01).astype(np.float32)
+    return unique_ids.astype(np.int32), centers, sizes
+
+def _apply_ransac_result_to_session(
+    *,
+    sub_inst: np.ndarray,
+    sub_summary: list[dict],
+    positions: np.ndarray,
+    existing_class: np.ndarray,
+    existing_inst: np.ndarray,
+    keep_mask: np.ndarray,
+    redo_mask: np.ndarray,
+    resolution: float = 0.05,
+    run_id: Optional[str] = None,
+):
+    """Renumber sub-instance ids above the existing max, freeze the
+    immutable preseg layer, then seed live (instance, class) via grouped
+    ``apply_reassign`` calls so subsequent edits stay undoable and the
+    linkage layer (preseg_ids/fingerprint) is populated. Caller writes
+    the session into ``_state["seg"]``."""
+    from labeling.segment_state import SegmentSession
+    from labeling.segment_hulls import compute_hulls as _compute_hulls
+
+    id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
+    if id_offset and sub_inst.size:
+        sub_inst = np.where(sub_inst >= 0, sub_inst + id_offset, sub_inst)
+
+    # Build the session with only the kept (already-labeled) state; the
+    # redo region starts unlabeled. We seed it via apply_reassign below.
+    init_class = existing_class.copy()
+    init_inst = existing_inst.copy()
+    init_class[redo_mask] = -1
+    init_inst[redo_mask] = -1
+
+    sess = SegmentSession(
+        class_ids=init_class.astype(np.int8),
+        instance_ids=init_inst.astype(np.int32),
+        positions=positions,
+        is_from_prelabel=True,
+    )
+
+    # Stamp the immutable preseg layer: full-length array, -1 outside the
+    # redo region. NOT undoable.
+    preseg_full = np.full(int(positions.shape[0]), -1, dtype=np.int32)
+    preseg_full[redo_mask] = sub_inst
+    sess.freeze_preseg(preseg_full, run_id=run_id)
+
+    # Group seed reassigns by preseg_id so each (instance, class) pair
+    # becomes one undoable op. Only seed points that are currently
+    # unlabeled (the redo region after the wipe above).
+    seg_to_class = {int(s["id"]) + id_offset: int(s.get("class_id", -1)) for s in sub_summary}
+    seedable = (sess.class_ids < 0)
+    # Cover every preseg cluster present in the redo region — including
+    # those the summary didn't classify (class_id < 0). They still need
+    # an instance id so the UI renders them as segments.
+    unique_preseg = np.unique(sub_inst) if sub_inst.size else np.empty(0, dtype=np.int32)
+    for preseg_id in unique_preseg:
+        pid = int(preseg_id)
+        if pid < 0:
+            continue
+        mask = seedable & (preseg_full == pid)
+        if not mask.any():
+            continue
+        indices = np.flatnonzero(mask).astype(np.int32)
+        cid = seg_to_class.get(pid, -1)
+        # apply_reassign requires a non-None target_class when target_inst
+        # is set. Use -1 for unclassified preseg clusters (same wire value
+        # the legacy direct-write path produced).
+        sess.apply_reassign(
+            indices,
+            target_inst=pid,
+            target_class=int(cid),
+        )
+
+    instance_ids = sess.instance_ids
+    class_ids = sess.class_ids
+
+    box_ids, box_centers, box_sizes = _compute_segment_boxes(
+        np.asarray(positions), instance_ids
+    )
+    hull_v, hull_f, hull_seg = _compute_hulls(
+        np.asarray(positions),
+        instance_ids.astype(np.int32),
+        resolution=float(resolution),
+    )
+    return (
+        sess,
+        instance_ids,
+        class_ids,
+        box_ids,
+        box_centers,
+        box_sizes,
+        hull_v,
+        hull_f,
+        hull_seg,
+    )
+
+def _new_job_state(total: int) -> dict:
+    return {
+        "id": str(uuid.uuid4()),
+        "thread": None,
+        "cancel": _threading.Event(),
+        "status": "running",
+        "trial": 0,
+        "total": total,
+        "best_score": None,
+        "best_params": None,
+        "error": None,
+        "started_at": _time.time(),
+    }
+
+def _preseg_optimize_worker(*, job, positions, existing_class, existing_inst,
+                            keep_mask, redo_mask, subsample_n, n_trials, class_map):
+    from preseg.preseg_optimize import run_study
+    from preseg.presegment_ransac import presegment as _ransac
+    try:
+        candidate_idx = np.flatnonzero(redo_mask)
+        if candidate_idx.size == 0:
+            job["status"] = "error"
+            job["error"] = "Nothing to optimize: all points are already labeled (preserve_labeled=true)"
+            return
+        if candidate_idx.size > subsample_n:
+            rng = np.random.default_rng(0)
+            sub_idx = rng.choice(candidate_idx, size=subsample_n, replace=False)
+        else:
+            sub_idx = candidate_idx
+        xyz_sub = np.asarray(positions[sub_idx], dtype=np.float64)
+
+        def cb(info):
+            job["trial"] = info["trial"]
+            job["best_score"] = info["best_score"]
+            job["best_params"] = info["best_params"]
+
+        result = run_study(
+            xyz_sub,
+            n_trials=n_trials,
+            cancel_event=job["cancel"],
+            progress_cb=cb,
+            class_map=class_map,
+        )
+        job["best_score"] = result["best_score"]
+        job["best_params"] = result["best_params"]
+
+        if job["cancel"].is_set():
+            job["status"] = "aborted"
+            return
+
+        sub_positions = np.asarray(positions[redo_mask], dtype=np.float64)
+        sub_inst, sub_summary = _ransac(
+            sub_positions,
+            class_map=class_map,
+            log=lambda *_: None,
+            params=result["best_params"],
+        )
+        sess, *_unused = _apply_ransac_result_to_session(
+            sub_inst=sub_inst,
+            sub_summary=sub_summary,
+            positions=positions,
+            existing_class=existing_class,
+            existing_inst=existing_inst,
+            keep_mask=keep_mask,
+            redo_mask=redo_mask,
+            resolution=0.05,
+        )
+        _state["seg"] = sess
+        _state["seg"].dirty = True
+        job["status"] = "done"
+    except Exception as e:  # noqa: BLE001
+        job["status"] = "error"
+        job["error"] = str(e)
+
+def _euler_xyz_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
+    """Three.js Euler XYZ → 3x3 rotation matrix (Rz · Ry · Rx)."""
+    cx, sx = np.cos(rx), np.sin(rx)
+    cy, sy = np.cos(ry), np.sin(ry)
+    cz, sz = np.cos(rz), np.sin(rz)
+    return np.array([
+        [cy * cz,  sx * sy * cz - cx * sz,  cx * sy * cz + sx * sz],
+        [cy * sz,  sx * sy * sz + cx * cz,  cx * sy * sz - sx * cz],
+        [-sy,      sx * cy,                 cx * cy],
+    ], dtype=np.float64)
+
+def _obb_mask(points: np.ndarray, box: _ObbBox) -> np.ndarray:
+    c = np.asarray(box.center, dtype=np.float64)
+    s = np.asarray(box.size, dtype=np.float64)
+    R = _euler_xyz_matrix(*box.rotation)
+    # local = R^T · (p - c)  → vectorized as (p - c) @ R
+    local = (points.astype(np.float64) - c) @ R
+    half = s / 2.0
+    return np.all(np.abs(local) <= half + 1e-6, axis=1)
+
+def _ops_chain_mask(display_xyz: np.ndarray, ops: list) -> np.ndarray:
+    """Replay the box-select op chain on points in display (y-up + recentered)
+    frame. Returns a boolean keep-mask."""
+    mask = np.ones(len(display_xyz), dtype=bool)
+    for op in ops:
+        if not mask.any():
+            break
+        idx = np.flatnonzero(mask)
+        inside = idx[_obb_mask(display_xyz[idx], op)]
+        if op.op == "delete":
+            mask[inside] = False
+        else:
+            mask = np.zeros_like(mask)
+            mask[inside] = True
+    return mask
+
+def _to_display_frame(xyz: np.ndarray, scene_is_z_up: bool,
+                      offset: np.ndarray) -> np.ndarray:
+    """Recreate the load-time z-up→y-up rotation + recenter so source-frame
+    points align with OBB ops authored in the display frame."""
+    out = xyz.astype(np.float64, copy=True)
+    if scene_is_z_up:
+        # (x, y, z) → (x, z, -y)
+        out = np.column_stack([out[:, 0], out[:, 2], -out[:, 1]])
+    if np.any(offset):
+        out = out - offset
+    return out
+
+def _ply_response_bytes(xyz: np.ndarray, rgb: Optional[np.ndarray]) -> bytes:
+    """Encode (N, 3) xyz + optional (N, 3) uint8 rgb as binary PLY."""
+    n = int(len(xyz))
+    has_color = rgb is not None
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        + ("property uchar red\nproperty uchar green\nproperty uchar blue\n" if has_color else "")
+        + "end_header\n"
+    ).encode("ascii")
+    xyz_f32 = xyz.astype("<f4", copy=False)
+    if has_color:
+        dt = np.dtype([("xyz", "<f4", 3), ("rgb", "u1", 3)])
+        rec = np.empty(n, dtype=dt)
+        rec["xyz"] = xyz_f32
+        rec["rgb"] = rgb.astype(np.uint8, copy=False)
+        body = rec.tobytes()
+    else:
+        body = xyz_f32.tobytes()
+    return header + body
+
+def _stream_laz_keep(src_path: Path, ops: list, scene_is_z_up: bool,
+                     offset: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    """Walk the LAZ at native density, applying the box-op chain in display
+    frame; accumulate kept points in source frame."""
+    from scenes.lidar_io import _laz_chunk_iter  # type: ignore
+
+    kept_xyz: list[np.ndarray] = []
+    kept_rgb: list[np.ndarray] = []
+    rgb_present = True
+    for _hdr, chunk in _laz_chunk_iter(src_path, chunk_size=1_000_000):
+        xyz_src = np.column_stack([
+            np.asarray(chunk.x, dtype=np.float64),
+            np.asarray(chunk.y, dtype=np.float64),
+            np.asarray(chunk.z, dtype=np.float64),
+        ])
+        try:
+            r = np.asarray(chunk.red, dtype=np.uint32)
+            g = np.asarray(chunk.green, dtype=np.uint32)
+            b = np.asarray(chunk.blue, dtype=np.uint32)
+        except (AttributeError, ValueError):
+            rgb_present = False
+            r = g = b = None
+
+        display = _to_display_frame(xyz_src, scene_is_z_up, offset)
+        mask = _ops_chain_mask(display, ops)
+        if not mask.any():
+            continue
+        kept_xyz.append(xyz_src[mask])
+        if rgb_present and r is not None:
+            cmax = int(max(r.max(initial=0), g.max(initial=0), b.max(initial=0)))
+            if cmax > 255:
+                r8 = (r[mask] >> 8).astype(np.uint8)
+                g8 = (g[mask] >> 8).astype(np.uint8)
+                b8 = (b[mask] >> 8).astype(np.uint8)
+            else:
+                r8 = r[mask].astype(np.uint8)
+                g8 = g[mask].astype(np.uint8)
+                b8 = b[mask].astype(np.uint8)
+            kept_rgb.append(np.column_stack([r8, g8, b8]))
+
+    if not kept_xyz:
+        return np.zeros((0, 3), dtype=np.float64), None
+    xyz_out = np.concatenate(kept_xyz, axis=0)
+    rgb_out = np.concatenate(kept_rgb, axis=0) if (rgb_present and kept_rgb) else None
+    return xyz_out, rgb_out
+
+__all__ = [n for n in list(globals()) if not n.startswith("__")]

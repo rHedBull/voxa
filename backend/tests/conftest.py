@@ -95,7 +95,7 @@ def client_with_annotated_scene(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     root = build_annotated_root(tmp_path)
-    monkeypatch.setattr(main, "LIDAR_ROOT", root, raising=False)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
     return TestClient(main.app), "annotated/demo"
 
 
