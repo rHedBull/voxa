@@ -28,7 +28,10 @@ CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml
 
 FRONTEND_DIST = ROOT / "dist"
 
-MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "1000000"))
+# Viewer subsample cap. Set to the workable label resolution so scenes up to
+# this size render at full density (no viewer/label split); only larger clouds
+# get subsampled for display. Override with VOXA_MAX_POINTS.
+MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "3000000"))
 
 MAX_LABEL_POINTS = int(os.environ.get("VOXA_MAX_LABEL_POINTS", "5000000"))
 
