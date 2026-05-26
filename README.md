@@ -39,9 +39,13 @@ structured markdown blob you can paste into your AI agent (e.g. Claude Code).
 
 ```
 voxa/
-├── backend/          FastAPI (loads PLY/GLB, persists JSON annotations, computes diff)
-│   ├── main.py
-│   ├── point_cloud.py    (PLY/GLB loader from 3d-labeler)
+├── backend/          FastAPI — grouped into domain packages
+│   ├── main.py           (thin assembler: builds the app, includes routers)
+│   ├── app/              (constants, schemas, shared _state + request helpers)
+│   ├── routes/           (one APIRouter each: meta, load, compare, segment, preseg, export)
+│   ├── scenes/           (point_cloud, lidar_io, scene_registry — loaders + discovery)
+│   ├── preseg/           (RANSAC/voxel preseg, supervoxels, fitting, sam3_features)
+│   ├── labeling/         (segment session, label IO, hulls, model inference)
 │   └── requirements.txt
 ├── frontend/         Vite + React + Three.js
 │   ├── index.html
@@ -115,6 +119,15 @@ Compare-mode diff for free.
 
 Edit `config/classes.yaml`. Restart the server (or hit `/api/config`) to pick up
 changes. Color may be a hex string (`"#22c55e"`) or a `[r, g, b]` float array.
+
+## Docs
+
+- [Point-cloud sizing and caps](docs/point-cloud-sizing.md) — load / label / viewer /
+  preseg / recommendation caps, the subsample-vs-full split, and density notes.
+- [Presegmentation pipeline](docs/presegmentation.md) — the two-stage SAM3-aided
+  preseg (anaconda features → `.venv` RANSAC) that seeds `prelabel/`.
+- [Scan directory schema](docs/scan-schema.md) — what voxa reads/writes on disk per scan.
+- [Metrics for aided labeling](docs/metrics-for-aided-labeling.md) — prelabel quality scoring.
 
 ## What's gone vs the older tools
 
