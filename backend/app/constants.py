@@ -28,12 +28,15 @@ CONFIG_PATH = Path(os.environ.get("VOXA_CONFIG", ROOT / "config" / "classes.yaml
 
 FRONTEND_DIST = ROOT / "dist"
 
-# Viewer subsample cap. Set to the workable label resolution so scenes up to
-# this size render at full density (no viewer/label split); only larger clouds
-# get subsampled for display. Override with VOXA_MAX_POINTS.
-MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", "3000000"))
-
+# Max points the backend will hold for a labeling session (per-point label
+# arrays + cKDTree). Above this a scene loads view-only (no seg session).
 MAX_LABEL_POINTS = int(os.environ.get("VOXA_MAX_LABEL_POINTS", "5000000"))
+
+# Viewer subsample cap — how many points are sent to the browser to render.
+# Defaults to the label cap so what's rendered == what's labelable (no
+# viewer/label gap); only clouds above the label cap get subsampled for display.
+# Override with VOXA_MAX_POINTS if rendering that many points is too heavy.
+MAX_POINTS_DEFAULT = int(os.environ.get("VOXA_MAX_POINTS", str(MAX_LABEL_POINTS)))
 
 MIN_SEGMENT_POINTS = int(os.environ.get("VOXA_MIN_SEGMENT_POINTS", "10"))
 
