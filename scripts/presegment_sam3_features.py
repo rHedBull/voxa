@@ -29,6 +29,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 import preseg.sam3_features as sam3  # noqa: E402
+from app.constants import MAX_LABEL_POINTS  # noqa: E402
+
+
+def _ply_vertex_count(path: Path) -> int:
+    """Vertex count from a binary PLY header without loading the points."""
+    with open(path, "rb") as f:
+        for _ in range(60):
+            line = f.readline()
+            if not line or line.strip() == b"end_header":
+                break
+            if line.startswith(b"element vertex"):
+                return int(line.split()[2])
+    raise ValueError(f"no 'element vertex' in PLY header: {path}")
 
 
 def main() -> int:
@@ -46,6 +59,14 @@ def main() -> int:
     if not ply_path.exists():
         print(f"ERROR: no source/scan.ply in {scan_dir}", file=sys.stderr)
         return 2
+
+    n_header = _ply_vertex_count(ply_path)
+    if n_header > MAX_LABEL_POINTS:
+        print(f"ERROR: {ply_path} has {n_header:,} points > label cap "
+              f"{MAX_LABEL_POINTS:,}.\n       Voxa can't label a cloud this large, and "
+              f"SAM3 projection over {n_header:,} points is infeasible. Downsample "
+              f"source/scan.ply first (see docs/point-cloud-sizing.md).", file=sys.stderr)
+        return 5
 
     from scenes.point_cloud import load_ply
     print(f"[load] {ply_path}")
