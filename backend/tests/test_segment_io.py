@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from segment_io import (
+from labeling.segment_io import (
     atomic_write_json,
     atomic_write_npy,
     compute_fingerprint,
@@ -306,7 +306,7 @@ def test_load_working_arrays_returns_none_on_shape_mismatch(tmp_path):
 def test_save_labels_adds_fingerprints(tmp_path):
     """gt_segment_metadata.json must carry prelabel_fingerprint + source_fingerprint
     when supplied by the caller."""
-    from segment_io import save_labels
+    from labeling.segment_io import save_labels
     scan = tmp_path
     # minimal class registry so validators pass
     (scan / "labels").mkdir()
@@ -326,7 +326,7 @@ def test_save_labels_adds_fingerprints(tmp_path):
 
 
 def test_save_labels_omits_fingerprints_when_not_provided(tmp_path):
-    from segment_io import save_labels
+    from labeling.segment_io import save_labels
     scan = tmp_path
     (scan / "labels").mkdir()
     save_labels(

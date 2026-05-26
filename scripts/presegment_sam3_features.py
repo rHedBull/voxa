@@ -28,7 +28,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-import sam3_features as sam3  # noqa: E402
+import preseg.sam3_features as sam3  # noqa: E402
 
 
 def main() -> int:
@@ -47,7 +47,7 @@ def main() -> int:
         print(f"ERROR: no source/scan.ply in {scan_dir}", file=sys.stderr)
         return 2
 
-    from point_cloud import load_ply
+    from scenes.point_cloud import load_ply
     print(f"[load] {ply_path}")
     pc, _ = load_ply(ply_path)
     xyz = np.asarray(pc.points, dtype=np.float64)

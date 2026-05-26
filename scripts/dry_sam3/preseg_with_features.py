@@ -115,7 +115,7 @@ def main():
     print(f"      {N:,} points")
 
     print(f"[2/6] Voxel preseg @ {args.voxel}m")
-    from presegment_voxel import presegment as voxel_preseg
+    from preseg.presegment_voxel import presegment as voxel_preseg
     sv_ids, summary = voxel_preseg(xyz, log=lambda *_: None,
                                     resolution=args.voxel)
     S = int(sv_ids.max()) + 1

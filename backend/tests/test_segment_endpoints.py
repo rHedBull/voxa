@@ -234,7 +234,7 @@ def test_save_does_not_collapse_preseg_in_session_autosave(
     invariant) arrays into session/, destroying preseg structure.
     """
     import main
-    from segment_io import load_session_aux, load_working_arrays
+    from labeling.segment_io import load_session_aux, load_working_arrays
     client = client_with_loaded_annotated_scene
     seg = main._state["seg"]
     seg.class_ids[:] = -1

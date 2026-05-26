@@ -140,7 +140,7 @@ def main():
     print(f"      N={N:,}  D={feat.shape[1]}  seen={int((seen>0).sum()):,}")
 
     print("[2/4] RANSAC presegmentation (this takes a minute)")
-    from presegment_ransac import presegment as ransac_preseg
+    from preseg.presegment_ransac import presegment as ransac_preseg
     ids, summary = ransac_preseg(
         xyz, class_map=None, log=lambda *_: None, params=None,
     )

@@ -12,7 +12,7 @@ def loaded_cloud():
     """Stuff a synthetic PointCloud directly into main._state, bypassing the
     PLY/GLB loader. Yields the cluster bounds so tests can assert against them."""
     import main
-    from point_cloud import PointCloud
+    from scenes.point_cloud import PointCloud
 
     rng = np.random.default_rng(0)
     # Tight cluster of 200 points around (1, 1, 1) within ±0.05.

@@ -33,9 +33,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from lidar_io import LabelArrays, load_annotated, load_laz, load_laz_region
-from point_cloud import PointCloud, load_glb, load_ply
-from scene_registry import (
+from scenes.lidar_io import LabelArrays, load_annotated, load_laz, load_laz_region
+from scenes.point_cloud import PointCloud, load_glb, load_ply
+from scenes.scene_registry import (
     SceneSource,
     discover,
     load_lidar_root_from_env,
@@ -446,7 +446,7 @@ def _filter_tiny_segments(labels, min_points: int):
     to an instance with fewer than ``min_points`` points. Keeps the
     arrays in-place-friendly: returns a fresh LabelArrays so the caller
     can swap without mutating the loader's outputs."""
-    from lidar_io import LabelArrays
+    from scenes.lidar_io import LabelArrays
     inst = np.asarray(labels.instance_ids, dtype=np.int32)
     cls = np.asarray(labels.class_ids, dtype=np.int8)
     if inst.size == 0 or min_points <= 1:
@@ -568,8 +568,8 @@ def load_scene(req: LoadRequest):
         labels=labels,
         recenter_offset=offset,
     )
-    from segment_state import SegmentSession
-    from segment_io import (
+    from labeling.segment_state import SegmentSession
+    from labeling.segment_io import (
         compute_fingerprint,
         load_session_aux,
         load_working_arrays,
@@ -1221,8 +1221,8 @@ def _apply_ransac_result_to_session(
     ``apply_reassign`` calls so subsequent edits stay undoable and the
     linkage layer (preseg_ids/fingerprint) is populated. Caller writes
     the session into ``_state["seg"]``."""
-    from segment_state import SegmentSession
-    from segment_hulls import compute_hulls as _compute_hulls
+    from labeling.segment_state import SegmentSession
+    from labeling.segment_hulls import compute_hulls as _compute_hulls
 
     id_offset = int(existing_inst.max(initial=-1)) + 1 if keep_mask.any() else 0
     if id_offset and sub_inst.size:
@@ -1316,7 +1316,7 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
     segment session exists yet. Slow on real clouds (~10–60 s for 1 M
     points); blocks until done. Clears undo/redo.
     """
-    from presegment import presegment as _run_presegment
+    from preseg.presegment import presegment as _run_presegment
 
     seg = _state.get("seg")
     if seg is not None:
@@ -1354,7 +1354,7 @@ def segment_presegment(req: PresegmentRequest = PresegmentRequest()):
         sam3_kwargs = {}
         if (req.mode == "ransac" and req.sam3 is not None
                 and req.sam3.render_dirs):
-            import sam3_features as _sam3
+            import preseg.sam3_features as _sam3
             # SCHEMA v1.2: renders live under <scan_dir>/renders/. Accept
             # any render_dir that is either inside the active scene's
             # renders/ tree OR under the legacy VOXA_RENDERS_ROOT fallback.
@@ -1462,7 +1462,7 @@ def sam3_list_renders(scene: Optional[str] = None):
     ``VOXA_RENDERS_ROOT/<scene>/``. ``scene`` is the bare scene name; if
     omitted we use the active scene's basename.
     """
-    import sam3_features as _sam3
+    import preseg.sam3_features as _sam3
     active_scene_id = _state.get("scene") or ""
     if not scene:
         scene = active_scene_id.split("/", 1)[-1] if active_scene_id else ""
@@ -1529,8 +1529,8 @@ def _new_job_state(total: int) -> dict:
 
 def _preseg_optimize_worker(*, job, positions, existing_class, existing_inst,
                             keep_mask, redo_mask, subsample_n, n_trials, class_map):
-    from preseg_optimize import run_study
-    from presegment_ransac import presegment as _ransac
+    from preseg.preseg_optimize import run_study
+    from preseg.presegment_ransac import presegment as _ransac
     try:
         candidate_idx = np.flatnonzero(redo_mask)
         if candidate_idx.size == 0:
@@ -1696,7 +1696,7 @@ def segment_state():
     class_ids = seg.class_ids.astype(np.int8, copy=False)
     labeled = instance_ids >= 0
     box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(seg.positions), instance_ids)
-    from segment_hulls import compute_hulls as _compute_hulls
+    from labeling.segment_hulls import compute_hulls as _compute_hulls
     hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
     return SegmentStateResponse(
         has_state=True,
@@ -1789,7 +1789,7 @@ def segment_save():
     # canvas, independent of the labels/ export.
     seg.flush_autosave()
     try:
-        from segment_io import save_labels
+        from labeling.segment_io import save_labels
         save_labels(
             scan_dir,
             class_ids=out_class,
@@ -1920,7 +1920,7 @@ def _stream_laz_keep(src_path: Path, ops: list, scene_is_z_up: bool,
                      offset: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
     """Walk the LAZ at native density, applying the box-op chain in display
     frame; accumulate kept points in source frame."""
-    from lidar_io import _laz_chunk_iter  # type: ignore
+    from scenes.lidar_io import _laz_chunk_iter  # type: ignore
 
     kept_xyz: list[np.ndarray] = []
     kept_rgb: list[np.ndarray] = []
@@ -1994,7 +1994,7 @@ def edit_export_ply(req: ExportPlyRequest) -> Response:
     if src.source_format == "laz":
         kept_xyz, kept_rgb = _stream_laz_keep(src.source_path, ops, scene_is_z_up, offset)
     elif src.source_format == "ply":
-        from point_cloud import load_ply  # type: ignore
+        from scenes.point_cloud import load_ply  # type: ignore
         full_pc, _ = load_ply(src.source_path)
         source_xyz = np.asarray(full_pc.points, dtype=np.float64)
         display = _to_display_frame(source_xyz, scene_is_z_up, offset)

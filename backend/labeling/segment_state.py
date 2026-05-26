@@ -135,7 +135,7 @@ class SegmentSession:
     ) -> None:
         """Replace the immutable preseg layer. Not undoable; this is a
         session-scope event."""
-        from segment_io import compute_fingerprint
+        from labeling.segment_io import compute_fingerprint
         if preseg_ids.shape != self.instance_ids.shape:
             raise ValueError(
                 f"freeze_preseg: expected {self.instance_ids.shape}, "
@@ -283,7 +283,7 @@ class SegmentSession:
     def _do_autosave(self, write_arrays: bool) -> None:
         if self.session_dir is None:
             return
-        from segment_io import save_session_aux
+        from labeling.segment_io import save_session_aux
         with self._autosave_lock:
             save_session_aux(
                 self.session_dir,

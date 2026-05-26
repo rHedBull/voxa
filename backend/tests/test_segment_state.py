@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from segment_state import SegmentSession
+from labeling.segment_state import SegmentSession
 
 
 def _seed():
@@ -128,7 +128,7 @@ def test_brush_query_depth_cull_excludes_far_points_along_ray():
 
 def test_segment_session_has_preseg_layer():
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.full(10, -1, dtype=np.int8),
@@ -144,7 +144,7 @@ def test_segment_session_has_preseg_layer():
 
 def test_freeze_preseg_stamps_run_id_and_fingerprint():
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.full(10, -1, dtype=np.int8),
@@ -160,7 +160,7 @@ def test_freeze_preseg_stamps_run_id_and_fingerprint():
 
 def test_freeze_preseg_immutable_through_merge():
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.zeros(10, dtype=np.int8),
@@ -176,7 +176,7 @@ def test_freeze_preseg_immutable_through_merge():
 def test_current_inst_ids_for_preseg_after_merge():
     """Core bug-fix scenario: hide(preseg=0) after a merge resolves to live id 1."""
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.zeros(10, dtype=np.int8),
@@ -191,7 +191,7 @@ def test_current_inst_ids_for_preseg_after_merge():
 
 def test_hide_unhide_inst():
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((4, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.zeros(4, dtype=np.int8),
@@ -210,7 +210,7 @@ def test_hide_unhide_inst():
 def test_hide_survives_merge():
     """preseg=0 hidden → merge into preseg=1's live id → hide still resolves to the merged live id."""
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.zeros(10, dtype=np.int8),
@@ -225,7 +225,7 @@ def test_hide_survives_merge():
 
 def test_snap_to_preseg_reverts_merged_object():
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.full(10, 2, dtype=np.int8),
@@ -241,7 +241,7 @@ def test_snap_to_preseg_reverts_merged_object():
 
 def test_snap_to_preseg_undoable():
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.zeros(10, dtype=np.int8),
@@ -257,7 +257,7 @@ def test_snap_to_preseg_undoable():
 
 def test_autosave_writes_working_files_and_current_json(tmp_path):
     import numpy as np, json
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((4, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.full(4, -1, dtype=np.int8),
@@ -278,7 +278,7 @@ def test_autosave_writes_working_files_and_current_json(tmp_path):
 
 def test_autosave_includes_hidden_and_preseg_run(tmp_path):
     import numpy as np, json
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((4, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.zeros(4, dtype=np.int8),
@@ -298,7 +298,7 @@ def test_autosave_includes_hidden_and_preseg_run(tmp_path):
 
 def test_autosave_disabled_when_no_session_dir(tmp_path):
     import numpy as np
-    from segment_state import SegmentSession
+    from labeling.segment_state import SegmentSession
     pts = np.zeros((4, 3), dtype=np.float32)
     s = SegmentSession(
         class_ids=np.full(4, -1, dtype=np.int8),

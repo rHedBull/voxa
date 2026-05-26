@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 from plyfile import PlyData, PlyElement
 
-from lidar_io import load_annotated, load_laz, load_laz_region
-from scene_registry import discover
+from scenes.lidar_io import load_annotated, load_laz, load_laz_region
+from scenes.scene_registry import discover
 
 
 def _write_ply(path: Path, n: int = 8, with_color: bool = True) -> None:

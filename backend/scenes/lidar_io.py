@@ -15,8 +15,8 @@ from typing import Optional
 
 import numpy as np
 
-from point_cloud import PointCloud, load_ply
-from scene_registry import SceneSource
+from scenes.point_cloud import PointCloud, load_ply
+from scenes.scene_registry import SceneSource
 
 
 # A small palette used when classes.json carries no per-class color (it
@@ -154,7 +154,7 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path],
                 n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
                 n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
 
-    from segment_io import load_prelabel  # noqa: PLC0415
+    from labeling.segment_io import load_prelabel  # noqa: PLC0415
 
     is_from_prelabel = False
 

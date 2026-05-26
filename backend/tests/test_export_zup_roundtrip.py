@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 from main import _z_up_to_y_up, _y_up_to_z_up_xyz, _to_display_frame  # type: ignore
-from point_cloud import PointCloud  # type: ignore
+from scenes.point_cloud import PointCloud  # type: ignore
 
 
 def test_zup_to_yup_forward_mapping():
