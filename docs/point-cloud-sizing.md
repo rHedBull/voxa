@@ -11,10 +11,14 @@ env-overridable; defaults live in `backend/app/constants.py`.
 | Load (source sampling) | stride/voxel to ≥ `max(max_points, 50_000)` | — | `backend/scenes/lidar_io.py` (`load_laz`), `point_cloud.py` (`load_glb`) | RAM while reading LAZ/GLB |
 | **Label** | 5,000,000 | `VOXA_MAX_LABEL_POINTS` | `backend/routes/load.py`, `routes/preseg.py` | per-point label arrays + session memory |
 | **Viewer** | 3,000,000 | `VOXA_MAX_POINTS` | `backend/app/core.py` (`_safe_subsample`) | Three.js / GPU render + wire payload |
-| Preseg | 500,000 | `--preseg-points` | `scripts/presegment_sam3.py` | Open3D `segment_plane` stability ([presegmentation](presegmentation.md)) |
+| Preseg | full cloud (no cap) | `--preseg-points` | `scripts/presegment_sam3.py` | opt-in subsample for RAM/time ([presegmentation](presegmentation.md)) |
 | Recommendation | 200,000 | `subsample_n` (request field) | `backend/routes/preseg.py` (`/optimize`) | parameter-search speed |
 
-The chain in size order: **load (RAM) → label (5M) → viewer (3M) → preseg (500k) → recommend (200k)**.
+The chain in size order: **load (RAM) → label (5M) → viewer (3M) → recommend (200k)**.
+Preseg runs on the full cloud by default (~6 min / ~20 GB at 3M under `.venv`);
+`--preseg-points N` subsamples + NN-propagates when RAM/time is tight. The
+recommendation cap (200k) is a *search-speed* knob — Optuna runs preseg many times
+per trial — not a quality ceiling; the final preseg it tunes runs at full resolution.
 
 ## Label resolution vs. viewer resolution
 

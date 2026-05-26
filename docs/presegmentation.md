@@ -65,22 +65,26 @@ instances by k-means in SAM3 feature space so a single plane can break into
 semantically distinct sub-regions. Writes `prelabel/ransac_instance_ids.npy` (int32,
 shape `(N,)`) + `prelabel/ransac_segment_summary.json`.
 
-## The 500k cap and nearest-neighbour propagation
+## Resolution: full cloud by default
 
-Open3D plane extraction is only stable up to ~500k points (it segfaults on 3M
-clouds; the one historically-working prelabel, `munich_water_pump`, is 500k). So
-when a cloud exceeds `--preseg-points` (default 500k), stage 2:
+Stage 2 presegments the **full cloud** by default. Voxa's `.venv` Open3D build
+handles 3M points fine — measured ~6 min and ~20 GB peak RSS on a 3M cloud,
+yielding ~6000 segments (full-resolution boundaries).
 
-1. presegments a random 500k subsample (with the matching subset of features), then
-2. propagates instance ids to the full cloud via nearest-neighbour
-   (`scipy.spatial.cKDTree`).
+The SIGSEGV seen earlier was specific to the **anaconda** Open3D build (used while
+prototyping feature extraction), not a scale limit: `.venv` (same Open3D version,
+different build) runs full 3M without crashing, and stage 2 runs under `.venv`
+anyway. So there is no inherent ~500k ceiling.
 
-The prelabel is only a **seed** — refined at full resolution in Label mode — so the
-coarser propagated boundaries are acceptable. See
+For memory-constrained machines, or clouds near/over the 5M label cap (where full
+preseg would approach ~30 GB), pass `--preseg-points N`. Stage 2 then:
+
+1. presegments a random N-point subsample (with the matching subset of features), then
+2. propagates instance ids to the full cloud via nearest-neighbour (`scipy.spatial.cKDTree`).
+
+The prelabel is only a **seed** (refined at full resolution in Label mode), so the
+coarser propagated boundaries are acceptable when you take the cheaper path. See
 [point-cloud-sizing](point-cloud-sizing.md) for how this fits the other caps.
-
-> The 3M Open3D segfault is a latent bug, not a designed limit. Root-causing it (or
-> tiling plane extraction spatially) would let preseg run at full resolution.
 
 ## In-app alternative (and why we don't use it here)
 

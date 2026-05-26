@@ -13,11 +13,13 @@ runs RANSAC presegmentation with feature-aware splitting, and writes
 
 The features are loaded directly with numpy, so torch is not needed here.
 
-Scale note: the RANSAC/Open3D pipeline is only stable up to ~500k points (it
-segfaults on 3M clouds). Above ``--preseg-points`` we presegment a random
-subsample and propagate instance ids to the full cloud via nearest-neighbour.
-The prelabel is only a seed — you refine at full resolution in Label mode — so
-the propagation is adequate.
+Scale note: by default this presegments the FULL cloud — voxa's ``.venv`` Open3D
+build handles 3M points fine (~6 min, ~20 GB RAM at 3M). The crashes seen with
+the anaconda Open3D build are a broken-build artifact, not a scale limit, and
+this stage runs under ``.venv`` anyway. For memory-constrained machines or clouds
+near/over the label cap, pass ``--preseg-points N`` to presegment a random N-point
+subsample and propagate instance ids to the full cloud via nearest-neighbour (the
+prelabel is only a seed, refined at full resolution in Label mode).
 """
 from __future__ import annotations
 
@@ -37,7 +39,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from preseg.presegment import presegment  # noqa: E402
 
-DEFAULT_PRESEG_POINTS = 500_000
+# 0 = presegment the full cloud (default). Set a positive value to subsample +
+# NN-propagate (for memory-constrained machines or very large clouds).
+DEFAULT_PRESEG_POINTS = 0
 
 
 def classes_from_yaml(config_path: Path) -> dict[str, int]:
@@ -55,8 +59,9 @@ def main() -> int:
     ap.add_argument("--force", action="store_true",
                     help="overwrite existing prelabel files")
     ap.add_argument("--preseg-points", type=int, default=DEFAULT_PRESEG_POINTS,
-                    help="preseg a random subsample of this size then NN-propagate "
-                         "to the full cloud (0 = no subsample)")
+                    help="0 (default) = presegment the full cloud; a positive value "
+                         "presegs a random subsample of that size then NN-propagates "
+                         "to the full cloud (for memory-constrained / very large clouds)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--config", type=Path, default=ROOT / "config" / "classes.yaml")
     args = ap.parse_args()
