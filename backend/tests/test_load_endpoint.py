@@ -15,6 +15,10 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from plyfile import PlyData, PlyElement
+from PIL import Image
+from scenes.fingerprint import cloud_fingerprint  # noqa: E402  (backend on path via conftest)
+from scenes.frame import Frame
+from scenes.render_meta import write_render_meta
 
 
 def _write_ply(path: Path, n: int = 8) -> None:
@@ -419,3 +423,78 @@ def test_load_detects_stale_prelabel_fingerprint(client_with_annotated_scene, tm
 
     body = client.get("/api/segment/state").json()
     assert body.get("stale_prelabel") is True
+
+
+def _wall_ply(path, rgb, R):
+    # Wall at z=-5 facing a camera at the origin looking down -z. Store it
+    # PRE-rotated by R so that the gate's default orientation="Z+" (xyz @ R.T)
+    # cancels back to this wall — otherwise Z+ rotates the plane out of view
+    # and a correctly-registered scene would score coverage~0 and false-409.
+    g = np.linspace(-2, 2, 40)
+    xx, yy = np.meshgrid(g, g)
+    wall = np.stack([xx.ravel(), yy.ravel(), -5 * np.ones(xx.size)], -1).astype(np.float64)
+    stored = (wall @ R).astype(np.float32)            # stored @ R.T == wall
+    arr = np.zeros(len(stored), dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+                                       ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    arr['x'], arr['y'], arr['z'] = stored[:, 0], stored[:, 1], stored[:, 2]
+    arr['red'], arr['green'], arr['blue'] = rgb
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from plyfile import PlyData, PlyElement
+    PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(str(path))
+    return np.asarray(stored, dtype=np.float64)
+
+
+def _build_render_scene(lidar, name, *, cloud_rgb, img_rgb):
+    import json
+    from scenes.reproject import ORIENTATION_PRESETS, euler_xyz_matrix
+    R = euler_xyz_matrix(*ORIENTATION_PRESETS["Z+"])   # the gate's production default orientation
+    scan = lidar / "annotated" / name
+    pts = _wall_ply(scan / "source" / "scan.ply", cloud_rgb, R)
+    fp = cloud_fingerprint(pts)
+    scan.joinpath("meta.json").write_text(json.dumps({
+        "scan_name": name, "n_points": len(pts), "units": "meters", "schema_version": "1.3",
+        "frame": {"canonical_id": f"{name}#local", "transform_to_canonical": np.eye(4).tolist(),
+                  "units": "meters", "frame_uncertain": False},
+        "derivation": {"scan_id": name, "variant_id": "v1", "parent": "original", "op": "asis",
+                       "varies": [], "source_fingerprint": fp, "role": "labeling"},
+    }))
+    run = scan / "renders" / "run0"; run.mkdir(parents=True)
+    frames = [{"file": "f0.png", "position": [0, 0, 0], "target": [0, 0, -1]}]
+    Image.fromarray(np.full((120, 120, 3), img_rgb, np.uint8)).save(run / "f0.png")
+    (run / "manifest.json").write_text(json.dumps({"frames": frames}))
+    write_render_meta(run, run_id="run0",
+                      generated_from={"scan_id": name, "variant_id": "v1", "source_fingerprint": fp},
+                      frame=Frame(np.eye(4), f"{name}#local"),
+                      intrinsics={"fov_deg": 60, "fov_axis": "vertical", "width": 120, "height": 120})
+
+
+def _client_for(lidar, monkeypatch):
+    # Mirror the existing lidar_client fixture: patch app.constants.LIDAR_ROOT in
+    # place (read live by _resolve via `constants.LIDAR_ROOT`). Do NOT reload main
+    # — that breaks pydantic model identity and the env var wouldn't re-read anyway.
+    from fastapi.testclient import TestClient
+    import main
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
+    return TestClient(main.app)
+
+
+def test_load_blocks_on_registration_failure(tmp_path, monkeypatch):
+    import preseg.registration as reg
+    reg._VERDICT_CACHE.clear()
+    lidar = tmp_path / "lidar"
+    _build_render_scene(lidar, "bad", cloud_rgb=(200, 50, 50), img_rgb=(50, 50, 200))
+    client = _client_for(lidar, monkeypatch)
+    r = client.post("/api/load", json={"name": "annotated/bad"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "frame_registration_failed"
+
+
+def test_load_passes_and_surfaces_frame_check(tmp_path, monkeypatch):
+    import preseg.registration as reg
+    reg._VERDICT_CACHE.clear()
+    lidar = tmp_path / "lidar"
+    _build_render_scene(lidar, "good", cloud_rgb=(200, 50, 50), img_rgb=(200, 50, 50))
+    client = _client_for(lidar, monkeypatch)
+    r = client.post("/api/load", json={"name": "annotated/good"})
+    assert r.status_code == 200
+    assert r.json()["frame_check"]["ok"] is True

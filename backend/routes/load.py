@@ -194,6 +194,28 @@ def load_scene(req: LoadRequest):
         except Exception:  # noqa: BLE001 — frame metadata is best-effort surface info
             fsum = {}
 
+    # scan-schema v1.3 §6: verify the cloud registers to its renders. Block the
+    # load (409) on a real mismatch; never block a scan we cannot verify; a check
+    # bug must never break loading a good scan.
+    frame_check = None
+    from pathlib import Path as _Path
+    if _scan_dir and (_Path(_scan_dir) / "renders").is_dir():
+        from preseg.registration import verify_scan_registration
+        try:
+            _v = verify_scan_registration(_Path(_scan_dir))
+        except Exception:  # noqa: BLE001 — degrade to "unverified", never break a good load
+            _v = {"checked": False, "ok": True, "runs": [], "reasons": []}
+        if _v["checked"] and not _v["ok"]:
+            raise HTTPException(status_code=409, detail={
+                "error": "frame_registration_failed",
+                "message": ("Scan does not register to its renders (scan-schema v1.3 §6); "
+                            "the cloud and render poses appear to be in different frames."),
+                "scan": src.scene_id,
+                "frame_check": _v,
+            })
+        if _v["checked"]:
+            frame_check = _v
+
     return LoadResponse(
         scene=src.scene_id,
         num_points=len(pc),
@@ -219,6 +241,7 @@ def load_scene(req: LoadRequest):
         variant_id=fsum.get("variant_id"),
         frame_canonical_id=fsum.get("frame_canonical_id"),
         frame_uncertain=bool(fsum.get("frame_uncertain", False)),
+        frame_check=frame_check,
         georef_offset=fsum.get("georef_offset"),
         **full_payload,
     )
