@@ -140,7 +140,9 @@ def verify_scan_registration(scan_dir, *, max_frames: int = 8, orientation: str 
             (r.name, ((read_render_meta(r) or {}).get("generated_from") or {}).get("source_fingerprint"))
             for r in runs))
         st = ply_path.stat()
-        key = (str(ply_path), st.st_mtime_ns, st.st_size, run_fps)
+        key = (str(ply_path), st.st_mtime_ns, st.st_size, run_fps,
+               orientation, max_frames, min_coverage, min_photometric,
+               coverage_floor, color_tol)
         if key in _VERDICT_CACHE:
             return _VERDICT_CACHE[key]
 

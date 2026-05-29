@@ -24,8 +24,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scan_dir", type=Path)
-    ap.add_argument("--fov", type=float, default=60.0,
-                    help="(ignored unless a run lacks intrinsics) fallback FOV")
     ap.add_argument("--orientation", default="Z+", choices=list(ORIENTATION_PRESETS))
     ap.add_argument("--min-coverage", type=float, default=0.35)
     ap.add_argument("--min-photometric", type=float, default=0.5)
