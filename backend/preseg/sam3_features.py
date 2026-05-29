@@ -26,6 +26,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from scenes.fingerprint import cloud_fingerprint
+
 
 # Render discovery is per-scene-directory now: renders live under
 # `<scan_dir>/renders/<run_id>/` per lidar/SCHEMA.md v1.2. The
@@ -176,7 +178,7 @@ def _depth_buffer_mask(u, v, z, in_front, W, H,
 # Cache key
 # ---------------------------------------------------------------------------
 
-def _cache_key(render_dirs: list[Path], n_points: int, fpn_level: int,
+def _cache_key(render_dirs: list[Path], source_fingerprint: str, fpn_level: int,
                pca_dim: int, orientation: str, fov: float) -> str:
     h = hashlib.sha256()
     for rd in sorted(str(p.resolve()) for p in render_dirs):
@@ -185,7 +187,9 @@ def _cache_key(render_dirs: list[Path], n_points: int, fpn_level: int,
             h.update(str((Path(rd) / "manifest.json").stat().st_mtime).encode())
         except OSError:
             pass
-    h.update(f"n={n_points}|fpn={fpn_level}|pca={pca_dim}|"
+    # Key on cloud CONTENT (fingerprint), not point count — a recentered cloud
+    # with the same n_points must not silently reuse a stale cache (v1.3 §4.5).
+    h.update(f"fp={source_fingerprint}|fpn={fpn_level}|pca={pca_dim}|"
              f"orient={orientation}|fov={fov}".encode())
     return h.hexdigest()[:16]
 
@@ -242,7 +246,8 @@ def extract_or_load(
     if not render_dirs:
         raise ValueError("render_dirs must be non-empty")
     n = int(xyz.shape[0])
-    key = _cache_key(render_dirs, n, fpn_level, pca_dim, orientation, fov)
+    source_fp = cloud_fingerprint(xyz)
+    key = _cache_key(render_dirs, source_fp, fpn_level, pca_dim, orientation, fov)
 
     if not force:
         cached = load_cache(scene_id, key, cache_dir)
@@ -349,6 +354,7 @@ def extract_or_load(
     features = final.astype(np.float16)
     meta = {
         "cache_key": key,
+        "source_fingerprint": source_fp,
         "n_points": int(n),
         "feature_dim": int(pca_dim_used),
         "encoder_dim": int(D),
