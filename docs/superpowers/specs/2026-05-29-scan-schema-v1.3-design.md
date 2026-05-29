@@ -522,15 +522,23 @@ Plans: `docs/superpowers/plans/2026-05-29-scan-schema-v1.3-phase{1,2,3}-*.md`.
   noisy per-run (13.8–65.7%) to gate on, confirming the photometric-primary check;
   `coverage_floor=0.05` only catches "nothing projects". **Defaults validated.**
 
+**Phase 4 done (2026-05-29)**
+- **`variants.json` generator** — `scripts/scan_index.py` (built from scan meta + render
+  pins); generated for navvis + smart_ais.
+- **Multi-run backend** — `backend/labeling/runs_io.py` (runs/<id>/ + runs.json + default
+  alias) + `run_merge.py` (priority/vote/conflicts). (§4.6)
+- **`lidar/SCHEMA.md` bumped to v1.3** — frame/derivation/render-meta/variants/multi-run
+  sections + invariants + changelog.
+- **Validate gate** — `backend/tests/test_real_scans_validate.py` (every v1.3 scan must
+  pass §7; skips if no archive).
+
 **Remaining (TODO)**
-- **Phase 3b — live wiring (invasive):** make `extract_or_load` (and voxa load /
-  `scene_registry`) resolve each render run via `resolve_render_run` and actually
-  apply the `remap` transform before projecting; replace the ad-hoc `coords`/orientation
-  handling; honor `frame_uncertain` by forcing the §6 check.
-- **`variants.json` generator** (§4.2) + cross-variant fingerprint resolution (M5).
-- **Multi-run** `labels/runs/` + `prelabel/runs/` + Compare/merge (§4.6); label
-  propagation §5.4.
-- **Writers** in voxa export + the walker render export to emit v1.3 metas natively
-  (so new scans/renders are born conformant, not backfilled).
-- **Replace `lidar/SCHEMA.md`** with this doc; bump header + changelog to v1.3.
-- Backfill the other scans' frames; wire `verify_registration`/`validate_scan` into CI.
+- **Frontend Compare/merge UI** — wire the multi-run libs into voxa's Compare mode
+  (pick any two runs; show merge/conflicts). React work, separate from this backend pass.
+- **Native v1.3 writers** — voxa export + the walker render-export (separate repo) emit
+  metas natively so new scans/renders are born conformant (not backfilled).
+- **`frame_uncertain` auto-check** — have the loader actively run the §6 check (load has
+  no renders today, so it only surfaces the flag).
+- **Cross-variant artifact reuse (M5)** — resolve a pin to a *different* variant via
+  `variants.json` + label propagation §5.4 (only needed once cross-variant reuse exists).
+- Backfill remaining render-having scans; wire `verify_registration`/`validate_scan` into CI.
