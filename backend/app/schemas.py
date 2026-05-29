@@ -60,6 +60,7 @@ class LoadResponse(BaseModel):
     variant_id: Optional[str] = None
     frame_canonical_id: Optional[str] = None
     frame_uncertain: bool = False            # true ⇒ frame synthesized from legacy coords (unverified)
+    frame_check: Optional[dict] = None      # §6 verdict when the scan was verified; None otherwise
     georef_offset: Optional[list[float]] = None
     seg_ids: Optional[str] = None            # b64 Int32 — segment ids (full-res, for voxel box overlay)
     seg_centers: Optional[str] = None        # b64 Float32 (N×3) — bbox centres

@@ -3,6 +3,9 @@ project into a render set's poses? Catches frame/version mismatch before any
 expensive downstream work, independent of metadata correctness."""
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -79,3 +82,118 @@ def check_registration(score: dict, *, min_coverage: float = 0.35,
                 f"coverage {cov:.1%} < {min_coverage:.0%} "
                 f"— cloud likely not in the renders' frame (no colours to confirm)")
     return (not reasons), reasons
+
+
+_VERDICT_CACHE: dict = {}
+
+
+def _fov_y_from_intrinsics(intr: dict, W: int, H: int) -> float:
+    """Vertical FOV (deg) for registration_score, honouring intrinsics.fov_axis.
+    Horizontal FOV is converted to vertical via the render aspect; missing/vertical
+    is used as-is. Default 60.0 when intrinsics absent."""
+    intr = intr or {}
+    fov = float(intr.get("fov_deg", 60.0))
+    if intr.get("fov_axis") == "horizontal" and W and H:
+        fov_x = math.radians(fov)
+        return math.degrees(2.0 * math.atan(math.tan(fov_x / 2.0) / (W / H)))
+    return fov
+
+
+def verify_scan_registration(scan_dir, *, max_frames: int = 8, orientation: str = "Z+",
+                             min_coverage: float = 0.35, min_photometric: float = 0.5,
+                             coverage_floor: float = 0.05, color_tol: int = 40,
+                             use_cache: bool = True) -> dict:
+    """Whole-scan scan-schema v1.3 §6 health-check against the scan's render runs.
+
+    Returns {checked, ok, runs:[{run_id, ok, coverage, photometric, n_seen,
+    n_points, n_frames, reasons}], reasons}. checked=False (ok=True) when there is
+    nothing verifiable (no renders / no images / resolves to legacy as-is with no
+    images) — callers must NOT block in that case. A resolver cross-scan ValueError
+    is a hard fail (checked=True, ok=False)."""
+    from PIL import Image
+
+    from preseg.resolver import dir_cloud_transforms
+    from scenes.fingerprint import cloud_fingerprint
+    from scenes.frame import apply_transform
+    from scenes.point_cloud import load_ply
+    from scenes.render_meta import read_render_meta
+    from scenes.reproject import ORIENTATION_PRESETS, euler_xyz_matrix
+    from scenes.scan_meta import read_scan_meta
+
+    scan_dir = Path(scan_dir)
+    renders_root = scan_dir / "renders"
+    runs = (sorted(d for d in renders_root.iterdir()
+                   if d.is_dir() and (d / "manifest.json").exists())
+            if renders_root.is_dir() else [])
+    skip = {"checked": False, "ok": True, "runs": [], "reasons": []}
+    if not runs:
+        return skip
+
+    ply_path = scan_dir / "source" / "scan.ply"
+    # Cache key is computable WITHOUT reading the (large) PLY, so a repeat load of
+    # an unchanged scene returns instantly with no re-read. Keyed on the cloud
+    # file's stat + each render run's recorded pin fingerprint; a rewrite of the
+    # cloud or the renders changes the key and invalidates the entry.
+    key = None
+    if use_cache:
+        run_fps = tuple(sorted(
+            (r.name, ((read_render_meta(r) or {}).get("generated_from") or {}).get("source_fingerprint"))
+            for r in runs))
+        st = ply_path.stat()
+        key = (str(ply_path), st.st_mtime_ns, st.st_size, run_fps,
+               orientation, max_frames, min_coverage, min_photometric,
+               coverage_floor, color_tol)
+        if key in _VERDICT_CACHE:
+            return _VERDICT_CACHE[key]
+
+    pc, _ = load_ply(ply_path)
+    xyz_raw = np.asarray(pc.points, dtype=np.float64)
+    rgb = (np.asarray(pc.colors).astype(np.uint8)
+           if pc.colors is not None and len(pc.colors) else None)
+    fp = cloud_fingerprint(xyz_raw)
+
+    R = euler_xyz_matrix(*ORIENTATION_PRESETS[orientation])
+    xyz = xyz_raw @ R.T
+
+    sm = read_scan_meta(scan_dir)
+    try:
+        dir_T = dir_cloud_transforms(runs, sm["frame"], sm["derivation"]["variant_id"], fp, R)
+    except ValueError as e:
+        verdict = {"checked": True, "ok": False, "runs": [], "reasons": [str(e)]}
+        if key is not None:
+            _VERDICT_CACHE[key] = verdict
+        return verdict
+
+    results = []
+    for run in runs:
+        manifest = json.loads((run / "manifest.json").read_text())
+        frames = [f for f in manifest.get("frames", []) if (run / f["file"]).exists()]
+        if not frames:
+            continue
+        step = max(1, len(frames) // max_frames)
+        frames = frames[::step][:max_frames]
+        T = dir_T.get(run)
+        xyz_run = xyz if T is None else apply_transform(T, xyz)
+        with Image.open(run / frames[0]["file"]) as _probe:
+            W, H = _probe.size
+        intr = (read_render_meta(run) or {}).get("intrinsics") or {}
+        fov_y = _fov_y_from_intrinsics(intr, W, H)
+        loader = lambda f, _run=run: np.array(Image.open(_run / f["file"]).convert("RGB"))
+        s = registration_score(xyz_run, frames, fov_y_deg=fov_y, W=W, H=H,
+                               rgb=rgb, image_loader=loader, color_tol=color_tol)
+        ok, reasons = check_registration(s, min_coverage=min_coverage,
+                                         min_photometric=min_photometric,
+                                         coverage_floor=coverage_floor)
+        results.append({"run_id": run.name, "ok": ok, "coverage": s["coverage"],
+                        "photometric": s["photometric"], "n_seen": s["n_seen"],
+                        "n_points": s["n_points"], "n_frames": s["n_frames"],
+                        "reasons": reasons})
+
+    if not results:
+        verdict = dict(skip)
+    else:
+        verdict = {"checked": True, "ok": all(r["ok"] for r in results), "runs": results,
+                   "reasons": [f"{r['run_id']}: {x}" for r in results for x in r["reasons"]]}
+    if key is not None:
+        _VERDICT_CACHE[key] = verdict
+    return verdict
