@@ -52,6 +52,8 @@ def main() -> int:
                     help="recompute even if a feature cache already exists")
     ap.add_argument("--fpn-level", type=int, default=0)
     ap.add_argument("--pca-dim", type=int, default=64)
+    ap.add_argument("--skip-registration-check", action="store_true",
+                    help="bypass the cloud↔renders registration health-check (not recommended)")
     args = ap.parse_args()
 
     scan_dir: Path = args.scan_dir.resolve()
@@ -85,6 +87,50 @@ def main() -> int:
           f"{sum(r.n_frames for r in runs)} frames total")
     for r in runs:
         print(f"        - {r.name}: {r.n_frames} frames")
+
+    # Registration health-check (scan-schema v1.3 §6): refuse to spend SAM3 compute
+    # if the cloud doesn't actually project into the renders' poses (the navvis
+    # frame-mismatch bug). Uses the SAME "Z+" orientation extract_or_load defaults to.
+    if not args.skip_registration_check:
+        import json as _json
+
+        from PIL import Image
+        from preseg.registration import check_registration, registration_score
+        from scenes.reproject import ORIENTATION_PRESETS, euler_xyz_matrix
+
+        Rchk = euler_xyz_matrix(*ORIENTATION_PRESETS["Z+"])
+        xyz_chk = xyz @ Rchk.T
+        _c = getattr(pc, "colors", None)
+        rgb = np.asarray(_c).astype(np.uint8) if _c is not None and len(_c) else None
+
+        sample, W, H = [], None, None
+        for r in runs:
+            m = _json.loads((r.path / "manifest.json").read_text())
+            frs = [f for f in m.get("frames", []) if (r.path / f["file"]).exists()][:8]
+            for f in frs:
+                f["_run"] = str(r.path)
+                sample.append(f)
+            if W is None and frs:
+                W, H = Image.open(r.path / frs[0]["file"]).size
+
+        def _loader(f):
+            return np.array(Image.open(Path(f["_run"]) / f["file"]).convert("RGB"))
+
+        if sample and W is not None:
+            score = registration_score(xyz_chk, sample, fov_y_deg=60.0, W=W, H=H,
+                                       rgb=rgb, image_loader=_loader)
+            ok, reasons = check_registration(score)
+            ph = f"{score['photometric']:.1%}" if score["photometric"] is not None else "n/a"
+            print(f"[reg-check] coverage {score['coverage']:.1%}, photometric {ph} "
+                  f"({score['n_seen']:,}/{score['n_points']:,})")
+            if not ok:
+                print("ERROR: cloud does not register to its renders — refusing to "
+                      "compute SAM3 features:", file=sys.stderr)
+                for reason in reasons:
+                    print(f"  - {reason}", file=sys.stderr)
+                print("  (run scripts/verify_registration.py to inspect; "
+                      "re-run with --skip-registration-check to override)", file=sys.stderr)
+                return 6
 
     _features, seen, _meta = sam3.extract_or_load(
         xyz, scan_dir.name,
