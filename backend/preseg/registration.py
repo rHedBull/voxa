@@ -129,20 +129,26 @@ def verify_scan_registration(scan_dir, *, max_frames: int = 8, orientation: str 
     if not runs:
         return skip
 
-    pc, _ = load_ply(scan_dir / "source" / "scan.ply")
-    xyz_raw = np.asarray(pc.points, dtype=np.float64)
-    rgb = (np.asarray(pc.colors).astype(np.uint8)
-           if pc.colors is not None and len(pc.colors) else None)
-    fp = cloud_fingerprint(xyz_raw)
-
+    ply_path = scan_dir / "source" / "scan.ply"
+    # Cache key is computable WITHOUT reading the (large) PLY, so a repeat load of
+    # an unchanged scene returns instantly with no re-read. Keyed on the cloud
+    # file's stat + each render run's recorded pin fingerprint; a rewrite of the
+    # cloud or the renders changes the key and invalidates the entry.
     key = None
     if use_cache:
         run_fps = tuple(sorted(
             (r.name, ((read_render_meta(r) or {}).get("generated_from") or {}).get("source_fingerprint"))
             for r in runs))
-        key = (fp, run_fps)
+        st = ply_path.stat()
+        key = (str(ply_path), st.st_mtime_ns, st.st_size, run_fps)
         if key in _VERDICT_CACHE:
             return _VERDICT_CACHE[key]
+
+    pc, _ = load_ply(ply_path)
+    xyz_raw = np.asarray(pc.points, dtype=np.float64)
+    rgb = (np.asarray(pc.colors).astype(np.uint8)
+           if pc.colors is not None and len(pc.colors) else None)
+    fp = cloud_fingerprint(xyz_raw)
 
     R = euler_xyz_matrix(*ORIENTATION_PRESETS[orientation])
     xyz = xyz_raw @ R.T

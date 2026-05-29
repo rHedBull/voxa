@@ -101,3 +101,23 @@ def test_hard_fail_when_render_is_cross_scan(tmp_path):
     scan = build_scan(tmp_path, render_canonical="other#local")
     v = verify_scan_registration(scan, orientation="Y+", use_cache=False)
     assert v["checked"] is True and v["ok"] is False and v["reasons"]
+
+
+def test_cache_skips_reload_for_unchanged_content(tmp_path, monkeypatch):
+    scan = build_scan(tmp_path)
+    import preseg.registration as reg
+    import scenes.point_cloud as pcmod
+    reg._VERDICT_CACHE.clear()
+
+    calls = {"n": 0}
+    real = pcmod.load_ply
+
+    def counting_load_ply(path):
+        calls["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(pcmod, "load_ply", counting_load_ply)
+    a = verify_scan_registration(scan, orientation="Y+", use_cache=True)
+    b = verify_scan_registration(scan, orientation="Y+", use_cache=True)
+    assert a == b
+    assert calls["n"] == 1   # second call served from cache, no reload
