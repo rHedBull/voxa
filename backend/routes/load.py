@@ -198,11 +198,10 @@ def load_scene(req: LoadRequest):
     # load (409) on a real mismatch; never block a scan we cannot verify; a check
     # bug must never break loading a good scan.
     frame_check = None
-    from pathlib import Path as _Path
-    if _scan_dir and (_Path(_scan_dir) / "renders").is_dir():
+    if _scan_dir and (Path(_scan_dir) / "renders").is_dir():
         from preseg.registration import verify_scan_registration
         try:
-            _v = verify_scan_registration(_Path(_scan_dir))
+            _v = verify_scan_registration(Path(_scan_dir))
         except Exception:  # noqa: BLE001 — degrade to "unverified", never break a good load
             _v = {"checked": False, "ok": True, "runs": [], "reasons": []}
         if _v["checked"] and not _v["ok"]:
