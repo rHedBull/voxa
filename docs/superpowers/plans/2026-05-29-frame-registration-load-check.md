@@ -361,7 +361,7 @@ Replace the body of `main()` with a call to the new function. Full file:
 Exit 0 if all checkable runs pass; 2 if any fails OR nothing was verifiable;
 3 if there are no render runs at all. Run with voxa's .venv (no torch needed):
 
-    .venv/bin/python scripts/verify_registration.py <scan_dir> [--run <name>]
+    .venv/bin/python scripts/verify_registration.py <scan_dir>
 
 This is the scan-schema v1.3 §6 registration health-check.
 """
@@ -478,24 +478,31 @@ from scenes.frame import Frame
 from scenes.render_meta import write_render_meta
 
 
-def _wall_ply(path, rgb):
+def _wall_ply(path, rgb, R):
+    # Wall at z=-5 facing a camera at the origin looking down -z. Store it
+    # PRE-rotated by R so that the gate's default orientation="Z+" (xyz @ R.T)
+    # cancels back to this wall — otherwise Z+ rotates the plane out of view
+    # and a correctly-registered scene would score coverage~0 and false-409.
     g = np.linspace(-2, 2, 40)
     xx, yy = np.meshgrid(g, g)
-    pts = np.stack([xx.ravel(), yy.ravel(), -5 * np.ones(xx.size)], -1).astype(np.float32)
-    arr = np.zeros(len(pts), dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
-                                    ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
-    arr['x'], arr['y'], arr['z'] = pts[:, 0], pts[:, 1], pts[:, 2]
+    wall = np.stack([xx.ravel(), yy.ravel(), -5 * np.ones(xx.size)], -1).astype(np.float64)
+    stored = (wall @ R).astype(np.float32)            # stored @ R.T == wall
+    arr = np.zeros(len(stored), dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+                                       ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    arr['x'], arr['y'], arr['z'] = stored[:, 0], stored[:, 1], stored[:, 2]
     arr['red'], arr['green'], arr['blue'] = rgb
     path.parent.mkdir(parents=True, exist_ok=True)
     from plyfile import PlyData, PlyElement
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(str(path))
-    return np.asarray(pts, dtype=np.float64)
+    return np.asarray(stored, dtype=np.float64)
 
 
 def _build_render_scene(lidar, name, *, cloud_rgb, img_rgb):
     import json
+    from scenes.reproject import ORIENTATION_PRESETS, euler_xyz_matrix
+    R = euler_xyz_matrix(*ORIENTATION_PRESETS["Z+"])   # the gate's production default orientation
     scan = lidar / "annotated" / name
-    pts = _wall_ply(scan / "source" / "scan.ply", cloud_rgb)
+    pts = _wall_ply(scan / "source" / "scan.ply", cloud_rgb, R)
     fp = cloud_fingerprint(pts)
     scan.joinpath("meta.json").write_text(json.dumps({
         "scan_name": name, "n_points": len(pts), "units": "meters", "schema_version": "1.3",
@@ -515,10 +522,12 @@ def _build_render_scene(lidar, name, *, cloud_rgb, img_rgb):
 
 
 def _client_for(lidar, monkeypatch):
+    # Mirror the existing lidar_client fixture: patch app.constants.LIDAR_ROOT in
+    # place (read live by _resolve via `constants.LIDAR_ROOT`). Do NOT reload main
+    # — that breaks pydantic model identity and the env var wouldn't re-read anyway.
     from fastapi.testclient import TestClient
-    monkeypatch.setenv("VOXA_LIDAR_ROOT", str(lidar))
-    import importlib, main
-    importlib.reload(main)
+    import main
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     return TestClient(main.app)
 
 
@@ -544,7 +553,7 @@ def test_load_passes_and_surfaces_frame_check(tmp_path, monkeypatch):
     assert r.json()["frame_check"]["ok"] is True
 ```
 
-> Note on orientation: the gate uses the production default `orientation="Z+"`, which rotates the cloud. The wall fixture (a flat z=-5 plane) re-projects fine under Z+ because the camera frame is identity (use_direct) — coverage stays high and photometric is decided purely by pixel-vs-cloud colour. If coverage proves too low under Z+ in practice, the fixture's wall should be defined in the post-rotation frame; verify with the Step-3 run before adjusting.
+> Note on orientation: the gate runs with the production default `orientation="Z+"` (the cloud is rotated `xyz @ R.T`). The fixture stores the wall **pre-rotated by `R`** (see `_wall_ply` above), so the gate's rotation cancels back to a z=-5 wall facing the camera — coverage stays high and the PASS/FAIL outcome is decided purely by pixel-vs-cloud colour. The unit tests (Tasks 1–3) instead pin `orientation="Y+"` (identity) and store the wall un-rotated; both are internally consistent.
 
 - [ ] **Step 2: Run to verify they fail**
 
