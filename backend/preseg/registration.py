@@ -166,7 +166,8 @@ def verify_scan_registration(scan_dir, *, max_frames: int = 8, orientation: str 
         frames = frames[::step][:max_frames]
         T = dir_T.get(run)
         xyz_run = xyz if T is None else apply_transform(T, xyz)
-        W, H = Image.open(run / frames[0]["file"]).size
+        with Image.open(run / frames[0]["file"]) as _probe:
+            W, H = _probe.size
         intr = (read_render_meta(run) or {}).get("intrinsics") or {}
         fov_y = _fov_y_from_intrinsics(intr, W, H)
         loader = lambda f, _run=run: np.array(Image.open(_run / f["file"]).convert("RGB"))
@@ -181,7 +182,7 @@ def verify_scan_registration(scan_dir, *, max_frames: int = 8, orientation: str 
                         "reasons": reasons})
 
     if not results:
-        verdict = skip
+        verdict = dict(skip)
     else:
         verdict = {"checked": True, "ok": all(r["ok"] for r in results), "runs": results,
                    "reasons": [f"{r['run_id']}: {x}" for r in results for x in r["reasons"]]}
