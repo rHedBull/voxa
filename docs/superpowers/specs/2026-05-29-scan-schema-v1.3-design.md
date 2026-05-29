@@ -495,3 +495,35 @@ this with a non-identity `T_can^V`.
 - §6 thresholds `τ_cov`/`τ_photo` — calibrate against known-good scans.
 - §2.2 canonical-as-local vs storing UTM — confirm float32-local + `georef` is acceptable.
 - §5.4 `propagate_radius_m` default (1.5× spacing) — validate on a real density pair.
+
+## Implementation status (2026-05-29)
+
+Implemented on branch `worktree-scan-schema-v13` (TDD; full backend suite 204 passing).
+Plans: `docs/superpowers/plans/2026-05-29-scan-schema-v1.3-phase{1,2,3}-*.md`.
+
+**Done**
+- **Phase 1 (protection):** `cloud_fingerprint` (§3.2); content-based SAM3 cache key
+  (§4.5); canonical `reproject`; `registration` health-check (§6); `verify_registration`
+  CLI; pre-SAM3 gate. Catches the bug class empirically.
+- **Phase 2 (metadata + resolver):** `Frame` + compose/apply/is_rigid (§3.1);
+  `render_meta` (§4.3) + `scan_meta` reader with v1.2 `coords` back-compat (§4.1);
+  `resolve_render_run` (§5, direct/remap/fail); `validate_scan` linter (§7).
+- **Phase 3a (recover + record real frames):** `backfill_scan_frame.py` (ICP recover
+  → write `frame`/`derivation` + render-run metas → prove). Applied to
+  `navvis_vlx3_water_treatment`: pure translation, ICP fitness 1.000; registration
+  FAIL→PASS (coverage 15%→51.9%, photometric 43.7%→92.0%). `validate_scan` → OK.
+
+**Remaining (TODO)**
+- **Phase 3b — live wiring (invasive):** make `extract_or_load` (and voxa load /
+  `scene_registry`) resolve each render run via `resolve_render_run` and actually
+  apply the `remap` transform before projecting; replace the ad-hoc `coords`/orientation
+  handling; honor `frame_uncertain` by forcing the §6 check.
+- **Calibrate `τ_cov`/`τ_photo`** against a now-good scene (e.g. backfill
+  `smart_ais_clean`, which also fails today → confirms the mismatch is systemic).
+- **`variants.json` generator** (§4.2) + cross-variant fingerprint resolution (M5).
+- **Multi-run** `labels/runs/` + `prelabel/runs/` + Compare/merge (§4.6); label
+  propagation §5.4.
+- **Writers** in voxa export + the walker render export to emit v1.3 metas natively
+  (so new scans/renders are born conformant, not backfilled).
+- **Replace `lidar/SCHEMA.md`** with this doc; bump header + changelog to v1.3.
+- Backfill the other scans' frames; wire `verify_registration`/`validate_scan` into CI.

@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: ✅ IMPLEMENTED (2026-05-29)** — all 6 tasks committed on `worktree-scan-schema-v13`; 17 new tests, full backend suite 204 passing; `verify_registration` fails navvis (exit 2), gate blocks SAM3 (exit 6).
+
 **Goal:** Ship the smallest slice of scan-schema v1.3 that *prevents the navvis frame-mismatch bug class* on existing data, with no schema migration: a deterministic cloud fingerprint, a content-based SAM3 cache key, and a registration health-check that fails loud when a cloud and a render set don't share a frame.
 
 **Architecture:** Three small, self-contained, pure-numpy modules under `backend/` plus one CLI, all unit-testable with synthetic data. Nothing here changes on-disk schema or requires torch; it operates on the *existing* layout and is independently shippable. Later phases (scan/render `meta.json` blocks, `variants.json`, multi-run, writers) build on these primitives.

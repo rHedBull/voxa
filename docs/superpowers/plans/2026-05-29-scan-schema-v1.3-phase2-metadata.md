@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: ✅ IMPLEMENTED (2026-05-29)** — all 5 tasks committed on `worktree-scan-schema-v13`; 17 new tests, full backend suite 204 passing.
+
 **Goal:** Record frame identity and derivation provenance as data, and resolve a cloud↔render pairing deterministically (use-direct / remap-by-transform / fail) — so a frame mismatch is *known and corrected or refused*, not just empirically detected.
 
 **Architecture:** Five small, pure modules + one linter CLI under the existing layout. Tested standalone with synthetic metas and tmp fixture scan dirs. Builds on Phase 1 (the resolver hands off to `registration` for the empirical confirmation). No rewiring of `scene_registry`/voxa-load yet — that integration is Phase 3.
