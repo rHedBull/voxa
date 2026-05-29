@@ -46,3 +46,36 @@ def resolve_render_run(cloud_frame: Frame, cloud_variant_id: str,
         return Resolution("use_direct", transform=np.eye(4))
     T = compose_a_to_v(run_frame, cloud_frame)
     return Resolution("remap", transform=T)
+
+
+def dir_cloud_transforms(render_dirs, cloud_frame: Frame, cloud_variant_id: str,
+                         cloud_fingerprint: str, orientation_R3: np.ndarray) -> dict:
+    """Per render dir, the 4x4 transform to apply to the ORIENTED cloud
+    (``xyz @ orientation_R3.T``) so it lands in that run's pose frame.
+
+    Returns ``{render_dir: 4x4 | None}``; ``None`` means no render meta.json
+    (legacy run — project the oriented cloud as-is, prior behaviour). Raises
+    ``ValueError`` if any run resolves to ``fail`` (cross-scan / unpinned).
+
+    The transform conjugates the canonical-frame bridge back into the oriented
+    frame: ``R4 @ inv(M_run) @ M_cloud @ inv(R4)`` where ``M_*`` are the frames'
+    ``transform_to_canonical`` (so a same-variant run yields identity, and the
+    navvis pure-translation case yields the verified Y-up translation).
+    """
+    from scenes.render_meta import read_render_meta
+
+    R4 = np.eye(4)
+    R4[:3, :3] = orientation_R3
+    R4inv = np.linalg.inv(R4)
+    out: dict = {}
+    for rd in render_dirs:
+        rm = read_render_meta(rd)
+        if rm is None:
+            out[rd] = None
+            continue
+        res = resolve_render_run(cloud_frame, cloud_variant_id, cloud_fingerprint, rm)
+        if res.action == "fail":
+            raise ValueError(f"{getattr(rd, 'name', rd)}: " + "; ".join(res.reasons))
+        core = np.linalg.inv(rm["frame"].transform_to_canonical) @ cloud_frame.transform_to_canonical
+        out[rd] = R4 @ core @ R4inv
+    return out

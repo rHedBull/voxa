@@ -242,12 +242,36 @@ def extract_or_load(
     device: str = "cuda",
     force: bool = False,
     log: Callable[[str], None] = print,
+    cloud_frame=None,
+    cloud_variant_id: Optional[str] = None,
+    cloud_fingerprint_str: Optional[str] = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     if not render_dirs:
         raise ValueError("render_dirs must be non-empty")
     n = int(xyz.shape[0])
     source_fp = cloud_fingerprint(xyz)
     key = _cache_key(render_dirs, source_fp, fpn_level, pca_dim, orientation, fov)
+
+    rx, ry, rz = ORIENTATION_PRESETS[orientation]
+    R = _euler_xyz_matrix(rx, ry, rz)
+
+    # scan-schema v1.3 §5/§3b: if the caller passes the cloud's frame, resolve each
+    # render run and remap the cloud into that run's pose frame before projecting.
+    # Raises on a cross-scan/unpinned run (fail-closed). Folds the applied transforms
+    # into the cache key so enabling remap invalidates a stale (no-remap) cache.
+    dir_T: dict = {}
+    if cloud_frame is not None:
+        from preseg.resolver import dir_cloud_transforms
+        dir_T = dir_cloud_transforms(render_dirs, cloud_frame,
+                                     cloud_variant_id or scene_id,
+                                     cloud_fingerprint_str or source_fp, R)
+        applied = {rd: T for rd, T in dir_T.items() if T is not None}
+        if applied:
+            h = hashlib.sha256(key.encode())
+            for rd in sorted(applied, key=lambda p: str(p)):
+                h.update(np.asarray(applied[rd], dtype=np.float64).tobytes())
+            key = h.hexdigest()[:16]
+            log(f"  frame-aware: remapping {len(applied)}/{len(render_dirs)} render run(s)")
 
     if not force:
         cached = load_cache(scene_id, key, cache_dir)
@@ -257,9 +281,19 @@ def extract_or_load(
             return features, seen, meta
     log(f"SAM3 features: cache MISS (key={key}) — computing")
 
-    rx, ry, rz = ORIENTATION_PRESETS[orientation]
-    R = _euler_xyz_matrix(rx, ry, rz)
     pts_rot = xyz.astype(np.float64) @ R.T
+
+    # Per-render-dir cloud, remapped into each run's pose frame (lazy + cached).
+    _pts_by_dir: dict = {}
+
+    def _pts_for(rd):
+        T = dir_T.get(rd)
+        if T is None:
+            return pts_rot
+        if rd not in _pts_by_dir:
+            homo = np.concatenate([pts_rot, np.ones((pts_rot.shape[0], 1))], axis=1)
+            _pts_by_dir[rd] = (T @ homo.T).T[:, :3]
+        return _pts_by_dir[rd]
 
     import torch
     import torch.nn.functional as F
@@ -298,7 +332,7 @@ def extract_or_load(
             yaw = float(frame.get("yaw", 0.0))
             tgt = pos + np.array([np.cos(yaw), 0.0, np.sin(yaw)])
         view = _look_at_view(pos, tgt)
-        u, v, z, in_front = _project_points(pts_rot, view, fov, W, H)
+        u, v, z, in_front = _project_points(_pts_for(rd), view, fov, W, H)
         vis_idx, vis_u, vis_v = _depth_buffer_mask(u, v, z, in_front, W, H)
         if vis_idx.size == 0:
             continue

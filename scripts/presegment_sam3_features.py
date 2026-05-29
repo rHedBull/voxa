@@ -88,6 +88,15 @@ def main() -> int:
     for r in runs:
         print(f"        - {r.name}: {r.n_frames} frames")
 
+    # v1.3 frame/provenance for resolve+remap (read_scan_meta synthesizes a
+    # frame_uncertain frame for legacy scans, so this is always safe).
+    from scenes.fingerprint import cloud_fingerprint
+    from scenes.scan_meta import read_scan_meta
+    _sm = read_scan_meta(scan_dir)
+    cloud_frame = _sm["frame"]
+    cloud_variant = _sm["derivation"]["variant_id"]
+    cloud_fp = cloud_fingerprint(xyz)
+
     # Registration health-check (scan-schema v1.3 §6): refuse to spend SAM3 compute
     # if the cloud doesn't actually project into the renders' poses (the navvis
     # frame-mismatch bug). Uses the SAME "Z+" orientation extract_or_load defaults to.
@@ -102,6 +111,22 @@ def main() -> int:
         xyz_chk = xyz @ Rchk.T
         _c = getattr(pc, "colors", None)
         rgb = np.asarray(_c).astype(np.uint8) if _c is not None and len(_c) else None
+
+        # Apply the recorded per-run remap (v1.3 §5) before checking coverage, so a
+        # correctly-pinned-but-differently-framed cloud (navvis) is verified post-remap.
+        from preseg.resolver import dir_cloud_transforms
+        try:
+            dir_T = dir_cloud_transforms(render_dirs, cloud_frame, cloud_variant, cloud_fp, Rchk)
+        except ValueError as e:
+            print(f"ERROR: a render run is not usable with this cloud: {e}", file=sys.stderr)
+            return 6
+        _uniq = {tuple(np.round(T, 6).ravel()) for T in dir_T.values() if T is not None}
+        if len(_uniq) == 1:
+            Tstar = next(T for T in dir_T.values() if T is not None)
+            xyz_chk = (Tstar @ np.concatenate([xyz_chk, np.ones((len(xyz_chk), 1))], 1).T).T[:, :3]
+            print("[reg-check] applied recorded remap before checking")
+        elif len(_uniq) > 1:
+            print("[reg-check] mixed per-run transforms — checking without remap (approx)")
 
         sample, W, H = [], None, None
         for r in runs:
@@ -136,6 +161,9 @@ def main() -> int:
         xyz, scan_dir.name,
         render_dirs=render_dirs,
         cache_dir=scan_dir / "sam3",
+        cloud_frame=cloud_frame,
+        cloud_variant_id=cloud_variant,
+        cloud_fingerprint_str=cloud_fp,
         fpn_level=int(args.fpn_level),
         pca_dim=int(args.pca_dim),
         force=bool(args.force),

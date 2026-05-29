@@ -45,3 +45,19 @@ def test_check_fails_below_threshold():
 def test_check_passes_when_good():
     ok, reasons = check_registration({"coverage": 0.8, "photometric": 0.9})
     assert ok and not reasons
+
+
+def test_check_passes_high_photometric_low_coverage():
+    # the navvis gate case: sparse sample -> modest coverage, but colours confirm
+    ok, reasons = check_registration({"coverage": 0.30, "photometric": 0.93})
+    assert ok and not reasons
+
+
+def test_check_fails_low_photometric_even_with_some_coverage():
+    ok, reasons = check_registration({"coverage": 0.30, "photometric": 0.40})
+    assert not ok and reasons
+
+
+def test_check_no_colours_uses_coverage_threshold():
+    assert not check_registration({"coverage": 0.20, "photometric": None})[0]
+    assert check_registration({"coverage": 0.50, "photometric": None})[0]

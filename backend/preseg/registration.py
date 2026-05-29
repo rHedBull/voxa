@@ -50,16 +50,32 @@ def registration_score(xyz, frames, *, fov_y_deg, W, H,
 
 
 def check_registration(score: dict, *, min_coverage: float = 0.35,
-                       min_photometric: float = 0.5) -> tuple[bool, list[str]]:
-    """Decide pass/fail from a score dict. Returns (ok, reasons)."""
+                       min_photometric: float = 0.5,
+                       coverage_floor: float = 0.05) -> tuple[bool, list[str]]:
+    """Decide pass/fail from a score dict. Returns (ok, reasons).
+
+    When colours are available, **photometric agreement is the primary signal**
+    (it cleanly separates right ~90% from wrong ~40%); coverage is only a low
+    floor to catch "nothing projected at all". A correctly-registered but sparsely
+    / partially-viewed cloud legitimately has modest coverage, so we do NOT fail it
+    on the coverage threshold when photometric confirms. Only when there are no
+    colours to compare does coverage become the (stricter) primary test.
+    """
     reasons: list[str] = []
-    if score["coverage"] < min_coverage:
-        reasons.append(
-            f"coverage {score['coverage']:.1%} < {min_coverage:.0%} "
-            f"— cloud likely not in the renders' frame")
+    cov = score["coverage"]
     p = score.get("photometric")
-    if p is not None and p < min_photometric:
-        reasons.append(
-            f"photometric agreement {p:.1%} < {min_photometric:.0%} "
-            f"— projected colours don't match the renders")
+    if p is not None:
+        if p < min_photometric:
+            reasons.append(
+                f"photometric agreement {p:.1%} < {min_photometric:.0%} "
+                f"— projected colours don't match the renders")
+        if cov < coverage_floor:
+            reasons.append(
+                f"coverage {cov:.1%} < {coverage_floor:.0%} "
+                f"— effectively nothing projects into the renders' frame")
+    else:  # no colours — coverage is all we have, apply the stricter threshold
+        if cov < min_coverage:
+            reasons.append(
+                f"coverage {cov:.1%} < {min_coverage:.0%} "
+                f"— cloud likely not in the renders' frame (no colours to confirm)")
     return (not reasons), reasons

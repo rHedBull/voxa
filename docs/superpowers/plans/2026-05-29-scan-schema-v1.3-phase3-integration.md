@@ -24,11 +24,22 @@ which also fails the check today) to confirm the mismatch is systemic and to cal
 
 ---
 
-## Phase 3b — wire resolver/remap into the live pipeline (TODO, invasive)
+## Phase 3b — wire resolver/remap into the live pipeline
 
 This modifies live consumer code, so do it TDD with the full suite as the guard.
 
-### 3b.1 SAM3 stage consumes renders via the resolver
+### 3b.1 SAM3 stage consumes renders via the resolver ✅ DONE (2026-05-29)
+`resolver.dir_cloud_transforms` (per-dir remap, raises on cross-scan fail; 4 tests);
+`extract_or_load` gained optional `cloud_frame`/`cloud_variant_id`/`cloud_fingerprint_str`
++ per-dir remap of the oriented cloud + the remap folded into the cache key (back-compat:
+unchanged when not passed). `presegment_sam3_features.py` reads `scan_meta` and passes the
+frame; its gate applies the recorded remap before the coverage/photometric check.
+`check_registration` refined: **photometric is primary**, coverage is a low floor (the
+8-frame-sample coverage was tripping the old 0.35 threshold despite 92.9% photometric).
+Verified on navvis (no-torch, to the GPU boundary): gate PASS post-remap, "remapping 3/3",
+cache key changes. Full suite 211 passing.
+
+### 3b.1-original SAM3 stage consumes renders via the resolver
 - **`backend/preseg/sam3_features.py::extract_or_load`**: it currently rotates one
   cloud by `orientation` and projects against all render poses. Change it to, per
   render run: read `renders/<run>/meta.json`, `resolve_render_run(cloud_frame,
