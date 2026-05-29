@@ -55,6 +55,12 @@ class LoadResponse(BaseModel):
     is_from_prelabel: bool = False
     segment_summary: Optional[dict] = None   # { "<inst>": {class_id, n_points} }
     subsample_idx: Optional[str] = None      # b64 Int32, len==num_subsampled, maps sub row → full idx
+    # scan-schema v1.3 frame/provenance (annotated tier; None for legacy/laz tiers)
+    schema_version: Optional[str] = None
+    variant_id: Optional[str] = None
+    frame_canonical_id: Optional[str] = None
+    frame_uncertain: bool = False            # true ⇒ frame synthesized from legacy coords (unverified)
+    georef_offset: Optional[list[float]] = None
     seg_ids: Optional[str] = None            # b64 Int32 — segment ids (full-res, for voxel box overlay)
     seg_centers: Optional[str] = None        # b64 Float32 (N×3) — bbox centres
     seg_sizes: Optional[str] = None          # b64 Float32 (N×3) — bbox extents

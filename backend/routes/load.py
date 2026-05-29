@@ -183,6 +183,17 @@ def load_scene(req: LoadRequest):
 
     subsample_idx_b64 = _b64(idx.astype(np.int32)) if idx is not None else None
 
+    # scan-schema v1.3: surface the cloud's frame/provenance (additive; {} for
+    # non-annotated tiers). Never let it break a load.
+    fsum: dict = {}
+    _scan_dir = src.extras.get("scan_dir")
+    if _scan_dir:
+        try:
+            from scenes.scan_meta import frame_summary
+            fsum = frame_summary(_scan_dir)
+        except Exception:  # noqa: BLE001 — frame metadata is best-effort surface info
+            fsum = {}
+
     return LoadResponse(
         scene=src.scene_id,
         num_points=len(pc),
@@ -204,6 +215,11 @@ def load_scene(req: LoadRequest):
         mesh_is_z_up=is_z_up if src.has_mesh else False,
         scene_is_z_up=is_z_up,
         subsample_idx=subsample_idx_b64,
+        schema_version=fsum.get("schema_version"),
+        variant_id=fsum.get("variant_id"),
+        frame_canonical_id=fsum.get("frame_canonical_id"),
+        frame_uncertain=bool(fsum.get("frame_uncertain", False)),
+        georef_offset=fsum.get("georef_offset"),
         **full_payload,
     )
 

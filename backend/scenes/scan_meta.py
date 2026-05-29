@@ -41,3 +41,19 @@ def read_scan_meta(scan_dir: Path) -> dict:
             "source_fingerprint": None, "role": None,
         }
     return meta
+
+
+def frame_summary(scan_dir: Path) -> dict:
+    """Compact frame/provenance summary for the API/UI. Returns ``{}`` when the
+    scan has no meta.json (non-annotated tiers); never raises for that case."""
+    if not (Path(scan_dir) / "meta.json").exists():
+        return {}
+    meta = read_scan_meta(scan_dir)
+    f = meta["frame"]
+    return {
+        "schema_version": meta.get("schema_version"),
+        "variant_id": meta["derivation"].get("variant_id"),
+        "frame_canonical_id": f.canonical_id,
+        "frame_uncertain": bool(f.frame_uncertain),
+        "georef_offset": (f.georef or {}).get("offset_m"),
+    }

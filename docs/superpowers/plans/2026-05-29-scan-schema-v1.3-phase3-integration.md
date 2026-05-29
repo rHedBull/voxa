@@ -51,7 +51,15 @@ cache key changes. Full suite 211 passing.
   encodes a known offset → assert projected coverage matches the remapped expectation;
   a `fail` case raises.
 
-### 3b.2 voxa load / scene_registry frame-aware
+### 3b.2 voxa load surfaces the frame ✅ DONE (2026-05-29)
+`scan_meta.frame_summary(scan_dir)` (schema_version / variant_id / frame_canonical_id /
+frame_uncertain / georef_offset; `{}` for non-annotated tiers). `LoadResponse` gained
+those optional fields; `/api/load` populates them (additive, try/except — never breaks a
+load). Verified: navvis → schema 1.3 + frame + georef; legacy munich → `frame_uncertain:
+true`. Full suite 214. (Remaining 3b.2 nicety: have the loader/UI actively *run* the §6
+check when `frame_uncertain` — currently it only surfaces the flag.)
+
+### 3b.2-original voxa load / scene_registry frame-aware
 - **`backend/scenes/scene_registry.py`** (and `routes/load.py`): replace the ad-hoc
   `coords`/`source_laz`→Z-up decision with `read_scan_meta` → `Frame`; surface the
   frame (and `frame_uncertain`) so Inspect/Compare know the cloud's frame.
