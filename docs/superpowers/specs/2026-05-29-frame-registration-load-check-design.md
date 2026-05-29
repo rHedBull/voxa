@@ -131,12 +131,17 @@ Module-level dict in `registration.py`:
 _VERDICT_CACHE: dict[tuple, dict] = {}
 ```
 
-Key = `(source_fingerprint, tuple(sorted(run_id -> generated_from.source_fingerprint)))`
-read from each render run's `meta.json`. On a hit, return the cached verdict without
-re-reading the PLY or projecting. The key is **content-derived**, so any change to the
-cloud or the render pins invalidates it automatically. Cache lives for the process
-lifetime (single-user tool; acceptable). A `verify_scan_registration(..., use_cache=True)`
-flag (default `True` for the load path, `False` for the CLI so it always recomputes).
+Key = `(str(scan.ply path), scan.ply st_mtime_ns, scan.ply st_size,
+tuple(sorted(run_id -> generated_from.source_fingerprint)))`. The render pins are read
+from each run's `meta.json` (small JSON); the cloud component is a `stat()` of
+`source/scan.ply`. Crucially the key is **computable without reading the PLY**, so the
+cache lookup happens *before* `load_ply` — a repeat load of an unchanged scene returns
+the cached verdict with **zero PLY re-read** (the original perf goal). A rewrite of the
+cloud (mtime/size change) or of a render pin invalidates the entry. (We deliberately do
+*not* key on the cloud's content fingerprint: that would force the ~45 MB read on every
+load just to build the key, defeating the point.) Cache lives for the process lifetime
+(single-user tool; acceptable). `use_cache` defaults `True` for the load path, `False`
+for the CLI so it always recomputes.
 
 ## 4. Load path integration
 
