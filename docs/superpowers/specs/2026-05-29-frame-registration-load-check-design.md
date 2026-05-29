@@ -94,17 +94,34 @@ the CLI verify the same thing:
 - `checked = (at least one run was scored)`. `ok = checked implies all scored runs ok`
   (vacuously `True` when `checked=false`).
 
-`fov` comes from the render run's `meta.json` `intrinsics.fov_deg` when present,
-else default 60.0 (matches the CLI default and the renderer).
+**FOV sourcing (meta-driven, intentional divergence from the old CLI).** The old
+`verify_registration.py` used a flat `--fov 60.0` for every run. The new function
+instead reads each run's `meta.json` `intrinsics` (authoritative per parent §4.3):
+`fov_deg` with a `60.0` fallback when absent. `registration_score` takes `fov_y_deg`
+(vertical), so when `intrinsics.fov_axis == "horizontal"` the value is converted to
+vertical using the render's aspect (`fov_y = 2*atan(tan(fov_x/2) / (W/H))`); when
+`fov_axis` is `"vertical"` or absent, `fov_deg` is used directly. Reading `fov_deg`
+blindly without honouring `fov_axis` is a bug (it would mis-project a horizontal-FOV
+run and could raise a false 409), so `fov_axis` MUST be honoured. The known navvis run
+is vertical/60, so the default path is unchanged for it.
 
 ### 3.2 CLI refactor
 
 `scripts/verify_registration.py` is rewritten as a thin wrapper: parse args, call
-`verify_scan_registration`, print the per-run table it already prints, and
-`return 0 if result["ok"] and result["checked"] else 2` (a scan with nothing to
-verify is reported and exits non-zero in the CLI, preserving today's "no runs" → exit 3
-semantics via an explicit empty-runs check). The duplicated projection/remap loop is
-deleted.
+`verify_scan_registration(..., use_cache=False)`, print the per-run table it already
+prints, and map the verdict to an exit code. The duplicated projection/remap loop is
+deleted. Exit codes (preserving today's semantics):
+
+| Case | `verify_scan_registration` result | Exit |
+|------|-----------------------------------|------|
+| No render runs at all under `renders/` | (CLI detects empty-runs before calling) | `3` |
+| At least one run scored, all pass | `checked=true, ok=true` | `0` |
+| At least one run scored, any fail | `checked=true, ok=false` | `2` |
+| Runs exist but none verifiable (no images) | `checked=false` | `2` (CLI treats "couldn't verify" as non-success; differs from the load gate, which does **not** block in this case) |
+
+The `checked=false` divergence is intentional: the CLI is a human-run verification tool
+(silence-is-success would be misleading), whereas the load gate must not block a scan it
+cannot verify.
 
 ### 3.3 In-process verdict cache
 
