@@ -22,9 +22,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from preseg.registration import check_registration, registration_score  # noqa: E402
+from preseg.resolver import dir_cloud_transforms  # noqa: E402
 from scenes.fingerprint import cloud_fingerprint  # noqa: E402
+from scenes.frame import apply_transform  # noqa: E402
 from scenes.point_cloud import load_ply  # noqa: E402
 from scenes.reproject import ORIENTATION_PRESETS, euler_xyz_matrix  # noqa: E402
+from scenes.scan_meta import read_scan_meta  # noqa: E402
 
 
 def main() -> int:
@@ -36,6 +39,8 @@ def main() -> int:
     ap.add_argument("--orientation", default="Z+", choices=list(ORIENTATION_PRESETS))
     ap.add_argument("--min-coverage", type=float, default=0.35)
     ap.add_argument("--min-photometric", type=float, default=0.5)
+    ap.add_argument("--no-remap", action="store_true",
+                    help="check the raw cloud as-is, ignoring the recorded v1.3 frame remap")
     args = ap.parse_args()
 
     pc, _ = load_ply(args.scan_dir / "source" / "scan.ply")   # load_ply takes NO orientation
@@ -57,6 +62,19 @@ def main() -> int:
         print(f"ERROR: no render runs under {renders_root}", file=sys.stderr)
         return 3
 
+    # Apply the recorded v1.3 frame remap per run (unless --no-remap), so this
+    # checks what the pipeline actually projects. Falls back to as-is for runs
+    # without a render meta.json; raises -> reported -> exit if a run is cross-scan.
+    dir_T = {}
+    if not args.no_remap:
+        sm = read_scan_meta(args.scan_dir)
+        try:
+            dir_T = dir_cloud_transforms(runs, sm["frame"], sm["derivation"]["variant_id"],
+                                         cloud_fingerprint(xyz_raw), R)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
     from PIL import Image
     ok_all = True
     for run in runs:
@@ -65,9 +83,11 @@ def main() -> int:
         if not frames:
             print(f"  [skip] {run.name}: no frame images on disk")
             continue
+        T = dir_T.get(run)
+        xyz_run = xyz if T is None else apply_transform(T, xyz)
         loader = lambda f, _run=run: np.array(Image.open(_run / f["file"]).convert("RGB"))
         W, H = Image.open(run / frames[0]["file"]).size
-        s = registration_score(xyz, frames, fov_y_deg=args.fov, W=W, H=H,
+        s = registration_score(xyz_run, frames, fov_y_deg=args.fov, W=W, H=H,
                                rgb=rgb, image_loader=loader)
         ok, reasons = check_registration(s, min_coverage=args.min_coverage,
                                          min_photometric=args.min_photometric)

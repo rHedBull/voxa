@@ -510,16 +510,23 @@ Plans: `docs/superpowers/plans/2026-05-29-scan-schema-v1.3-phase{1,2,3}-*.md`.
   `resolve_render_run` (§5, direct/remap/fail); `validate_scan` linter (§7).
 - **Phase 3a (recover + record real frames):** `backfill_scan_frame.py` (ICP recover
   → write `frame`/`derivation` + render-run metas → prove). Applied to
-  `navvis_vlx3_water_treatment`: pure translation, ICP fitness 1.000; registration
-  FAIL→PASS (coverage 15%→51.9%, photometric 43.7%→92.0%). `validate_scan` → OK.
+  `navvis_vlx3_water_treatment` (pure translation, ICP fitness 1.000; FAIL→PASS,
+  photometric 43.7%→92.0%) and `smart_ais_clean` (ICP fitness 1.000; FAIL→PASS,
+  photometric ~40%→85%). Both `validate_scan` → OK. The mismatch was **systemic**.
+- **Phase 3b (live wiring):** `extract_or_load` resolves+remaps render runs per-dir
+  (3b.1); `/api/load` surfaces the frame (3b.2); `verify_registration` applies the
+  recorded remap (`--no-remap` to override).
+- **Threshold calibration:** across both backfilled scans, photometric agreement is
+  **84.6–93.8% when correctly registered** vs **~36–44% when mismatched** — so the
+  default `min_photometric=0.5` separates cleanly with wide margin. Coverage is too
+  noisy per-run (13.8–65.7%) to gate on, confirming the photometric-primary check;
+  `coverage_floor=0.05` only catches "nothing projects". **Defaults validated.**
 
 **Remaining (TODO)**
 - **Phase 3b — live wiring (invasive):** make `extract_or_load` (and voxa load /
   `scene_registry`) resolve each render run via `resolve_render_run` and actually
   apply the `remap` transform before projecting; replace the ad-hoc `coords`/orientation
   handling; honor `frame_uncertain` by forcing the §6 check.
-- **Calibrate `τ_cov`/`τ_photo`** against a now-good scene (e.g. backfill
-  `smart_ais_clean`, which also fails today → confirms the mismatch is systemic).
 - **`variants.json` generator** (§4.2) + cross-variant fingerprint resolution (M5).
 - **Multi-run** `labels/runs/` + `prelabel/runs/` + Compare/merge (§4.6); label
   propagation §5.4.
