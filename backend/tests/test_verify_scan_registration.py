@@ -81,3 +81,23 @@ def test_fail_when_photometric_mismatch(tmp_path):
     scan = build_scan(tmp_path, cloud_rgb=(200, 50, 50), img_rgb=(50, 50, 200))
     v = verify_scan_registration(scan, orientation="Y+", use_cache=False)
     assert v["checked"] is True and v["ok"] is False and v["reasons"]
+
+
+def test_skip_when_no_renders(tmp_path):
+    scan = build_scan(tmp_path)
+    import shutil
+    shutil.rmtree(scan / "renders")
+    v = verify_scan_registration(scan, orientation="Y+", use_cache=False)
+    assert v["checked"] is False and v["ok"] is True
+
+
+def test_skip_when_no_images_on_disk(tmp_path):
+    scan = build_scan(tmp_path, write_images=False)
+    v = verify_scan_registration(scan, orientation="Y+", use_cache=False)
+    assert v["checked"] is False and v["ok"] is True   # cannot verify => must not block
+
+
+def test_hard_fail_when_render_is_cross_scan(tmp_path):
+    scan = build_scan(tmp_path, render_canonical="other#local")
+    v = verify_scan_registration(scan, orientation="Y+", use_cache=False)
+    assert v["checked"] is True and v["ok"] is False and v["reasons"]
