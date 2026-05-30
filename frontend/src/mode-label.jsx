@@ -17,6 +17,43 @@ function formatPointCount(n) {
   return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
 }
 
+const LABEL_SEL_BOX_ID = '__label_sel_box__';
+const LABEL_SEL_BOX_COLOR = '#ffd24a';
+
+// Mirrors mode-edit.jsx::pointsInsideOBB — kept local to avoid refactoring
+// that file while voxa is live. Returns Uint32Array of subRow indices into
+// `positions` whose points lie inside the oriented box.
+function pointsInsideOBBLabel(positions, box) {
+  const [cx, cy, cz] = box.center;
+  const [sx, sy, sz] = box.size;
+  const [rx, ry, rz] = box.rotation;
+  const hx = sx / 2, hy = sy / 2, hz = sz / 2;
+  const cxR = Math.cos(rx), sxR = Math.sin(rx);
+  const cyR = Math.cos(ry), syR = Math.sin(ry);
+  const czR = Math.cos(rz), szR = Math.sin(rz);
+  const m00 = cyR * czR;
+  const m01 = sxR * syR * czR - cxR * szR;
+  const m02 = cxR * syR * czR + sxR * szR;
+  const m10 = cyR * szR;
+  const m11 = sxR * syR * szR + cxR * czR;
+  const m12 = cxR * syR * szR - sxR * czR;
+  const m20 = -syR;
+  const m21 = sxR * cyR;
+  const m22 = cxR * cyR;
+  const out = [];
+  const N = positions.length / 3;
+  for (let i = 0; i < N; i++) {
+    const px = positions[3 * i]     - cx;
+    const py = positions[3 * i + 1] - cy;
+    const pz = positions[3 * i + 2] - cz;
+    const lx = m00 * px + m10 * py + m20 * pz;
+    const ly = m01 * px + m11 * py + m21 * pz;
+    const lz = m02 * px + m12 * py + m22 * pz;
+    if (lx >= -hx && lx <= hx && ly >= -hy && ly <= hy && lz >= -hz && lz <= hz) out.push(i);
+  }
+  return out;
+}
+
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
   const meshPopupRef = useRefLabel(null);
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
@@ -37,6 +74,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // viewport (NaN'd in the position buffer). Default on so the labeling
   // workflow naturally reveals what's left to label.
   const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
+  // 3D box-select: a transformable OBB the user drags via the existing
+  // gizmo. On Confirm, every preseg with any point inside the box is toggled
+  // into segState.selection. Same UX as the box in Edit mode.
+  const [selBox, setSelBox] = useStateLabel(null);
   const showSegHulls = false;
   const [sideRCollapsed, setSideRCollapsed] = useStateLabel(() => {
     try { return localStorage.getItem('voxa.label.sideRCollapsed') === '1'; }
@@ -126,6 +167,116 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       return true;
     });
   }, [segState, viewerRef, setSegState]);
+
+  // Drop the selection box whenever the scene changes.
+  useEffectLabel(() => { setSelBox(null); }, [cloud]);
+
+  // Toggle the box select tool. Initializes the box to a quarter of the cloud
+  // bbox centered at the cloud's center — small enough to be reachable, large
+  // enough to grab with the gizmo handles.
+  const toggleBoxSelect = useCallbackLabel(() => {
+    setSelBox((b) => {
+      if (b) return null;
+      if (!cloudBBox) return null;
+      const c = [
+        (cloudBBox.min[0] + cloudBBox.max[0]) / 2,
+        (cloudBBox.min[1] + cloudBBox.max[1]) / 2,
+        (cloudBBox.min[2] + cloudBBox.max[2]) / 2,
+      ];
+      const s = [
+        Math.max((cloudBBox.max[0] - cloudBBox.min[0]) / 4, 0.5),
+        Math.max((cloudBBox.max[1] - cloudBBox.min[1]) / 4, 0.5),
+        Math.max((cloudBBox.max[2] - cloudBBox.min[2]) / 4, 0.5),
+      ];
+      return {
+        id: LABEL_SEL_BOX_ID,
+        label: 'box-select',
+        cls: 0,
+        color: LABEL_SEL_BOX_COLOR,
+        center: c, size: s, rotation: [0, 0, 0],
+      };
+    });
+  }, [cloudBBox]);
+
+  // Per-segment centroid memo. Sums positions per segment id and divides by
+  // count → one centroid per preseg. Recomputed only when the cloud or the
+  // segment assignment changes (not on selBox movement).
+  const segCentroids = useMemoLabel(() => {
+    if (!cloud?.positions || !segState?.instanceFull) return null;
+    const positions = cloud.positions;
+    const inst = segState.instanceFull;
+    const subIdx = cloud.subsampleIdx;
+    const subN = positions.length / 3;
+    // First pass: find max segment id so we can size the accumulators.
+    let maxId = -1;
+    for (let p = 0; p < subN; p++) {
+      const f = subIdx ? subIdx[p] : p;
+      const id = inst[f];
+      if (id > maxId) maxId = id;
+    }
+    if (maxId < 0) return null;
+    const n = maxId + 1;
+    const sx = new Float64Array(n);
+    const sy = new Float64Array(n);
+    const sz = new Float64Array(n);
+    const cnt = new Uint32Array(n);
+    for (let p = 0; p < subN; p++) {
+      const x = positions[3 * p];
+      // NaN sentinels (used by hideConfirmedPoints) get rejected here.
+      if (!Number.isFinite(x)) continue;
+      const f = subIdx ? subIdx[p] : p;
+      const id = inst[f];
+      if (id < 0) continue;
+      sx[id] += x;
+      sy[id] += positions[3 * p + 1];
+      sz[id] += positions[3 * p + 2];
+      cnt[id] += 1;
+    }
+    const cents = new Float32Array(n * 3);
+    for (let id = 0; id < n; id++) {
+      if (cnt[id] === 0) {
+        // mark inactive with NaN so the OBB test rejects it
+        cents[3 * id] = NaN; cents[3 * id + 1] = NaN; cents[3 * id + 2] = NaN;
+      } else {
+        cents[3 * id] = sx[id] / cnt[id];
+        cents[3 * id + 1] = sy[id] / cnt[id];
+        cents[3 * id + 2] = sz[id] / cnt[id];
+      }
+    }
+    return cents;
+  }, [cloud, segState?.instanceFull]);
+
+  // Commit: select every preseg whose CENTROID falls inside the box. Centroid
+  // test matches the visual mental model "is this segment in the box" much
+  // better than the any-point test (a 100k-point segment poking one point
+  // into the box no longer drags the whole segment in).
+  const confirmBoxSelect = useCallbackLabel(() => {
+    if (!selBox || !segCentroids) return;
+    const inSet = pointsInsideOBBLabel(segCentroids, selBox);
+    if (inSet.length === 0) { setSelBox(null); return; }
+    setSegState((s) => {
+      if (!s) return s;
+      const next = new Set(s.selection);
+      for (const segId of inSet) {
+        next.has(segId) ? next.delete(segId) : next.add(segId);
+      }
+      return { ...s, selection: next };
+    });
+    setSelBox(null);
+  }, [selBox, segCentroids, setSegState]);
+
+  // Esc cancels; Enter commits. Skip when typing into an input.
+  useEffectLabel(() => {
+    if (!selBox) return;
+    const onKey = (e) => {
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      if (e.key === 'Escape') { e.preventDefault(); setSelBox(null); }
+      else if (e.key === 'Enter') { e.preventDefault(); confirmBoxSelect(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selBox, confirmBoxSelect]);
 
   // Only the selected cuboid renders in the viewer — keeps the scene readable
   // when there are dozens/hundreds of prelabel instances. Hidden classes still
@@ -660,6 +811,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Gizmo drag callback. Patches the targeted instance by id (not by selectedId)
   // since the viewer dispatches based on its own gizmoTargetIdRef snapshot.
   const onCuboidTransform = useCallbackLabel((id, patch) => {
+    if (id === LABEL_SEL_BOX_ID) {
+      setSelBox((b) => b ? { ...b, ...patch } : b);
+      return;
+    }
     const next = instances.map((i) => i.id === id ? { ...i, ...patch } : i);
     onChange(next);
   }, [instances, onChange]);
@@ -720,11 +875,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             Math.max(...selected.size) / 2,
           );
         }
-      } else if (!isLocked && (e.key === 'g' || e.key === 'G')) {
+      } else if ((!isLocked || !!selBox) && (e.key === 'g' || e.key === 'G')) {
         setTransformMode('translate');
-      } else if (!isLocked && (e.key === 'r' || e.key === 'R')) {
+      } else if ((!isLocked || !!selBox) && (e.key === 'r' || e.key === 'R')) {
         setTransformMode('rotate');
-      } else if (!isLocked && (e.key === 'y' || e.key === 'Y')) {
+      } else if ((!isLocked || !!selBox) && (e.key === 'y' || e.key === 'Y')) {
         setTransformMode('scale');
       } else if (e.key === 'd' || e.key === 'D') {
         // Densify: pop full-density LAZ points inside the selected cuboid.
@@ -791,9 +946,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         <Viewer
           ref={viewerRef}
           cloud={cloud}
-          instances={instances}
-          visibleInstanceIds={visibleIds}
-          selectedId={selectedId}
+          instances={selBox ? [...instances, selBox] : instances}
+          visibleInstanceIds={selBox ? [LABEL_SEL_BOX_ID] : visibleIds}
+          selectedId={selBox ? LABEL_SEL_BOX_ID : selectedId}
           showCuboids
           background={theme.bg}
           floorColor={theme.floor}
@@ -802,7 +957,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           pointSize={0.012}
           diffMask={diffMask}
           showDiff={showDiff}
-          transformMode={activeTool === 'cuboid' && !isLocked ? transformMode : null}
+          transformMode={selBox ? (transformMode || 'translate') : (activeTool === 'cuboid' && !isLocked ? transformMode : null)}
           onCuboidTransform={onCuboidTransform}
           highlightCuboid={highlightCuboid}
           selectionMask={selectionMask}
@@ -864,7 +1019,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         <ViewportToolbar side="left">
           {activeTool === 'cuboid' && (
             <>
-              {!isLocked && (
+              {(!isLocked || !!selBox) && (
                 <>
                   <ToolButton mini icon="⇄" label="Move (G)"
                     onClick={() => setTransformMode('translate')}
@@ -899,6 +1054,23 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               onClick={() => setShowDiff((v) => !v)}
               active={showDiff}
             />
+          )}
+          {segState && (
+            <>
+              <ToolButton mini
+                icon="◫"
+                label={selBox ? 'Cancel box (Esc)' : 'Box-select segments'}
+                onClick={toggleBoxSelect}
+                active={!!selBox}
+              />
+              {selBox && (
+                <ToolButton mini
+                  icon="✓"
+                  label="Confirm box (Enter)"
+                  onClick={confirmBoxSelect}
+                />
+              )}
+            </>
           )}
           <ToolButton mini icon="↺" label="Reset cam" onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>
