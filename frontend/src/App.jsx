@@ -425,26 +425,33 @@ function MainApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, [segState, viewerRef, cloud]);
 
-  // Cmd/Ctrl+S → save segments first (if dirty), then cuboids.
+  // Full save: persist per-point segments (into the scan dir) first, then
+  // cuboids. Both the Ctrl/Cmd+S shortcut and the header Save button call this
+  // so they do identical work.
+  const handleSave = useCallbackApp(async () => {
+    if (segState?.dirty) {
+      try {
+        await VoxaAPI.segSave();
+        setSegState((s) => s ? { ...s, dirty: false } : s);
+      } catch (err) {
+        console.error('segSave failed, skipping cuboid save:', err);
+        return;
+      }
+    }
+    saveGt(gtInstances);
+  }, [gtInstances, saveGt, segState]);
+
+  // Cmd/Ctrl+S → same work as the Save button.
   useEffectApp(() => {
-    const onKey = async (e) => {
+    const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
-        if (segState?.dirty) {
-          try {
-            await VoxaAPI.segSave();
-            setSegState((s) => s ? { ...s, dirty: false } : s);
-          } catch (err) {
-            console.error('segSave failed, skipping cuboid save:', err);
-            return;
-          }
-        }
-        saveGt(gtInstances);
+        handleSave();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [gtInstances, saveGt, segState]);
+  }, [handleSave]);
 
   return (
     <div className={'app-shell ' + themeClass}>
@@ -491,8 +498,8 @@ function MainApp() {
           {t.theme === 'dark' ? '☀' : '☾'}
         </button>
         {savedAt && <span className="header-meta" style={{ fontSize: 11 }}>saved {savedAt}</span>}
-        <button className="header-btn primary" onClick={() => saveGt(gtInstances)} title="Save (⌘S)">
-          ⌘S Save
+        <button className="header-btn primary" onClick={handleSave} title="Save (Ctrl+S)">
+          Ctrl+S Save
         </button>
       </header>
 
