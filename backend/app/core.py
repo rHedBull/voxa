@@ -238,6 +238,96 @@ def _load_scene_source(src: SceneSource, max_points: int, *,
     pc, _ = load_ply(src.source_path)
     return (pc, None, None, None, None, None, None, None, False, None)
 
+def _seed_or_recover_session(src, pc, labels, is_from_prelabel, *,
+                             prev_seg, keep_prev_seg, source_fp):
+    """Pick the active SegmentSession for a freshly loaded scene.
+
+    Priority: carry over the prior live session (``keep_prev_seg``), recover an
+    autosaved working session (commit-pointer + fingerprint gated), seed from
+    on-disk labels, or none. Returns the SegmentSession (or None). Does not
+    touch ``_state`` — the caller assigns the result.
+    """
+    from labeling.segment_state import SegmentSession
+    from labeling.segment_io import load_session_aux, load_working_arrays
+
+    if keep_prev_seg:
+        # Carry over the existing session as-is.
+        return prev_seg
+
+    session_dir = src.session_dir
+
+    # Try recovering an in-progress working session (commit-pointer gated).
+    if session_dir is not None:
+        aux = load_session_aux(session_dir)
+        if aux is not None and aux.get("source_fingerprint") == source_fp:
+            wa = load_working_arrays(session_dir, n_points=len(pc))
+            if wa is not None:
+                seg = SegmentSession(
+                    class_ids=wa[0],
+                    instance_ids=wa[1],
+                    positions=pc.points,
+                    is_from_prelabel=bool(aux.get("is_from_prelabel", False)),
+                    session_dir=session_dir,
+                )
+                seg.source_fingerprint = source_fp
+                seg.preseg_run_id = aux.get("preseg_run_id")
+                seg.preseg_fingerprint = aux.get("preseg_fingerprint")
+                seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
+                seg.dirty = bool(aux.get("dirty", False))
+                return seg
+
+    if labels is not None and len(pc) <= constants.MAX_LABEL_POINTS:
+        seg = SegmentSession(
+            class_ids=labels.class_ids,
+            instance_ids=labels.instance_ids,
+            positions=pc.points,
+            is_from_prelabel=is_from_prelabel,
+            session_dir=session_dir,
+        )
+        seg.source_fingerprint = source_fp
+        return seg
+
+    return None
+
+
+def _stale_prelabel_check(src) -> bool:
+    """True when ``prelabel/`` has been re-run since ``labels/`` were saved.
+
+    Compares the ``prelabel_fingerprint`` recorded in
+    ``labels/gt_segment_metadata.json`` against the current ``prelabel/`` content
+    hash; a mismatch means the on-disk labels may be stale, so the frontend can
+    warn the user. Best-effort: any missing file / read error returns False.
+    """
+    from labeling.segment_io import compute_fingerprint
+
+    scan_dir_str = src.extras.get("scan_dir") if src.extras else None
+    if scan_dir_str is None and src.tier == "annotated":
+        scan_dir_str = str(Path(src.source_path).parent.parent)
+    if scan_dir_str is None:
+        return False
+
+    scan_dir = Path(scan_dir_str)
+    labels_meta_path = scan_dir / "labels" / "gt_segment_metadata.json"
+    prelabel_path = scan_dir / "prelabel" / "ransac_instance_ids.npy"
+    if not (labels_meta_path.exists() and prelabel_path.exists()):
+        return False
+
+    try:
+        saved_fp = json.loads(labels_meta_path.read_text()).get("prelabel_fingerprint")
+        current_fp = compute_fingerprint(np.load(prelabel_path).astype(np.int32))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+    if saved_fp and current_fp and saved_fp != current_fp:
+        logging.warning(
+            "scene %s: prelabel/ has been re-run since labels/ were saved "
+            "(was %s, now %s) — labels may be stale",
+            src.scene_id, saved_fp, current_fp,
+        )
+        return True
+    return False
+
+
 def _mesh_url_for(src: SceneSource) -> Optional[str]:
     """Cache-bust the mesh URL with the GLB's mtime, so a rebuilt mesh.glb
     is treated as a fresh resource by both HTTP caches and Three.js's

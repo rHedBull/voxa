@@ -10,7 +10,7 @@ from app.core import *  # noqa: F401,F403
 
 router = APIRouter()
 
-
+# TODO: any loading refactorable, repaated implementation, all still needed and file paths?
 @router.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
     src = _resolve(req.name)
@@ -66,84 +66,19 @@ def load_scene(req: LoadRequest):
         labels=labels,
         recenter_offset=offset,
     )
-    from labeling.segment_state import SegmentSession
-    from labeling.segment_io import (
-        compute_fingerprint,
-        load_session_aux,
-        load_working_arrays,
-    )
-
+    from labeling.segment_io import compute_fingerprint
     source_fp = compute_fingerprint(pc.points.astype(np.float32))
-    session_dir = src.session_dir
 
-    # Try recovering an in-progress working session (commit-pointer gated).
-    recovered = None
-    if session_dir is not None and not keep_prev_seg:
-        aux = load_session_aux(session_dir)
-        if aux is not None and aux.get("source_fingerprint") == source_fp:
-            wa = load_working_arrays(session_dir, n_points=len(pc))
-            if wa is not None:
-                recovered = (wa[0], wa[1], aux)
+    seg = _seed_or_recover_session(
+        src, pc, labels, is_from_prelabel,
+        prev_seg=prev_seg, keep_prev_seg=keep_prev_seg, source_fp=source_fp,
+    )
+    _state["seg"] = seg
 
-    if keep_prev_seg:
-        # Carry over the existing session as-is.
-        _state["seg"] = prev_seg
-    elif recovered is not None:
-        wc, wi, aux = recovered
-        seg = SegmentSession(
-            class_ids=wc,
-            instance_ids=wi,
-            positions=pc.points,
-            is_from_prelabel=bool(aux.get("is_from_prelabel", False)),
-            session_dir=session_dir,
-        )
-        seg.source_fingerprint = source_fp
-        seg.preseg_run_id = aux.get("preseg_run_id")
-        seg.preseg_fingerprint = aux.get("preseg_fingerprint")
-        seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
-        seg.dirty = bool(aux.get("dirty", False))
-        _state["seg"] = seg
-    elif labels is not None and len(pc) <= constants.MAX_LABEL_POINTS:
-        seg = SegmentSession(
-            class_ids=labels.class_ids,
-            instance_ids=labels.instance_ids,
-            positions=pc.points,
-            is_from_prelabel=is_from_prelabel,
-            session_dir=session_dir,
-        )
-        seg.source_fingerprint = source_fp
-        _state["seg"] = seg
-    else:
-        _state["seg"] = None
-
-    # Detect stale prelabel: labels/gt_segment_metadata.json may carry a
-    # prelabel_fingerprint recorded when labels were seeded. If prelabel/
-    # has been re-run since (different content hash), surface this so the
-    # frontend can warn the user that their on-disk labels may be stale.
-    _seg = _state.get("seg")
-    if _seg is not None:
-        _seg.stale_prelabel = False
-        scan_dir_str = src.extras.get("scan_dir") if src.extras else None
-        if scan_dir_str is None and src.tier == "annotated":
-            scan_dir_str = str(Path(src.source_path).parent.parent)
-        if scan_dir_str is not None:
-            scan_dir = Path(scan_dir_str)
-            labels_meta_path = scan_dir / "labels" / "gt_segment_metadata.json"
-            prelabel_path = scan_dir / "prelabel" / "ransac_instance_ids.npy"
-            if labels_meta_path.exists() and prelabel_path.exists():
-                try:
-                    import json as _json
-                    saved_fp = _json.loads(labels_meta_path.read_text()).get("prelabel_fingerprint")
-                    current_fp = compute_fingerprint(np.load(prelabel_path).astype(np.int32))
-                    if saved_fp and current_fp and saved_fp != current_fp:
-                        _seg.stale_prelabel = True
-                        logging.warning(
-                            "scene %s: prelabel/ has been re-run since labels/ were saved "
-                            "(was %s, now %s) — labels may be stale",
-                            src.scene_id, saved_fp, current_fp,
-                        )
-                except (OSError, ValueError, json.JSONDecodeError):
-                    pass
+    # Surface stale prelabel (prelabel/ re-run since labels/ were saved) so the
+    # frontend can warn the user their on-disk labels may be out of date.
+    if seg is not None:
+        seg.stale_prelabel = _stale_prelabel_check(src)
 
     positions = sub.points.astype(np.float32)
     colors = _normalize_colors(sub)
@@ -215,7 +150,7 @@ def load_scene(req: LoadRequest):
         if _v["checked"]:
             frame_check = _v
 
-    return LoadResponse(
+    return LoadResponse( # TODO: check if all still needed!?
         scene=src.scene_id,
         num_points=len(pc),
         num_points_total=n_source_total if (n_source_total is not None and n_source_total > len(pc)) else None,
