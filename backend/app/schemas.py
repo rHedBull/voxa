@@ -150,16 +150,6 @@ class AutoFitRequest(BaseModel):
     color: str = "#5b8def"
     label: str = ""
 
-class BrushQueryRequest(BaseModel):
-    center: list[float]
-    radius: float
-    camera_ray: Optional[list[float]] = None
-    depth_cull: Optional[float] = None
-
-class BrushQueryResponse(BaseModel):
-    indices: str        # b64 Int32
-    n: int
-
 class ApplyRequest(BaseModel):
     op: str
     indices: Optional[str] = None     # b64 Int32; required for set_class & reassign
@@ -179,7 +169,6 @@ class SegmentStateResponse(BaseModel):
     preseg_run_id: Optional[str] = None
     preseg_fingerprint: Optional[str] = None
     source_fingerprint: Optional[str] = None
-    hidden_inst_ids: list[int] = []
     is_from_prelabel: bool = False
     stale_prelabel: bool = False
     full_class_ids: str = ""
@@ -190,12 +179,6 @@ class SegmentStateResponse(BaseModel):
     hull_vertices: str = ""
     hull_faces: str = ""
     hull_face_seg: str = ""
-
-class HideRequest(BaseModel):
-    inst_id: int
-
-class SnapToPresegRequest(BaseModel):
-    inst_ids: list[int]
 
 class _ObbBox(BaseModel):
     center: list[float]    # [cx, cy, cz] in recentered scene units

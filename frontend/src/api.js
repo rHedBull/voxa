@@ -114,18 +114,6 @@ export const VoxaAPI = {
     });
     return r.json();
   },
-  async segBrushQuery({ center, radius, cameraRay = null, depthCull = null }) {
-    const body = { center, radius, ...(cameraRay != null ? { camera_ray: cameraRay } : {}),
-                   ...(depthCull != null ? { depth_cull: depthCull } : {}) };
-    const r = await fetch('/api/segment/brush-query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) throw new Error(`segBrushQuery failed: ${r.status} ${await r.text()}`);
-    const j = await r.json();
-    return { indices: b64ToInt32(j.indices), n: j.n };
-  },
   async segApply(op, { indices = null, payload = {} } = {}) {
     const body = {
       op,
@@ -217,31 +205,5 @@ export function newId(prefix = 'inst') {
 export async function getSegmentState() {
   const r = await fetch('/api/segment/state');
   if (!r.ok) throw new Error(`segment/state ${r.status}`);
-  return r.json();
-}
-
-export async function hideInstance(instId) {
-  const r = await fetch('/api/segment/hide', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ inst_id: instId }),
-  });
-  if (!r.ok) throw new Error(`hide ${r.status}`);
-  return r.json();
-}
-
-export async function unhideInstance(instId) {
-  const r = await fetch(`/api/segment/hide/${instId}`, { method: 'DELETE' });
-  if (!r.ok) throw new Error(`unhide ${r.status}`);
-  return r.json();
-}
-
-export async function snapToPreseg(instIds) {
-  const r = await fetch('/api/segment/snap-to-preseg', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ inst_ids: instIds }),
-  });
-  if (!r.ok) throw new Error(`snap ${r.status}`);
   return r.json();
 }

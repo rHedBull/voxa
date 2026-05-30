@@ -10,14 +10,6 @@ from app.core import *  # noqa: F401,F403
 router = APIRouter()
 
 
-@router.post("/api/segment/brush-query", response_model=BrushQueryResponse)
-def brush_query(req: BrushQueryRequest):
-    seg = _require_seg()
-    center = np.array(req.center, dtype=np.float32)
-    cam = np.array(req.camera_ray, dtype=np.float32) if req.camera_ray else None
-    idx = seg.brush_query(center, req.radius, camera_ray=cam, depth_cull=req.depth_cull)
-    return BrushQueryResponse(indices=_b64(idx.astype(np.int32)), n=int(idx.size))
-
 @router.post("/api/segment/apply")
 def segment_apply(req: ApplyRequest):
     seg = _require_seg()
@@ -72,7 +64,7 @@ def segment_state():
     box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(seg.positions), instance_ids)
     from labeling.segment_hulls import compute_hulls as _compute_hulls
     hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
-    return SegmentStateResponse(
+    return SegmentStateResponse( # tODO: all still needed?
         has_state=True,
         has_seg=True,
         dirty=bool(seg.dirty),
@@ -82,7 +74,6 @@ def segment_state():
         preseg_run_id=seg.preseg_run_id,
         preseg_fingerprint=seg.preseg_fingerprint,
         source_fingerprint=seg.source_fingerprint,
-        hidden_inst_ids=sorted(int(x) for x in seg.hidden_inst_ids),
         is_from_prelabel=bool(seg.is_from_prelabel),
         stale_prelabel=bool(getattr(seg, "stale_prelabel", False)),
         full_class_ids=_b64(class_ids),
@@ -95,31 +86,7 @@ def segment_state():
         hull_face_seg=_b64(hull_seg),
     )
 
-@router.post("/api/segment/hide", response_model=SegmentStateResponse)
-def segment_hide(req: HideRequest):
-    seg = _state.get("seg")
-    if seg is None:
-        raise HTTPException(409, "no active segment session")
-    seg.hide_instance(req.inst_id)
-    return segment_state()
-
-@router.delete("/api/segment/hide/{inst_id}", response_model=SegmentStateResponse)
-def segment_unhide(inst_id: int):
-    seg = _state.get("seg")
-    if seg is None:
-        raise HTTPException(409, "no active segment session")
-    seg.unhide_instance(inst_id)
-    return segment_state()
-
-@router.post("/api/segment/snap-to-preseg")
-def segment_snap_to_preseg(req: SnapToPresegRequest):
-    seg = _state.get("seg")
-    if seg is None:
-        raise HTTPException(409, "no active segment session")
-    out = seg.snap_to_preseg(req.inst_ids)
-    return {"n_affected": int(out["n_affected"])}
-
-@router.put("/api/segment/save")
+@router.put("/api/segment/save") # TODO: this is very important, what is actually happening, here what is beeing saved where? what format?
 def segment_save():
     seg = _require_seg()
     src = _resolve(_state["scene"])

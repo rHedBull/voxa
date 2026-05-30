@@ -43,7 +43,6 @@ export function hydrateFromServerState(state, payload) {
   if (!payload || !payload.has_seg) return state;
   return {
     ...state,
-    hiddenInstIds: new Set(payload.hidden_inst_ids || []),
     presegRunId: payload.preseg_run_id ?? null,
     presegFingerprint: payload.preseg_fingerprint ?? null,
     sourceFingerprint: payload.source_fingerprint ?? null,
