@@ -4,7 +4,7 @@ import pathlib
 
 import numpy as np
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan"))
 from scan_index import build_variants_index  # noqa: E402
 
 from scenes.frame import Frame  # noqa: E402

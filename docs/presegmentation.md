@@ -25,10 +25,10 @@ SCAN=/home/hendrik/coding/engine/data/lidar/annotated/<scan>
 
 # Stage 1 — SAM3 per-point features (anaconda python; needs renders/ + GPU).
 # Caches to <scan>/sam3/<scan>/sam3_features.npz
-/home/hendrik/anaconda3/bin/python scripts/presegment_sam3_features.py "$SCAN"
+/home/hendrik/anaconda3/bin/python scripts/preseg/presegment_sam3_features.py "$SCAN"
 
 # Stage 2 — RANSAC + feature-aware split → <scan>/prelabel/ransac_* (.venv python)
-.venv/bin/python scripts/presegment_sam3.py "$SCAN"
+.venv/bin/python scripts/preseg/presegment_sam3.py "$SCAN"
 ```
 
 Prerequisites on disk (per [scan-schema](scan-schema.md)):
@@ -45,7 +45,7 @@ curl -s -X POST http://127.0.0.1:8765/api/load \
 
 ## What each stage does
 
-**Stage 1 — `scripts/presegment_sam3_features.py` → `backend/preseg/sam3_features.py`**
+**Stage 1 — `scripts/preseg/presegment_sam3_features.py` → `backend/preseg/sam3_features.py`**
 
 Multi-view feature fusion. For each render frame: build a look-at camera from the
 manifest pose (Three.js perspective, vertical FOV 60°), project every point, reject
@@ -57,7 +57,7 @@ Output is cached to `<scan>/sam3/<scan>/sam3_features.npz` (`features` (N,64) f1
 coverage gates the SAM3 contribution** (a partial walkthrough may cover only ~15%
 of the cloud).
 
-**Stage 2 — `scripts/presegment_sam3.py` → `backend/preseg/presegment.py` (mode="ransac")**
+**Stage 2 — `scripts/preseg/presegment_sam3.py` → `backend/preseg/presegment_ransac.py`**
 
 Loads the cached features (numpy only, no torch), runs RANSAC presegmentation
 (planes → cylinders → spheres → leftover clustering), then splits large geometric

@@ -22,3 +22,7 @@ data/annotations/
 .vscode/
 .idea/
 *.swp
+
+# stray script artifacts
+scripts/preseg_bench_results.json
+scripts/stage_dumps/

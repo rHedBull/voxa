@@ -173,7 +173,7 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path],
 
     # Trained merge-model fallback (seg_inference.predict_for_scene) is
     # currently disabled. Presegmentation now runs OFFLINE
-    # (scripts/presegment*.py write prelabel/ransac_*), surfaced by the
+    # (scripts/preseg/presegment*.py write prelabel/ransac_*), surfaced by the
     # load_prelabel branch above — that is the single recommender path.
     # To re-enable the model fallback, restore the predict_for_scene call
     # here and ensure VOXA_SEGMENTATION_REPO + VOXA_MERGE_MODEL point at a

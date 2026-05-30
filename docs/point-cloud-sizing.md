@@ -11,7 +11,7 @@ env-overridable; defaults live in `backend/app/constants.py`.
 | Load (source sampling) | stride/voxel to ≥ `max(max_points, 50_000)` | — | `backend/scenes/lidar_io.py` (`load_laz`), `point_cloud.py` (`load_glb`) | RAM while reading LAZ/GLB |
 | **Label** | 5,000,000 | `VOXA_MAX_LABEL_POINTS` | `backend/routes/load.py`, `routes/preseg.py` | per-point label arrays + session memory |
 | **Viewer** | = label cap (5M) | `VOXA_MAX_POINTS` | `backend/app/core.py` (`_safe_subsample`) | Three.js / GPU render + wire payload |
-| Preseg | full cloud, RAM-bounded; >5M refused | `--preseg-points` | `scripts/presegment_sam3.py` | RAM/time; unloadable above label cap ([presegmentation](presegmentation.md)) |
+| Preseg | full cloud, RAM-bounded; >5M refused | `--preseg-points` | `scripts/preseg/presegment_sam3.py` | RAM/time; unloadable above label cap ([presegmentation](presegmentation.md)) |
 | Recommendation | 200,000 | `subsample_n` (request field) | `backend/routes/preseg.py` (`/optimize`) | parameter-search speed |
 
 The chain in size order: **load (RAM) → label = viewer (5M) → recommend (200k)**.
