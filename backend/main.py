@@ -3,7 +3,6 @@
 Endpoints serve the React/Three.js frontend with point clouds, cuboid
 annotations, and GT-vs-prediction diffs. Scenes come from multiple roots:
 
-  legacy     voxa/data/scenes/<name>/source.{ply,glb}
   annotated  $VOXA_LIDAR_ROOT/annotated/<name>/source/scan.ply (+ labels/, meta.json)
   decimated  $VOXA_LIDAR_ROOT/ply_viewer/<name>.ply
   raw        $VOXA_LIDAR_ROOT/laz/<name>.laz
@@ -33,7 +32,7 @@ from app.core import (  # noqa: F401
     _y_up_to_z_up_xyz,
     _to_display_frame,
 )
-from routes import compare, export, load, meta, preseg, segment
+from routes import compare, export, load, meta, segment
 
 app = FastAPI(title="Voxa 3D scan studio")
 
@@ -45,7 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for _module in (meta, load, compare, segment, preseg, export):
+for _module in (meta, load, compare, segment, export):
     app.include_router(_module.router)
 
 
