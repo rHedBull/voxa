@@ -38,7 +38,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from preseg.presegment import presegment  # noqa: E402
+from preseg.presegment_ransac import presegment  # noqa: E402
 from app.constants import MAX_LABEL_POINTS  # noqa: E402
 
 # 0 = presegment the full cloud, bounded by a RAM-safe ceiling (see
@@ -161,7 +161,7 @@ def main() -> int:
         sub = np.sort(rng.choice(n, cap, replace=False))
         print(f"[preseg] {n:,} > {cap:,} cap — preseg subsample then NN-propagate")
         inst_sub, summary = presegment(
-            xyz[sub], mode="ransac", class_map=class_map,
+            xyz[sub], class_map=class_map,
             features=features[sub], feature_seen=seen[sub], log=print,
         )
         from scipy.spatial import cKDTree
@@ -171,7 +171,7 @@ def main() -> int:
     else:
         print(f"[preseg] ransac mode, {len(class_map)} classes, feature-aware split")
         inst, summary = presegment(
-            xyz, mode="ransac", class_map=class_map,
+            xyz, class_map=class_map,
             features=features, feature_seen=seen, log=print,
         )
 

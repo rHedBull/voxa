@@ -40,7 +40,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from preseg.presegment import presegment  # noqa: E402
+from preseg.presegment_voxel import presegment  # noqa: E402
 
 
 def _classes_from_yaml(config_path: Path) -> dict[str, int]:
