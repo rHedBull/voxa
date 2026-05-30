@@ -172,10 +172,12 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path],
             is_from_prelabel = True
 
     # Trained merge-model fallback (seg_inference.predict_for_scene) is
-    # currently disabled. Voxa's RANSAC port (presegment.py / the ⚙
-    # button in Label mode) is the single recommender path. To re-enable,
-    # restore the predict_for_scene call here and ensure
-    # VOXA_SEGMENTATION_REPO + VOXA_MERGE_MODEL point at a valid bundle.
+    # currently disabled. Presegmentation now runs OFFLINE
+    # (scripts/presegment*.py write prelabel/ransac_*), surfaced by the
+    # load_prelabel branch above — that is the single recommender path.
+    # To re-enable the model fallback, restore the predict_for_scene call
+    # here and ensure VOXA_SEGMENTATION_REPO + VOXA_MERGE_MODEL point at a
+    # valid bundle.
 
     if labels is None:
         labels = LabelArrays(
@@ -209,6 +211,32 @@ def _laz_chunk_iter(path: Path, chunk_size: int = 1_000_000):
             yield reader.header, chunk
     finally:
         reader.close()
+
+
+def z_up_to_y_up_xyz(pts: np.ndarray) -> np.ndarray:
+    """Rotate raw (N, 3) coords from LAS Z-up into Three.js Y-up: (x, y, z) -> (x, z, -y).
+
+    Single source of truth for the display rotation: the PointCloud-level
+    ``app.core._z_up_to_y_up`` and the LAZ region loader both go through this so
+    the convention can't drift between the full-load and region-pop paths.
+    """
+    out = np.empty_like(pts)
+    out[:, 0] = pts[:, 0]
+    out[:, 1] = pts[:, 2]
+    out[:, 2] = -pts[:, 1]
+    return out
+
+
+def _laz_rgb_to_uint8(rgb: np.ndarray) -> np.ndarray:
+    """Decode raw LAS RGB channels (uint16 or uint8) to uint8 0..255.
+
+    The LAS spec says 16-bit, but some encoders write 8-bit; detect by max
+    channel value and rescale. ``rgb`` is an integer (N, 3) array.
+    """
+    cmax = int(rgb.max(initial=0))
+    if cmax > 255:
+        return (rgb >> 8).astype(np.uint8)
+    return rgb.astype(np.uint8)
 
 
 def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray, int]:
@@ -270,16 +298,8 @@ def load_laz(path: Path, max_points: int) -> tuple[PointCloud, np.ndarray, int]:
     intensity = np.concatenate(its) if its else np.zeros(len(points), dtype=np.float32)
 
     if has_color and rs:
-        r = np.concatenate(rs); g = np.concatenate(gs); b = np.concatenate(bs)
-        # If the max channel value > 255 we treat colors as 16-bit, else 8-bit.
-        cmax = int(max(r.max(initial=0), g.max(initial=0), b.max(initial=0)))
-        if cmax > 255:
-            r = (r >> 8).astype(np.uint8)
-            g = (g >> 8).astype(np.uint8)
-            b = (b >> 8).astype(np.uint8)
-        else:
-            r = r.astype(np.uint8); g = g.astype(np.uint8); b = b.astype(np.uint8)
-        colors = np.column_stack([r, g, b])
+        rgb = np.column_stack([np.concatenate(rs), np.concatenate(gs), np.concatenate(bs)])
+        colors = _laz_rgb_to_uint8(rgb)
     else:
         colors = None
 
@@ -316,24 +336,20 @@ def load_laz_region(
     has_color = True
 
     for _hdr, chunk in _laz_chunk_iter(path, chunk_size=2_000_000):
-        x = np.asarray(chunk.x, dtype=np.float64)
-        y = np.asarray(chunk.y, dtype=np.float64)
-        z = np.asarray(chunk.z, dtype=np.float64)
+        xyz = np.column_stack([
+            np.asarray(chunk.x, dtype=np.float64),
+            np.asarray(chunk.y, dtype=np.float64),
+            np.asarray(chunk.z, dtype=np.float64),
+        ])
         if is_z_up:
-            lx, ly, lz = x, z, -y
-        else:
-            lx, ly, lz = x, y, z
-        lx = (lx - offset[0]).astype(np.float32)
-        ly = (ly - offset[1]).astype(np.float32)
-        lz = (lz - offset[2]).astype(np.float32)
+            xyz = z_up_to_y_up_xyz(xyz)
+        xyz = (xyz - offset).astype(np.float32)
 
-        m = ((lx >= aabb_min[0]) & (lx <= aabb_max[0]) &
-             (ly >= aabb_min[1]) & (ly <= aabb_max[1]) &
-             (lz >= aabb_min[2]) & (lz <= aabb_max[2]))
+        m = ((xyz >= aabb_min) & (xyz <= aabb_max)).all(axis=1)
         if not m.any():
             continue
 
-        pos_chunks.append(np.column_stack([lx[m], ly[m], lz[m]]))
+        pos_chunks.append(xyz[m])
 
         if has_color:
             try:
@@ -351,12 +367,7 @@ def load_laz_region(
     positions = np.concatenate(pos_chunks).astype(np.float32)
     colors: np.ndarray | None = None
     if has_color and col_chunks:
-        col_arr = np.concatenate(col_chunks)
-        cmax = int(col_arr.max(initial=0))
-        if cmax > 255:
-            col_arr = (col_arr >> 8).astype(np.uint8)
-        else:
-            col_arr = col_arr.astype(np.uint8)
-        colors = (col_arr.astype(np.float32) / 255.0).astype(np.float32)
+        col_u8 = _laz_rgb_to_uint8(np.concatenate(col_chunks))
+        colors = (col_u8.astype(np.float32) / 255.0).astype(np.float32)
 
     return positions, colors

@@ -18,7 +18,9 @@ import yaml
 from fastapi import HTTPException, Response
 from fastapi.responses import FileResponse
 
-from scenes.lidar_io import LabelArrays, load_annotated, load_laz, load_laz_region
+from scenes.lidar_io import (
+    LabelArrays, load_annotated, load_laz, load_laz_region, z_up_to_y_up_xyz,
+)
 from scenes.point_cloud import PointCloud, load_glb, load_ply
 from scenes.scene_registry import (
    SceneSource, discover, load_lidar_root_from_env,
@@ -146,13 +148,8 @@ def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
     (X right, Y up, Z back). Mapping: (x, y, z) → (x, z, -y).
     Per-point label / instance arrays carry over unchanged.
     """
-    pts = pc.points
-    new_pts = np.empty_like(pts)
-    new_pts[:, 0] = pts[:, 0]
-    new_pts[:, 1] = pts[:, 2]
-    new_pts[:, 2] = -pts[:, 1]
     return PointCloud(
-        points=new_pts,
+        points=z_up_to_y_up_xyz(pc.points),
         colors=pc.colors,
         labels=pc.labels,
         instance_ids=pc.instance_ids,
