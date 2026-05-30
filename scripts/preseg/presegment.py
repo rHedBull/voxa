@@ -6,9 +6,10 @@ Voxa's ``segment_io.load_prelabel`` reads two files from
   - ``ransac_instance_ids.npy``      int32 (N,)
   - ``ransac_segment_summary.json``  ``{"segments": [{id, class_id, label}]}``
 
-This script generates both from a source PLY using ``presegment.presegment``
-so any annotated scene gets a usable prelabel without depending on the
-external segmentation repo or trained merge model.
+This script generates both from a source PLY using
+``presegment_ransac.presegment`` so any annotated scene gets a usable
+prelabel without depending on the external segmentation repo or trained
+merge model.
 
 Usage
 -----
@@ -40,7 +41,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from preseg.presegment_voxel import presegment  # noqa: E402
+from preseg.presegment_ransac import presegment  # noqa: E402
 
 
 def _classes_from_yaml(config_path: Path) -> dict[str, int]:
