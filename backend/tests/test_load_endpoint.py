@@ -167,7 +167,25 @@ def test_load_pin_mismatch_409(client_with_annotated_scene, tmp_path):
                     generator="ransac", params={})
     r = client.post("/api/load", json={"name": scene_id, "session_id": session_id})
     assert r.status_code == 409
-    assert r.json()["detail"]["diverged"] == "preseg"
+    detail = r.json()["detail"]
+    assert detail["error"] == "session_pin_mismatch"
+    assert detail["diverged"] == "preseg"
+    assert detail["session_id"] == session_id
+    assert detail["message"]
+
+
+def test_load_explicit_corrupt_session_409(client_with_annotated_scene):
+    """A corrupt session is listed (corrupt=True) so it passes the 404
+    membership check; explicitly resuming it must be a clean 409, not a 500."""
+    client, scene_id, session_id = client_with_annotated_scene
+    from main import _resolve
+    from scenes.scan_layout import ScanLayout
+    src = _resolve(scene_id)
+    lay = ScanLayout(Path(src.extras["scan_dir"]))
+    lay.session(session_id).session_json.write_text("{broken")
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id})
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "session_unreadable"
 
 
 def test_recenter_zero_for_already_centered_scene(lidar_client):
@@ -366,7 +384,7 @@ def test_load_recovers_in_progress_session_after_server_restart(
     client_with_annotated_scene,
 ):
     """First load -> mutate -> simulate server restart -> second load recovers
-    the working_*.npy state via current.json commit-pointer."""
+    the working_*.npy state via session.json commit-pointer."""
     client, scene_id, session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100,
                                        "want_full_labels": True})

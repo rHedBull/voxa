@@ -13,6 +13,9 @@ router = APIRouter()
 @router.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
     src = _resolve(req.name)
+    # Annotated tier: labels / counts / is_from_prelabel come back as
+    # placeholders (None/0/False) and are recomputed from the resumed
+    # session below — the cloud loader no longer owns per-point labels.
     (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled,
      is_from_prelabel, n_source_total) = (
         _load_scene_source(src, req.max_points)
@@ -54,6 +57,14 @@ def load_scene(req: LoadRequest):
                 raise HTTPException(status_code=409, detail={
                     "error": "session_pin_mismatch",
                     "diverged": e.diverged,
+                    "session_id": session_id,
+                    "message": str(e)})
+            except FileNotFoundError as e:
+                # Explicitly-requested session whose session.json is unreadable
+                # (listed as corrupt) or deleted since listing — a client-state
+                # problem, not a server error.
+                raise HTTPException(status_code=409, detail={
+                    "error": "session_unreadable",
                     "session_id": session_id,
                     "message": str(e)})
 
