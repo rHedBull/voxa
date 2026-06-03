@@ -126,12 +126,18 @@ def main():
     assert D is not None and feat_h is not None and feat_w is not None
 
     print("[4/4] Averaging + saving")
-    seen_t = torch.from_numpy(seen).to(device).clamp(min=1).unsqueeze(1).float()
-    mean_feat = sum_feat / seen_t
+    # Move to CPU before normalize; sum_feat for 5M+ pts does not fit
+    # alongside the SAM3 encoder on a 16 GB GPU (mirrors
+    # backend/preseg/sam3_features.py::extract_or_load).
+    sum_feat_cpu = sum_feat.cpu()
+    del sum_feat
+    torch.cuda.empty_cache()
+    seen_t = torch.from_numpy(seen).clamp(min=1).unsqueeze(1).float()
+    mean_feat = sum_feat_cpu / seen_t
     # L2 normalize so that PCA / downstream cosine-sim is sensible.
     mean_feat = torch.nn.functional.normalize(mean_feat, dim=1, eps=1e-6)
 
-    final = mean_feat.cpu().numpy().astype(np.float32)
+    final = mean_feat.numpy().astype(np.float32)
     if args.pca_dim > 0 and args.pca_dim < D:
         # PCA over the *seen* points only.
         seen_mask = seen > 0
