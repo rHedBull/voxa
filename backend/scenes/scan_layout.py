@@ -1,4 +1,4 @@
-"""Canonical on-disk layout of an annotated scan (scan-schema v1.3 and v2).
+"""Canonical on-disk layout of an annotated scan (scan-schema v2).
 
 Single executable encoding of the directory contract documented in
 ``docs/scan-schema.md`` (and the cross-tool ``lidar/SCHEMA.md``). Every voxa
@@ -74,41 +74,7 @@ class ScanLayout:
     def mesh_glb(self) -> Path:
         return self.source_dir / "mesh.glb"
 
-    # labels/
-    @property
-    def labels_dir(self) -> Path:
-        return self.scan_dir / "labels"
-
-    @property
-    def gt_class_ids(self) -> Path:
-        return self.labels_dir / "gt_class_ids.npy"
-
-    @property
-    def gt_segment_ids(self) -> Path:
-        return self.labels_dir / "gt_segment_ids.npy"
-
-    @property
-    def gt_segment_metadata(self) -> Path:
-        return self.labels_dir / "gt_segment_metadata.json"
-
-    # prelabel/
-    @property
-    def prelabel_dir(self) -> Path:
-        return self.scan_dir / "prelabel"
-
-    @property
-    def ransac_instance_ids(self) -> Path:
-        return self.prelabel_dir / "ransac_instance_ids.npy"
-
-    @property
-    def ransac_segment_summary(self) -> Path:
-        return self.prelabel_dir / "ransac_segment_summary.json"
-
-    # session/ renders/ sam3/ annotation_history/
-    @property
-    def session_dir(self) -> Path:
-        return self.scan_dir / "session"
-
+    # renders/ sam3/
     @property
     def renders_dir(self) -> Path:
         return self.scan_dir / "renders"
@@ -116,10 +82,6 @@ class ScanLayout:
     @property
     def sam3_dir(self) -> Path:
         return self.scan_dir / "sam3"
-
-    @property
-    def annotation_history_dir(self) -> Path:
-        return self.scan_dir / "annotation_history"
 
     # top-level
     @property
@@ -136,9 +98,6 @@ class ScanLayout:
     # v2: prelabel/<preseg_id>/ + sessions/<session_id>/
     @property
     def presegs_root(self) -> Path:
-        # Same dir as the v1.3 prelabel_dir on purpose — v2 nests one subdir
-        # per preseg result inside it; the v1.3 accessors are removed once all
-        # consumers are on v2.
         return self.scan_dir / "prelabel"
 
     def preseg_dir(self, preseg_id: str) -> Path:

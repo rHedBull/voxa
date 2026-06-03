@@ -31,7 +31,7 @@ summary : list[dict]
     (``normal/d`` for planes, ``center/axis/radius/length`` for cylinders).
     ``class_id`` is filled from ``class_map`` via the same keyword
     heuristic ``seg_inference._ransac_class_for_segment`` uses, so the
-    output is directly consumable by ``segment_io.load_prelabel``.
+    output is directly consumable by ``preseg_store.load_preseg``.
 """
 from __future__ import annotations
 
@@ -524,7 +524,7 @@ def presegment(
         Per-point instance id (-1 = unassigned).
     summary : list[dict]
         Per-instance metadata, ready to be serialized to
-        ``prelabel/ransac_segment_summary.json`` under a ``segments`` key.
+        ``preseg_store``-compatible format (``segments`` key).
     """
     cfg = dict(RANSAC_DEFAULTS)
     if labeler_strict:

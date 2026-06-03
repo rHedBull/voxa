@@ -237,7 +237,7 @@ def _write_prelabel_cache(scan_dir: Path, instance_ids: np.ndarray,
     pre.mkdir(parents=True, exist_ok=True)
     np.save(pre / "ransac_instance_ids.npy", instance_ids.astype(np.int32))
 
-    # The summary needs a class_id per segment so segment_io.load_prelabel
+    # The summary needs a class_id per segment so preseg_store.load_preseg
     # can reconstruct (class, instance) without consulting the model again.
     # We compute class_id from the original RANSAC `label` field.
     out_segments = []

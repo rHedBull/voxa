@@ -91,7 +91,7 @@ def list_presegs(layout: ScanLayout) -> list[PresegInfo]:
 def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
                 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (class_ids int8, instance_ids int32) for one preseg result.
-    Moved from v1.3 segment_io.load_prelabel; raises on missing files /
+    Supersedes the removed segment_io.load_prelabel; raises on missing files /
     shape mismatch instead of degrading to None."""
     d = layout.preseg_dir(preseg_id)
     inst_path = d / "instance_ids.npy"

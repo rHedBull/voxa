@@ -53,34 +53,6 @@ def atomic_write_json(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-def load_prelabel(
-    scan_dir: Path, n_points: int
-) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    """Read prelabel/ if present. Returns (class_ids int8, instance_ids int32)
-    or None when no prelabel exists / arrays are malformed."""
-    lay = ScanLayout(scan_dir)
-    inst_path = lay.ransac_instance_ids
-    summary_path = lay.ransac_segment_summary
-    if not inst_path.exists() or not summary_path.exists():
-        return None
-    try:
-        instance_ids = np.load(inst_path).astype(np.int32)
-        summary = json.loads(summary_path.read_text())
-        if instance_ids.shape != (n_points,):
-            return None
-        seg_to_class = {
-            int(s["id"]): int(s["class_id"])
-            for s in summary.get("segments", [])
-        }
-    except (OSError, ValueError, json.JSONDecodeError,
-            AttributeError, KeyError, TypeError):
-        return None
-    class_ids = np.full(n_points, -1, dtype=np.int8)
-    for sid, cid in seg_to_class.items():
-        class_ids[instance_ids == sid] = cid
-    return class_ids, instance_ids
-
-
 _TS_RE = re.compile(r"^\d{8}_\d{6}$")
 
 
