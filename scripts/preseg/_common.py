@@ -6,7 +6,6 @@ classes.yaml -> id map, the PLY-header vertex count, and the v2 preseg publisher
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -47,7 +46,7 @@ def ply_vertex_count(path: Path) -> int:
 
 
 def publish_preseg(scan_dir: Path, preseg_id: str, instance_ids: np.ndarray,
-                   summary: list, *, generator: str, params: dict):
+                   summary: list, *, generator: str, params: dict) -> "PresegInfo":  # noqa: F821 — lazy backend import below
     """Publish a preseg result into prelabel/<preseg_id>/ (scan-schema v2)
     via the backend's register_preseg — the single writer of that layout."""
     from preseg.preseg_store import register_preseg
