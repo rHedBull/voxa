@@ -25,20 +25,12 @@ import torch.nn.functional as F
 from PIL import Image
 
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from project_masks import (
-    ORIENTATION_PRESETS, look_at_view, project_points,
-    depth_buffer_mask, load_ply,
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+from scenes.reproject import (  # noqa: E402
+    ORIENTATION_PRESETS, look_at_view, project_points, depth_buffer_mask,
 )
-
-
-def build_model(device="cuda"):
-    from sam3 import build_sam3_image_model
-    from sam3.model.sam3_image_processor import Sam3Processor
-    bpe = "/home/hendrik/anaconda3/lib/python3.12/site-packages/clip/bpe_simple_vocab_16e6.txt.gz"
-    model = build_sam3_image_model(device=device, load_from_HF=True, bpe_path=bpe)
-    proc = Sam3Processor(model, device=device)
-    return proc
+from sam3_common import load_ply, build_processor, gather_frames  # noqa: E402
 
 
 def main():
@@ -65,21 +57,11 @@ def main():
     N = pts.shape[0]
     print(f"      {N:,} points")
 
-    all_frames = []
-    for rd in args.renders:
-        m = json.loads((rd / "manifest.json").read_text())
-        picked = m["frames"][::args.stride]
-        if args.max_frames > 0:
-            picked = picked[: args.max_frames]
-        picked = [f for f in picked
-                  if (rd / f["file"]).exists()
-                  and (rd / f["file"]).stat().st_size > 50_000]
-        print(f"  + {rd.name}: {len(picked)} frames")
-        all_frames.extend((rd, f) for f in picked)
+    all_frames = gather_frames(args.renders, args.stride, args.max_frames)
     print(f"[2/4] Using {len(all_frames)} frames")
 
     print(f"[3/4] Loading SAM3 on {args.device}…")
-    proc = build_model(args.device)
+    proc = build_processor(args.device)
 
     sum_feat: torch.Tensor | None = None  # (N, D) float32 on GPU
     seen = np.zeros(N, dtype=np.int32)
@@ -117,7 +99,7 @@ def main():
             print(f"      feature map: C={D}, {h}x{w} at level {args.fpn_level}")
 
         # Build grid_sample coords in [-1, 1] for the feature map's spatial dims.
-        # Pixel coords are in the resized (1008x1008) input — but project_masks
+        # Pixel coords are in the resized (1008x1008) input — but project_points (scenes.reproject)
         # projected to the *original* image WxH. The encoder resizes the input
         # to processor.resolution (square pad). To remain a dry test we assume
         # the SAM3 input is the same aspect/coverage as the PIL image; the

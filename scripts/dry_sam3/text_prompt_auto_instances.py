@@ -17,27 +17,13 @@ from PIL import Image
 from plyfile import PlyData, PlyElement
 
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from project_masks import (
-    ORIENTATION_PRESETS, look_at_view, project_points,
-    depth_buffer_mask, load_ply, build_processor, segment,
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+from scenes.reproject import (  # noqa: E402
+    ORIENTATION_PRESETS, look_at_view, project_points, depth_buffer_mask,
 )
-
-
-def random_palette(n: int, seed: int = 7) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    h = rng.uniform(0, 1, n)
-    s = rng.uniform(0.55, 0.95, n)
-    v = rng.uniform(0.70, 1.0, n)
-    i = (h * 6).astype(int) % 6
-    f = h * 6 - i
-    p = v * (1 - s); q = v * (1 - f * s); t = v * (1 - (1 - f) * s)
-    rgb = np.zeros((n, 3), dtype=np.float32)
-    for k, parts in enumerate([(v, t, p), (q, v, p), (p, v, t),
-                                (p, q, v), (t, p, v), (v, p, q)]):
-        sel = i == k
-        rgb[sel] = np.stack([parts[0][sel], parts[1][sel], parts[2][sel]], -1)
-    return (rgb * 255).astype(np.uint8)
+from sam3_common import load_ply, build_processor, segment, gather_frames  # noqa: E402
+from ply_viz import random_palette  # noqa: E402
 
 
 def main():
@@ -69,16 +55,7 @@ def main():
     N = pts.shape[0]
     print(f"      {N:,} points  prompts={prompts}")
 
-    all_frames: list[tuple[Path, dict]] = []
-    for rd in args.renders:
-        m = json.loads((rd / "manifest.json").read_text())
-        picked = m["frames"][::args.stride]
-        if args.max_frames > 0:
-            picked = picked[: args.max_frames]
-        picked = [f for f in picked
-                  if (rd / f["file"]).exists() and (rd / f["file"]).stat().st_size > 50_000]
-        print(f"  + {rd.name}: {len(picked)} frames")
-        all_frames.extend((rd, f) for f in picked)
+    all_frames = gather_frames(args.renders, args.stride, args.max_frames)
     print(f"[2/4] Using {len(all_frames)} frames")
 
     print(f"[3/4] Loading SAM3 on {args.device}…")

@@ -2,7 +2,7 @@
 
 Pipeline (all offline, no voxa code changes):
   1. Load PLY, run voxa's voxel supervoxel preseg → N points → S supervoxels.
-  2. Load SAM3 per-point features (from extract_features.py).
+  2. Load SAM3 per-point features (from point_feature_extraction.py).
   3. Mean-pool features per supervoxel.
   4. Build supervoxel adjacency in 3D (kNN on supervoxel centroids).
   5. Greedy union-find merge of adjacent supervoxels whose mean features
@@ -19,52 +19,13 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from plyfile import PlyData, PlyElement
 from scipy.spatial import cKDTree
 
 # Make voxa backend importable.
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
-
-
-def load_xyz(ply_path: Path) -> np.ndarray:
-    p = PlyData.read(str(ply_path))
-    v = p["vertex"].data
-    return np.stack([v["x"], v["y"], v["z"]], -1).astype(np.float64)
-
-
-def random_palette(n: int, seed: int = 0) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    h = rng.uniform(0, 1, n)
-    s = rng.uniform(0.55, 0.95, n)
-    v = rng.uniform(0.70, 1.0, n)
-    i = (h * 6).astype(int) % 6
-    f = h * 6 - i
-    p = v * (1 - s); q = v * (1 - f * s); t = v * (1 - (1 - f) * s)
-    rgb = np.zeros((n, 3), dtype=np.float32)
-    for k, parts in enumerate([(v, t, p), (q, v, p), (p, v, t),
-                                (p, q, v), (t, p, v), (v, p, q)]):
-        sel = i == k
-        rgb[sel] = np.stack([parts[0][sel], parts[1][sel], parts[2][sel]], -1)
-    return (rgb * 255).astype(np.uint8)
-
-
-def write_colored_ply(path: Path, xyz: np.ndarray, ids: np.ndarray,
-                      seed: int = 0):
-    n_inst = int(ids.max()) + 1 if ids.max() >= 0 else 0
-    palette = random_palette(max(1, n_inst), seed=seed)
-    colors = np.full((xyz.shape[0], 3), 60, dtype=np.uint8)
-    has = ids >= 0
-    colors[has] = palette[ids[has]]
-    rec = np.empty(xyz.shape[0], dtype=[
-        ("x", "f4"), ("y", "f4"), ("z", "f4"),
-        ("red", "u1"), ("green", "u1"), ("blue", "u1"),
-        ("instance", "i4"),
-    ])
-    rec["x"], rec["y"], rec["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
-    rec["red"], rec["green"], rec["blue"] = colors[:, 0], colors[:, 1], colors[:, 2]
-    rec["instance"] = ids.astype(np.int32)
-    PlyData([PlyElement.describe(rec, "vertex")], text=False).write(str(path))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ply_viz import load_xyz, write_colored_ply  # noqa: E402
 
 
 class UnionFind:
@@ -93,7 +54,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ply", required=True, type=Path)
     ap.add_argument("--features", required=True, type=Path,
-                    help="features.npy from extract_features.py")
+                    help="features.npy from point_feature_extraction.py")
     ap.add_argument("--seen", type=Path, default=None,
                     help="seen.npy; defaults to <features dir>/seen.npy")
     ap.add_argument("--out", required=True, type=Path)
