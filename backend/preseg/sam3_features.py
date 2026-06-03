@@ -296,10 +296,15 @@ def extract_or_load(
     if sum_feat is None or D is None:
         raise RuntimeError("no usable frames")
 
-    seen_t = torch.from_numpy(seen).to(dev).clamp(min=1).unsqueeze(1).float()
-    mean = sum_feat / seen_t
+    # Move to CPU before normalize; sum_feat for 5M+ pts does not fit
+    # alongside the SAM3 encoder on a 16 GB GPU.
+    sum_feat_cpu = sum_feat.cpu()
+    del sum_feat
+    torch.cuda.empty_cache()
+    seen_t = torch.from_numpy(seen).clamp(min=1).unsqueeze(1).float()
+    mean = sum_feat_cpu / seen_t
     mean = torch.nn.functional.normalize(mean, dim=1, eps=1e-6)
-    final = mean.cpu().numpy().astype(np.float32)
+    final = mean.numpy().astype(np.float32)
 
     pca_dim_used = D
     if pca_dim > 0 and pca_dim < D:
