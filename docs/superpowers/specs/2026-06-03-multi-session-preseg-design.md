@@ -58,7 +58,7 @@ from a SAM3 render run — and compare the finished results.
 │       ├── instance_ids.npy           int32, shape (N_pts,)
 │       ├── segment_summary.json       { "segments": [{"id": int, "class_id": int}, ...] }
 │       └── meta.json                  { "preseg_id", "generator", "params",
-│                                        "fingerprint", "source_fingerprint", "created_at" }
+│                                        "fingerprint", "n_segments", "created_at" }
 ├── sessions/                          (optional)  N labeling sessions
 │   └── <session_id>/                  e.g. 20260603-143000_ransac
 │       ├── session.json               pin + state (schema below)
@@ -104,24 +104,33 @@ Removed relative to v1.3: top-level `labels/`, `session/`, `annotation_history/`
   "created_at": "2026-06-03T14:30:00Z",
   "saved_at": "2026-06-03T15:10:42Z",
   "dirty": true,
-  "is_from_prelabel": true,
   "hidden_inst_ids": []
 }
 ```
 
 `preseg_id`/`preseg_fingerprint` are `null` for blank-start sessions.
+"Seeded from a preseg" is derived as `preseg_id is not None` — it is not
+stored separately. `saved_at` means *last persisted edit* (stamped by
+autosave and save); opening a session without editing does not change it.
 
 - **Fingerprints** use the existing `segment_io.compute_fingerprint()` (sha256
-  over dtype + shape + bytes). Preseg fingerprint covers `instance_ids.npy`;
-  source fingerprint covers the recentered cloud positions (as today).
+  over dtype + shape + bytes). Preseg fingerprint covers `instance_ids.npy`,
+  computed once at `register_preseg` time and recorded in the preseg's
+  `meta.json`; source fingerprint covers the recentered cloud positions,
+  computed once per load (and stashed for reuse by session creation).
 - **At creation**: working arrays are seeded from `prelabel/<preseg_id>/`
-  (or all `-1` for blank); both fingerprints are computed and frozen into
+  (or all `-1` for blank); both fingerprint pins are frozen into
   `session.json`. This is the only moment a preseg is chosen.
-- **On resume** (`/api/load`): the backend recomputes both fingerprints and
-  compares against the pins. **Any mismatch → HTTP 409** stating which pin
-  diverged. No silent fallback, no auto-repair. A deleted/regenerated preseg
-  dir makes its pinned sessions refuse to resume (session data stays intact;
-  restoring the preseg dir restores resumability).
+- **On resume** (`/api/load`): the backend compares the session's pins
+  against the preseg's *declared* fingerprint (`prelabel/<id>/meta.json`,
+  a string compare — no array hashing on the load path) and the loaded
+  cloud's fingerprint. **Any mismatch → HTTP 409** stating which pin
+  diverged. No silent fallback, no auto-repair. A deleted or re-registered
+  preseg makes its pinned sessions refuse to resume (session data stays
+  intact; restoring the preseg restores resumability). Out-of-band edits to
+  `instance_ids.npy` that skip `register_preseg` are not detected — the
+  meta.json fingerprint is the preseg's identity, and re-registering is the
+  only supported way to change a preseg.
 - This generalizes v1.3's `_stale_prelabel_check` + recovery gating
   (`app/core.py:269-336`): same mechanism, now per-session and symmetric.
 
@@ -156,27 +165,51 @@ The only code that touches `sessions/*` structure:
   `preseg_id` given but `prelabel/<id>/` missing or malformed.
 - `rename_session(layout, session_id, name)`
 - `delete_session(layout, session_id)` — removes the whole dir.
-- `last_worked(layout) -> session_id | None` — max `saved_at` (falls back to
-  `created_at` for never-saved sessions).
-- `verify_pins(layout, session_id, source_fp)` — raises a typed error naming
-  the diverged pin (consumed by the load route → 409).
+- `last_worked(infos: list[SessionInfo]) -> session_id | None` — max
+  `saved_at` (falls back to `created_at` for never-saved sessions); a pure
+  function over an already-fetched list so callers never read
+  `session.json` twice.
+- `verify_pins(layout, session_id, source_fp)` — string-compares the pins
+  (preseg pin vs `prelabel/<id>/meta.json`), raises a typed error naming
+  the diverged pin (consumed by the load route → 409). Returns the parsed
+  session aux so callers don't re-read it.
 
 ### New module `backend/preseg/preseg_store.py`
 
-- `list_presegs(layout) -> list[PresegInfo]` — from `prelabel/*/meta.json`.
+- `list_presegs(layout) -> list[PresegInfo]` — from `prelabel/*/meta.json`
+  only (fingerprint, n_segments and friends are all in the meta — listing
+  never loads point arrays).
 - `register_preseg(layout, preseg_id, instance_ids, summary, generator,
-  params)` — writes the three files, computing fingerprints at write time.
-  Offline pipelines (`scripts/preseg/presegment*.py`, SAM3 post-process) call
-  this instead of writing `prelabel/ransac_*` directly.
+  params)` — writes the three files, computing the fingerprint and
+  `n_segments` at write time. Offline pipelines
+  (`scripts/preseg/presegment*.py`, SAM3 post-process) call this instead of
+  writing `prelabel/ransac_*` directly.
+- `load_preseg(layout, preseg_id, n_points)` — the *moved* body of v1.3's
+  `segment_io.load_prelabel` (raising instead of returning None; class
+  scatter vectorized via a segment-id LUT).
 
 ### Adapted, not duplicated
 
 - `SegmentSession` (`labeling/segment_state.py`) remains the single in-memory
   working state with its existing autosave debounce; it is constructed against
   `sessions/<id>/` paths. `_aux_payload()` becomes the `session.json` body
-  (gains `name`, `created_at`; `preseg_run_id` renamed `preseg_id`).
-  `segment_io.SESSION_SCHEMA_VERSION` bumps 1 → 2; `saved_at` continues to be
-  stamped in `save_session_aux()` at write time, not in `_aux_payload()`.
+  (gains `name`, `created_at`; `preseg_run_id` renamed `preseg_id`), and a
+  symmetric `SegmentSession.from_aux(...)` classmethod is its inverse —
+  serialize and deserialize live side by side in one file so session fields
+  have a single home. `segment_io.SESSION_SCHEMA_VERSION` bumps 1 → 2;
+  `saved_at` continues to be stamped in `save_session_aux()` at write time,
+  not in `_aux_payload()`.
+- `_filter_tiny_segments` moves from `app/core.py` to `labeling/segment_io.py`
+  (it is pure array logic); seeding in `create_session` applies it via a
+  `min_segment_points` parameter so resumed sessions round-trip byte-identical
+  (the filter runs at seed time, never on resume).
+- The loaded cloud's `source_fingerprint` is computed once in the load route
+  and stashed in `_state` next to `seg`/`session_id`; session creation reads
+  it from there instead of recomputing.
+- `SceneSource.session_dir` and `scene_registry._session_dir_for` are deleted:
+  annotated scans derive paths via `ScanLayout(scan_dir)`, and non-annotated
+  tiers have no session model at all in v2 (the old `<data_dir>/sessions/`
+  recovery path was dead code — segment editing is annotated-only).
 - `save_labels()` (`labeling/segment_io.py`) writes to
   `sessions/<id>/output/` and `sessions/<id>/history/`.
 - `load_prelabel()` (`segment_io.py`) takes a `preseg_id`.
@@ -188,7 +221,7 @@ The only code that touches `sessions/*` structure:
 | `GET /api/scenes/{id}/sessions` | new — list sessions |
 | `POST /api/scenes/{id}/sessions` | new — body `{name, preseg_id?}` → create |
 | `PATCH /api/scenes/{id}/sessions/{sid}` | new — body `{name}` → rename |
-| `DELETE /api/scenes/{id}/sessions/{sid}` | new — delete; requires `?confirm=true` |
+| `DELETE /api/scenes/{id}/sessions/{sid}` | new — delete (the UI confirm dialog is the guard; no backend confirm handshake) |
 | `GET /api/scenes/{id}/presegs` | new — list preseg results |
 | `POST /api/load` | gains optional `session_id`; default = last-worked; if the scan has no sessions, loads cloud only and reports `sessions: []` (UI then shows the picker). Pin verification here → 409 `{detail, diverged: "preseg"|"source"}`. The existing `keep_prev_seg` carry-over heuristic (`routes/load.py:49-56`) is removed — "switch session = flush autosave + load the other" supersedes it |
 | `PUT /api/segment/save` | unchanged signature; writes into the active session's `output/` |
@@ -229,12 +262,14 @@ session/{current.json,*.npy} → sessions/legacy/  (session.json synthesized
 annotation_history/*         → sessions/legacy/history/
 prelabel/ransac_*            → prelabel/ransac/{instance_ids.npy,
                                segment_summary.json, meta.json (generator
-                               "ransac", fingerprint computed)}
+                               "ransac", fingerprint + n_segments computed)}
 meta.json                    → schema_version: 2
 ```
 
-- A scan with `labels/` but no `session/` still gets `sessions/legacy/` with
-  working arrays copied from the GT (so resuming continues from the save).
+- Working arrays follow one coalescing rule:
+  `working_* = session/working_* if present, else the migrated GT, else
+  all -1` — the "labels but no session" case is just one arm of that rule,
+  not a special case.
 - The legacy session's pins are **recomputed** from the migrated
   `prelabel/ransac/instance_ids.npy` and the cloud — not copied from the old
   `prelabel_fingerprint` field — so the pin provably matches what is on disk

@@ -183,8 +183,10 @@ def test_register_then_list_and_load(scan):
                            generator="ransac", params={"eps": 0.1})
     assert info.preseg_id == "ransac"
     assert info.fingerprint.startswith("sha256:")
+    assert info.n_segments == 3
     listed = list_presegs(scan)
     assert [p.preseg_id for p in listed] == ["ransac"]
+    assert listed[0].n_segments == 3  # read from meta.json, not the array
     ci, ii = load_preseg(scan, "ransac", n_points=8)
     assert ii.tolist() == _inst().tolist()
     assert ci.dtype == np.int8  # class map applied; all -1 here
@@ -211,7 +213,13 @@ def test_fingerprint_stable_across_reload(scan):
 
 - [ ] **Step 2: Run, verify fail** — `pytest backend/tests/test_preseg_store.py -v` → FAIL (module missing).
 
-- [ ] **Step 3: Implement** — `backend/preseg/preseg_store.py`:
+- [ ] **Step 3: Implement** — `backend/preseg/preseg_store.py`. NOTE: `load_preseg`
+is the **moved** body of `segment_io.load_prelabel` (segment_io.py:56-81) with two
+deliberate changes — it raises instead of returning `None` (preseg selection is
+explicit in v2, so a broken preseg must surface), and the per-segment scatter loop
+is replaced by a LUT gather (O(N) instead of O(S·N); SAM3 presegs have thousands of
+segments over multi-million-point clouds). Don't retype the old body — Task 12
+deletes `load_prelabel`.
 
 ```python
 """prelabel/<preseg_id>/ store (scan-schema v2).
@@ -226,7 +234,6 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 import numpy as np
 
@@ -242,16 +249,15 @@ class PresegInfo:
     generator: str
     params: dict
     fingerprint: str
-    source_fingerprint: Optional[str]
     created_at: str
     n_segments: int
 
 
 def register_preseg(layout: ScanLayout, preseg_id: str, instance_ids: np.ndarray,
-                    *, summary: dict, generator: str, params: dict,
-                    source_fingerprint: Optional[str] = None) -> PresegInfo:
-    """Publish a preseg result. Computes the fingerprint at write time so
-    meta.json is authoritative for pin checks."""
+                    *, summary: dict, generator: str, params: dict) -> PresegInfo:
+    """Publish a preseg result. The fingerprint and n_segments are computed
+    once here and recorded in meta.json — meta.json is the preseg's identity:
+    pin checks and listings read it instead of re-hashing the array."""
     if not _ID_RE.match(preseg_id):
         raise ValueError(f"preseg_id {preseg_id!r} must match {_ID_RE.pattern}")
     instance_ids = instance_ids.astype(np.int32, copy=False)
@@ -263,36 +269,37 @@ def register_preseg(layout: ScanLayout, preseg_id: str, instance_ids: np.ndarray
         "generator": generator,
         "params": params,
         "fingerprint": compute_fingerprint(instance_ids),
-        "source_fingerprint": source_fingerprint,
+        "n_segments": int(np.unique(instance_ids[instance_ids >= 0]).size),
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     atomic_write_json(d / "meta.json", meta)
-    n_segments = int(np.unique(instance_ids[instance_ids >= 0]).size)
-    return PresegInfo(n_segments=n_segments, **{k: meta[k] for k in (
-        "preseg_id", "generator", "params", "fingerprint",
-        "source_fingerprint", "created_at")})
+    return PresegInfo(**meta)
+
+
+def read_preseg_meta(layout: ScanLayout, preseg_id: str) -> dict:
+    """Parsed prelabel/<id>/meta.json. Raises if absent/unreadable."""
+    meta_path = layout.preseg_dir(preseg_id) / "meta.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(
+            f"preseg '{preseg_id}' has no meta.json (not a v2 preseg?)")
+    return json.loads(meta_path.read_text())
 
 
 def list_presegs(layout: ScanLayout) -> list[PresegInfo]:
-    """Enumerate prelabel/*/meta.json. A dir without a readable meta.json is
-    skipped with a warning-by-omission is NOT acceptable here — it raises,
-    because a malformed preseg silently vanishing from the picker hides bugs."""
+    """Enumerate prelabel/*/meta.json. Pure metadata I/O — never loads the
+    point arrays. A dir without a readable meta.json raises, because a
+    malformed preseg silently vanishing from the picker hides bugs."""
     root = layout.presegs_root
     if not root.is_dir():
         return []
     out: list[PresegInfo] = []
     for d in sorted(p for p in root.iterdir() if p.is_dir()):
-        meta_path = d / "meta.json"
-        if not meta_path.exists():
-            raise ValueError(f"preseg dir {d} has no meta.json (not a v2 preseg?)")
-        meta = json.loads(meta_path.read_text())
-        inst = np.load(d / "instance_ids.npy", mmap_mode="r")
-        n_segments = int(np.unique(np.asarray(inst[inst >= 0])).size)
+        meta = read_preseg_meta(layout, d.name)
         out.append(PresegInfo(
             preseg_id=meta["preseg_id"], generator=meta.get("generator", "?"),
             params=meta.get("params", {}), fingerprint=meta["fingerprint"],
-            source_fingerprint=meta.get("source_fingerprint"),
-            created_at=meta.get("created_at", ""), n_segments=n_segments,
+            created_at=meta.get("created_at", ""),
+            n_segments=int(meta.get("n_segments", 0)),
         ))
     return out
 
@@ -300,8 +307,8 @@ def list_presegs(layout: ScanLayout) -> list[PresegInfo]:
 def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
                 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (class_ids int8, instance_ids int32) for one preseg result.
-    Raises on missing files / shape mismatch — preseg selection is explicit
-    in v2, so a broken preseg must surface, not degrade to None."""
+    Moved from v1.3 segment_io.load_prelabel; raises on missing files /
+    shape mismatch instead of degrading to None."""
     d = layout.preseg_dir(preseg_id)
     inst_path = d / "instance_ids.npy"
     summary_path = d / "segment_summary.json"
@@ -315,8 +322,15 @@ def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
     seg_to_class = {int(s["id"]): int(s["class_id"])
                     for s in summary.get("segments", [])}
     class_ids = np.full(n_points, -1, dtype=np.int8)
-    for sid, cid in seg_to_class.items():
-        class_ids[instance_ids == sid] = cid
+    if seg_to_class:
+        # LUT gather: one pass over the cloud instead of one mask per segment.
+        max_id = max(seg_to_class)
+        lut = np.full(max_id + 1, -1, dtype=np.int8)
+        for sid, cid in seg_to_class.items():
+            if sid >= 0:
+                lut[sid] = cid
+        m = (instance_ids >= 0) & (instance_ids <= max_id)
+        class_ids[m] = lut[instance_ids[m]]
     return class_ids, instance_ids
 ```
 
@@ -329,8 +343,8 @@ def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
 
 **Files:**
 - Create: `backend/labeling/session_store.py`
-- Modify: `backend/labeling/segment_io.py` (SESSION_SCHEMA_VERSION → 2; `current.json` → `session.json`)
-- Modify: `backend/labeling/segment_state.py` (`preseg_run_id` → `preseg_id`; aux gains `name`, `created_at`)
+- Modify: `backend/labeling/segment_io.py` (SESSION_SCHEMA_VERSION → 2; `current.json` → `session.json`; gains `filter_tiny_segments` moved from `app/core.py`)
+- Modify: `backend/labeling/segment_state.py` (`preseg_run_id` → `preseg_id`; aux gains `name`, `created_at`, drops `is_from_prelabel`; new `from_aux` classmethod)
 - Test: `backend/tests/test_session_store.py`; update `backend/tests/test_segment_io.py`, `backend/tests/test_segment_state.py` references to `current.json`/`preseg_run_id`
 
 - [ ] **Step 1: segment_io rename (small, mechanical).** In `segment_io.py`: set `SESSION_SCHEMA_VERSION = 2`; in `save_session_aux`/`load_session_aux` replace `"current.json"` with `"session.json"` (3 occurrences incl. `load_working_arrays` gate via `load_session_aux`). In `segment_state.py`: rename attribute `preseg_run_id` → `preseg_id` (constructor line 56, `freeze_preseg` kwarg stays `run_id` external? **No** — rename the kwarg to `preseg_id` too and fix its callers: `grep -rn "preseg_run_id\|run_id=" backend/ | grep -v renders`), `_aux_payload` becomes:
@@ -349,7 +363,30 @@ def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
         }
 ```
 
-with `self.name: str = ""` and `self.created_at: Optional[str] = None` initialized in `__init__` (schema_version is stamped by `save_session_aux` via `setdefault`, `saved_at` stamped there too — unchanged). Fix `routes/segment.py:74` (`preseg_run_id=seg.preseg_run_id` → keep the **response field name** `preseg_run_id` for now; it is removed/renamed in Task 8) by reading `seg.preseg_id`.
+with `self.name: str = ""` and `self.created_at: Optional[str] = None` initialized in `__init__` (schema_version is stamped by `save_session_aux` via `setdefault`, `saved_at` stamped there too — unchanged). Note `is_from_prelabel` is **not** persisted in v2 (derivable as `preseg_id is not None`); keep the in-memory `SegmentSession.is_from_prelabel` attribute for now (Task 4 feeds it the derived value). Add the symmetric inverse of `_aux_payload` right next to it — the single home for session-field (de)serialization:
+
+```python
+    @classmethod
+    def from_aux(cls, aux: dict, *, class_ids, instance_ids, positions,
+                 session_dir) -> "SegmentSession":
+        """Inverse of _aux_payload(): rebuild in-memory session state from a
+        parsed session.json. Every field written there is restored here —
+        keep the two methods in lockstep."""
+        seg = cls(class_ids=class_ids, instance_ids=instance_ids,
+                  positions=positions,
+                  is_from_prelabel=aux.get("preseg_id") is not None,
+                  session_dir=session_dir)
+        seg.preseg_id = aux.get("preseg_id")
+        seg.preseg_fingerprint = aux.get("preseg_fingerprint")
+        seg.source_fingerprint = aux.get("source_fingerprint")
+        seg.name = aux.get("name") or ""
+        seg.created_at = aux.get("created_at")
+        seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
+        seg.dirty = bool(aux.get("dirty", False))
+        return seg
+```
+
+Drop `"is_from_prelabel"` from `_aux_payload()`. Also in this step: move `_filter_tiny_segments` from `app/core.py:183` into `labeling/segment_io.py` as a pure-array function `filter_tiny_segments(class_ids, instance_ids, min_points) -> tuple[np.ndarray, np.ndarray]` (core keeps a thin `LabelArrays` wrapper at its old call site until Task 4 deletes that path) — `session_store` must not import from `app.core` (dependency direction is app → stores, never the reverse). Fix `routes/segment.py:74` (`preseg_run_id=seg.preseg_run_id` → keep the **response field name** `preseg_run_id` for now; it is removed/renamed in Task 4) by reading `seg.preseg_id`.
 
 - [ ] **Step 2: Run existing suites** — `pytest backend/tests/test_segment_io.py backend/tests/test_segment_state.py backend/tests/test_segment_endpoints.py -v`; fix any `current.json` / `preseg_run_id` references in those tests. Expected: PASS.
 
@@ -421,15 +458,17 @@ def test_list_rename_delete(scan):
     assert ss.list_sessions(scan) == []
 
 
-def test_last_worked_ordering(scan, monkeypatch):
+def test_last_worked_ordering(scan):
     a = ss.create_session(scan, name="a", preseg_id=None, n_points=8, source_fp=SRC_FP)
     time.sleep(1.1)  # saved_at has seconds resolution
     b = ss.create_session(scan, name="b", preseg_id=None, n_points=8, source_fp=SRC_FP)
-    assert ss.last_worked(scan) == b.session_id
-    # touching a's saved_at moves it ahead
+    assert ss.last_worked(ss.list_sessions(scan)) == b.session_id
+    # an edit (autosave) to a moves it ahead — saved_at means last persisted edit
     time.sleep(1.1)
-    ss.touch_saved_at(scan, a.session_id)
-    assert ss.last_worked(scan) == a.session_id
+    from labeling.segment_io import load_session_aux, save_session_aux
+    sp = scan.session(a.session_id)
+    save_session_aux(sp.dir, load_session_aux(sp.dir))
+    assert ss.last_worked(ss.list_sessions(scan)) == a.session_id
 
 
 def test_verify_pins_ok_and_mismatches(scan):
@@ -439,9 +478,13 @@ def test_verify_pins_ok_and_mismatches(scan):
     with pytest.raises(ss.PinMismatch) as e:
         ss.verify_pins(scan, info.session_id, source_fp="sha256:other")
     assert e.value.diverged == "source"
-    # tamper with the preseg array → preseg pin diverges
-    p = scan.preseg_dir("ransac") / "instance_ids.npy"
-    np.save(p, np.array([9] * 8, dtype=np.int32))
+    # re-register the preseg with different content → preseg pin diverges
+    # (pin check compares the session pin against the preseg's DECLARED
+    # fingerprint in meta.json — re-registering is the supported way a
+    # preseg changes; out-of-band npy edits are out of scope by design)
+    register_preseg(scan, "ransac", np.array([9] * 8, dtype=np.int32),
+                    summary={"segments": [{"id": 9, "class_id": -1}]},
+                    generator="ransac", params={})
     with pytest.raises(ss.PinMismatch) as e:
         ss.verify_pins(scan, info.session_id, source_fp=SRC_FP)
     assert e.value.diverged == "preseg"
@@ -467,8 +510,6 @@ the in-memory SegmentSession is constructed by app.core, not here.
 """
 from __future__ import annotations
 
-import json
-import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -476,12 +517,10 @@ from typing import Optional
 
 import numpy as np
 
-from labeling.segment_io import (atomic_write_json, compute_fingerprint,
+from labeling.segment_io import (atomic_write_json, filter_tiny_segments,
                                  load_session_aux, save_session_aux)
-from preseg.preseg_store import load_preseg
+from preseg.preseg_store import load_preseg, read_preseg_meta
 from scenes.scan_layout import ScanLayout
-
-_ID_RE = re.compile(r"^[a-z0-9_-]+$")
 
 
 class PinMismatch(Exception):
@@ -515,17 +554,21 @@ def create_session(layout: ScanLayout, *, name: str, preseg_id: Optional[str],
     and freeze both fingerprint pins. The only moment a preseg is chosen.
     ``min_segment_points`` > 0 drops seeded segments smaller than the
     threshold to (-1, -1) — seed-time analogue of the loader's old
-    ``_filter_tiny_segments`` (a resumed session must round-trip
-    byte-identical, so filtering happens here, never on resume)."""
-    if preseg_id is not None and not _ID_RE.match(preseg_id):
-        raise ValueError(f"preseg_id {preseg_id!r} must match {_ID_RE.pattern}")
+    tiny-segment filter (a resumed session must round-trip byte-identical,
+    so filtering happens here, never on resume). Bad/missing preseg_id is
+    rejected by load_preseg — no separate validation needed here."""
     if preseg_id is not None:
         class_ids, instance_ids = load_preseg(layout, preseg_id, n_points)
-        preseg_fp = compute_fingerprint(instance_ids)
+        if min_segment_points > 0:
+            class_ids, instance_ids = filter_tiny_segments(
+                class_ids, instance_ids, min_segment_points)
+        preseg_fp = read_preseg_meta(layout, preseg_id)["fingerprint"]
     else:
         class_ids = np.full(n_points, -1, dtype=np.int8)
         instance_ids = np.full(n_points, -1, dtype=np.int32)
         preseg_fp = None
+    # NB: dash-separated stamp on purpose — history dirs use %Y%m%d_%H%M%S
+    # and prune_history's _TS_RE must never match a session id.
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     session_id = f"{ts}_{preseg_id or 'blank'}"
     sp = layout.session(session_id)
@@ -537,7 +580,6 @@ def create_session(layout: ScanLayout, *, name: str, preseg_id: Optional[str],
         "preseg_fingerprint": preseg_fp,
         "source_fingerprint": source_fp,
         "hidden_inst_ids": [],
-        "is_from_prelabel": preseg_id is not None,
         "dirty": False,
         "name": name,
         "created_at": created_at,
@@ -591,28 +633,23 @@ def delete_session(layout: ScanLayout, session_id: str) -> None:
     shutil.rmtree(sp.dir)
 
 
-def touch_saved_at(layout: ScanLayout, session_id: str) -> None:
-    """Bump saved_at (used by /api/load resume so last_worked tracks usage)."""
-    sp = layout.session(session_id)
-    aux = load_session_aux(sp.dir)
-    if aux is None:
-        raise FileNotFoundError(f"session {session_id}: no readable session.json")
-    aux["saved_at"] = _now()
-    atomic_write_json(sp.session_json, aux)
-
-
-def last_worked(layout: ScanLayout) -> Optional[str]:
-    """session_id with max saved_at (created_at fallback); None if no
-    non-corrupt sessions exist."""
-    infos = [i for i in list_sessions(layout) if not i.corrupt]
-    if not infos:
+def last_worked(infos: list[SessionInfo]) -> Optional[str]:
+    """session_id with max saved_at (created_at fallback) from an
+    already-fetched list — pure function so callers never read
+    session.json twice. saved_at means last persisted EDIT (stamped by
+    autosave/save); merely opening a session does not reorder."""
+    live = [i for i in infos if not i.corrupt]
+    if not live:
         return None
-    return max(infos, key=lambda i: (i.saved_at or i.created_at or "")).session_id
+    return max(live, key=lambda i: (i.saved_at or i.created_at or "")).session_id
 
 
 def verify_pins(layout: ScanLayout, session_id: str, *, source_fp: str) -> dict:
-    """Enforce the immutable pins before resume. Returns the aux dict on
-    success so the caller doesn't re-read it."""
+    """Enforce the immutable pins before resume. String-compares the session
+    pin against the preseg's DECLARED fingerprint (prelabel/<id>/meta.json)
+    — no array load or hashing on the load path; re-registering is the only
+    supported way a preseg changes. Returns the aux dict on success so the
+    caller doesn't re-read it."""
     sp = layout.session(session_id)
     aux = load_session_aux(sp.dir)
     if aux is None:
@@ -624,12 +661,12 @@ def verify_pins(layout: ScanLayout, session_id: str, *, source_fp: str) -> dict:
             f"but the loaded cloud is {source_fp}"))
     preseg_id = aux.get("preseg_id")
     if preseg_id is not None:
-        p = layout.preseg_dir(preseg_id) / "instance_ids.npy"
-        if not p.exists():
+        try:
+            current_fp = read_preseg_meta(layout, preseg_id)["fingerprint"]
+        except FileNotFoundError:
             raise PinMismatch("preseg", (
                 f"session {session_id} is pinned to preseg '{preseg_id}' "
-                f"which no longer exists at {p}"))
-        current_fp = compute_fingerprint(np.load(p).astype(np.int32))
+                f"which no longer exists"))
         if aux.get("preseg_fingerprint") != current_fp:
             raise PinMismatch("preseg", (
                 f"session {session_id}: preseg '{preseg_id}' content changed "
@@ -647,7 +684,7 @@ def verify_pins(layout: ScanLayout, session_id: str, *, source_fp: str) -> dict:
 This is the switchover task: the loader stops reading `labels/`/`prelabel/` and starts resolving sessions. The conftest fixture moves to v2 **in the same task** because they cannot land separately and stay green.
 
 **Files:**
-- Modify: `backend/scenes/scene_registry.py` (`_discover_annotated`: require `str(meta.get("schema_version","")).startswith("2")`, else `logging.info("skipping %s: scan-schema %s != 2.x — run scripts/migrate_scan_v2.py", ...)` and `continue`; `has_labels` → `bool(list_sessions(...))`-free cheap check: `ScanLayout(sd).sessions_root.is_dir()`; drop `gt_*`/`labels_dir` extras keys; `session_dir=_session_dir_for(...)` for annotated becomes `lay.sessions_root`)
+- Modify: `backend/scenes/scene_registry.py` (`_discover_annotated`: require `str(meta.get("schema_version","")).startswith("2")`, else `logging.info("skipping %s: scan-schema %s != 2.x — run scripts/migrate_scan_v2.py", ...)` and `continue`; `has_labels` → cheap check `ScanLayout(sd).sessions_root.is_dir()`; drop `gt_*`/`labels_dir` extras keys; **delete `SceneSource.session_dir` and `_session_dir_for` entirely** — consumers derive paths via `ScanLayout(extras["scan_dir"])`, non-annotated tiers carry no session path)
 - Modify: `backend/scenes/lidar_io.py` (`load_annotated`: delete the `labels/gt_*` block (lines ~123–172) and the `load_prelabel` fallback; always return `labels=None, is_from_prelabel=False`; keep palette/meta handling)
 - Modify: `backend/app/core.py` (replace `_seed_or_recover_session` with `_resume_session`; delete `_stale_prelabel_check`)
 - Modify: `backend/routes/load.py` (session resolution; delete `keep_prev_seg` block lines 43–56 and `prefer_prelabel` plumbing; 409 on `PinMismatch`)
@@ -680,7 +717,7 @@ This is the switchover task: the loader stops reading `labels/`/`prelabel/` and 
                           n_points=8, source_fp=source_fp)
 ```
 
-and update `meta.json` to include `"schema_version": "2.0", "class_map_version": 1`. Make `build_annotated_root` return `(root, sess.session_id)` and fix `client_with_annotated_scene` (the one fixture that calls it; `scan_dir_for_loaded_scene` rebuilds the path manually). Add `session_id=None` to the `_reset_main_state` fixture's `_state.update(...)` (conftest.py:31-34) so the new state key doesn't leak across tests. **Gotcha:** the route computes `source_fp` from the cloud after `_z_up_to_y_up`; the fixture meta must therefore set `"source_mesh": true` (no `source_laz`) so `is_z_up=False` and no rotation is applied, keeping fingerprints equal.
+and update `meta.json` to include `"schema_version": "2.0", "class_map_version": 1`. Make `build_annotated_root` return `(root, sess.session_id)` and fix `client_with_annotated_scene` (the one fixture that calls it; `scan_dir_for_loaded_scene` rebuilds the path manually). Add `session_id=None, source_fp=None` to the `_reset_main_state` fixture's `_state.update(...)` (conftest.py:31-34) so the new state keys don't leak across tests. **Gotcha:** the route computes `source_fp` from the cloud after `_z_up_to_y_up`; the fixture meta must therefore set `"source_mesh": true` (no `source_laz`) so `is_z_up=False` and no rotation is applied, keeping fingerprints equal.
 
 - [ ] **Step 2: lidar_io + registry edits** as listed above. Run `pytest backend/tests/test_lidar_io.py backend/tests/test_scene_registry.py -v`, update assertions (e.g. labels now always None from `load_annotated`; v1.3 fixture scans must be skipped by discovery — add an explicit test:
 
@@ -692,34 +729,27 @@ def test_v13_scan_not_discovered(tmp_path, caplog):
 - [ ] **Step 3: core `_resume_session`.** Replace `_seed_or_recover_session` (core.py:251-300) with:
 
 ```python
-def _resume_session(scan_dir: Path, session_id: str, pc, source_fp: str):
+def _resume_session(lay: "ScanLayout", session_id: str, pc, source_fp: str):
     """Resume one on-disk session: verify pins (PinMismatch propagates to the
-    route → 409), load working arrays, build the in-memory SegmentSession.
-    Fails loudly on unreadable/misshapen arrays — never silently blank."""
+    route → 409), load working arrays, rebuild the in-memory SegmentSession
+    via SegmentSession.from_aux (the inverse of _aux_payload). Fails loudly
+    on unreadable/misshapen arrays — never silently blank. The preseg array
+    is read exactly once (for the snap-to layer); the pin check itself is a
+    string compare against the preseg's meta.json."""
     from labeling.segment_state import SegmentSession
     from labeling.segment_io import load_working_arrays
     from labeling.session_store import verify_pins
     from preseg.preseg_store import load_preseg
-    from scenes.scan_layout import ScanLayout
 
-    lay = ScanLayout(scan_dir)
     aux = verify_pins(lay, session_id, source_fp=source_fp)
     sp = lay.session(session_id)
     wa = load_working_arrays(sp.dir, n_points=len(pc))
     if wa is None:
         raise HTTPException(409, f"session {session_id}: working arrays "
                                  f"missing or wrong shape for this cloud")
-    seg = SegmentSession(class_ids=wa[0], instance_ids=wa[1],
-                         positions=pc.points,
-                         is_from_prelabel=bool(aux.get("is_from_prelabel", False)),
-                         session_dir=sp.dir)
+    seg = SegmentSession.from_aux(aux, class_ids=wa[0], instance_ids=wa[1],
+                                  positions=pc.points, session_dir=sp.dir)
     seg.source_fingerprint = source_fp
-    seg.preseg_id = aux.get("preseg_id")
-    seg.preseg_fingerprint = aux.get("preseg_fingerprint")
-    seg.name = aux.get("name") or session_id
-    seg.created_at = aux.get("created_at")
-    seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
-    seg.dirty = bool(aux.get("dirty", False))
     if seg.preseg_id is not None:
         _, pre_ii = load_preseg(lay, seg.preseg_id, n_points=len(pc))
         seg.preseg_ids = pre_ii          # immutable preseg layer for snap-to
@@ -736,30 +766,44 @@ Delete `_stale_prelabel_check` entirely (grep `stale_prelabel` across backend+fr
     seg = None
     if src.tier == "annotated":
         from dataclasses import asdict
-        from labeling.session_store import PinMismatch, last_worked, list_sessions, touch_saved_at
-        scan_dir = Path(src.extras["scan_dir"])
-        lay_sessions = list_sessions(ScanLayout(scan_dir))
-        sessions_meta = [asdict(s) for s in lay_sessions]
-        session_id = req.session_id or last_worked(ScanLayout(scan_dir))
-        if req.session_id and req.session_id not in {s.session_id for s in lay_sessions}:
+        from labeling.session_store import PinMismatch, last_worked, list_sessions
+        lay = ScanLayout(Path(src.extras["scan_dir"]))
+        infos = list_sessions(lay)              # one pass over session.json files
+        sessions_meta = [asdict(s) for s in infos]
+        if req.session_id and req.session_id not in {s.session_id for s in infos}:
             raise HTTPException(404, f"session {req.session_id!r} not found")
+        session_id = req.session_id or last_worked(infos)
         if session_id is not None:
             try:
-                seg = _resume_session(scan_dir, session_id, pc, source_fp)
+                seg = _resume_session(lay, session_id, pc, source_fp)
             except PinMismatch as e:
                 raise HTTPException(status_code=409, detail={
                     "error": "session_pin_mismatch",
                     "diverged": e.diverged,
                     "session_id": session_id,
                     "message": str(e)})
-            touch_saved_at(ScanLayout(scan_dir), session_id)
     _state["seg"] = seg
     _state["session_id"] = session_id
+    _state["source_fp"] = source_fp   # single home; session creation reads this
     if seg is not None:
         labels = LabelArrays(class_ids=seg.class_ids, instance_ids=seg.instance_ids)
 ```
 
-Notes for the implementer: `labels` then feeds the existing `_filter_tiny_segments` → **move that filter to `create_session` seeding instead** (tiny-segment cleanup is a seed-time concern; a resumed session must round-trip byte-identical) — i.e. in `session_store.create_session`, after `load_preseg`, apply the same `MIN_SEGMENT_POINTS` filter (import threshold via parameter `min_segment_points: int = 0` passed by the route layer; keep session_store env-free). `n_classes/n_instances/n_labeled` recompute from `seg` arrays. Delete the `prev_scene/prev_seg/keep_prev_seg` block and `prefer_prelabel`. `LoadResponse` gains `session_id=session_id, sessions=sessions_meta`. The subsampled `class_ids`/`instance_ids` payload comes from `labels` exactly as today.
+Notes for the implementer: `/api/load` never writes to disk — there is no
+"touch on open"; `last_worked` orders by `saved_at`, which autosave stamps on
+the first edit, so "last worked" means last *edited*, not last opened. The old
+load-path `_filter_tiny_segments` call is deleted (filtering moved to
+`create_session` seeding in Task 3; resumes round-trip byte-identical) — delete
+the `app/core.py` wrapper and the `MIN_SEGMENT_POINTS` filter call in the
+route. `n_classes/n_instances/n_labeled` recompute from `seg` arrays. Delete
+the `prev_scene/prev_seg/keep_prev_seg` block and `prefer_prelabel`.
+`LoadResponse` gains `session_id=session_id, sessions=sessions_meta`. The
+subsampled `class_ids`/`instance_ids` payload comes from `labels` exactly as
+today. Also delete `SceneSource.session_dir` and `_session_dir_for` from
+`scene_registry.py` in this task — annotated consumers derive paths via
+`ScanLayout(scan_dir)`, and non-annotated tiers have no session model (the old
+`<data_dir>/sessions/` recovery path is dead code; segment editing only ever
+existed for annotated scenes).
 
 - [ ] **Step 5: Run the endpoint suites** — `pytest backend/tests/test_load_endpoint.py backend/tests/test_segment_endpoints.py backend/tests/test_smoke.py -v`. Update tests: loads of `annotated/demo` now resume the fixture session (assert `r.json()["session_id"]` endswith `_ransac`); add new tests:
 
@@ -849,13 +893,15 @@ def sessions_create(tier: str, name: str, req: CreateSessionRequest):
     src, lay = _annotated_layout(f"{tier}/{name}")
     # n_points + source_fp must describe the cloud as the loader sees it →
     # require the scene to be loaded (same single-cloud model as /segment/*).
-    if _state.get("scene") != src.scene_id or _state.get("pc") is None:
+    # source_fp was computed ONCE by /api/load and stashed in _state — the
+    # pin definition ("fingerprint of the loaded, recentered cloud") lives
+    # in exactly one place; never recompute it here.
+    if _state.get("scene") != src.scene_id or _state.get("source_fp") is None:
         raise HTTPException(409, "load the scene before creating a session")
-    from labeling.segment_io import compute_fingerprint
-    source_fp = compute_fingerprint(_state["pc"].points.astype(np.float32))
     try:
         info = create_session(lay, name=req.name, preseg_id=req.preseg_id,
-                              n_points=len(_state["pc"]), source_fp=source_fp,
+                              n_points=len(_state["pc"]),
+                              source_fp=_state["source_fp"],
                               min_segment_points=MIN_SEGMENT_POINTS)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(400, str(e))
@@ -874,11 +920,11 @@ def sessions_rename(tier: str, name: str, sid: str, req: RenameSessionRequest):
 
 
 @router.delete("/api/scenes/{tier}/{name}/sessions/{sid}")
-def sessions_delete(tier: str, name: str, sid: str, confirm: bool = False):
+def sessions_delete(tier: str, name: str, sid: str):
+    # The UI's confirm dialog is the destructive-action guard; no backend
+    # confirm handshake (single-user local tool, no other client).
     from labeling.session_store import delete_session
     _, lay = _annotated_layout(f"{tier}/{name}")
-    if not confirm:
-        raise HTTPException(400, "pass ?confirm=true to delete a session")
     try:
         delete_session(lay, sid)
     except FileNotFoundError as e:
@@ -901,7 +947,7 @@ def presegs_list(tier: str, name: str):
 
 Schemas: `class CreateSessionRequest(BaseModel): name: str; preseg_id: Optional[str] = None` and `class RenameSessionRequest(BaseModel): name: str`.
 
-- [ ] **Step 1: failing tests** — `test_session_routes.py` covering: list (fixture session present), create-blank, create-with-preseg, create-unknown-preseg → 400, create-without-load → 409, rename, rename-unknown → 404, delete-without-confirm → 400, delete (incl. active → segment/state has_state False), presegs list (1 entry, fingerprint present), all on `client_with_loaded_annotated_scene` / `client_with_annotated_scene`.
+- [ ] **Step 1: failing tests** — `test_session_routes.py` covering: list (fixture session present), create-blank, create-with-preseg, create-unknown-preseg → 400, create-without-load → 409, rename, rename-unknown → 404, delete (incl. active → segment/state has_state False), presegs list (1 entry, fingerprint + n_segments present), all on `client_with_loaded_annotated_scene` / `client_with_annotated_scene`.
 - [ ] **Step 2: fail run**, **Step 3: implement + register router**, **Step 4: `pytest backend/tests/test_session_routes.py -v` → PASS**.
 - [ ] **Step 5: Commit** — `git commit -m "feat: session CRUD + preseg list endpoints"`
 
@@ -918,7 +964,7 @@ CLI: `python scripts/migrate_scan_v2.py [--dry-run] [--scan NAME ...] LIDAR_ROOT
 1. Skip if `meta.json` `schema_version` starts with `"2"` (idempotency; print "already v2").
 2. Refuse if `sessions/` already exists, or `prelabel/` contains anything other than the two `ransac_*` files, or label/working array shapes mismatch `n_points` read from `source/scan.ply` header.
 3. `prelabel/ransac_*` → `prelabel/ransac/{instance_ids.npy, segment_summary.json}` + write `meta.json` via `preseg_store.register_preseg`-equivalent fields (generator `"ransac"`, params `{}`, fingerprint computed; use `register_preseg` on the loaded array, then delete the old flat files).
-4. `labels/gt_*` → `sessions/legacy/output/` (move); `session/{current.json,working_*.npy}` → `sessions/legacy/` with `session.json` synthesized: `name="legacy"`, `preseg_id="ransac"` iff the preseg dir exists else `None`, **pins recomputed** from the migrated `prelabel/ransac/instance_ids.npy` and the cloud (load scan.ply positions float32 → `compute_fingerprint`), `created_at`/`saved_at` from file mtimes (`datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)`); if no `session/` existed but `labels/` did, synthesize working arrays from the GT (class → int8).
+4. `labels/gt_*` → `sessions/legacy/output/` (move); `sessions/legacy/session.json` synthesized: `name="legacy"`, `preseg_id="ransac"` iff the preseg dir exists else `None`, **pins recomputed** from the migrated `prelabel/ransac/instance_ids.npy`'s registered meta fingerprint and the cloud (load scan.ply positions float32 → `compute_fingerprint`), `created_at`/`saved_at` from file mtimes (`datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)`). Working arrays follow ONE coalescing rule, not branches: `working_* = session/working_* if present, else the migrated GT (class → int8), else all -1`.
 5. `annotation_history/*` → `sessions/legacy/history/` (move).
 6. Remove now-empty `labels/`, `session/`, `annotation_history/` dirs; set `meta.json` `schema_version: "2.0"` (preserve all other keys).
 7. `--dry-run` prints the per-scan plan and changes nothing.
@@ -961,7 +1007,7 @@ import { decodeLoadResponse } from './api.js';
   async listSessions(scene) { const r = await fetch(`/api/scenes/${scene}/sessions`); ... },
   async createSession(scene, { name, presegId = null }) { /* POST {name, preseg_id} */ },
   async renameSession(scene, sid, name) { /* PATCH */ },
-  async deleteSession(scene, sid) { /* DELETE ?confirm=true */ },
+  async deleteSession(scene, sid) { /* DELETE (UI confirm is the guard) */ },
   async listPresegs(scene) { /* GET */ },
 ```
 
