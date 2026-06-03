@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from scenes.reproject import (  # noqa: E402
     ORIENTATION_PRESETS, look_at_view, project_points, depth_buffer_mask,
 )
-from sam3_common import load_ply, build_processor, segment, union_mask  # noqa: E402
+from sam3_common import load_ply, build_processor, segment, union_mask, gather_frames  # noqa: E402
 
 # Frame-aware remap support (scan-schema v1.3).
 try:
@@ -137,24 +137,6 @@ def _discover_runs(scan_dir: Path) -> list[Path]:
         return []
     return sorted(d for d in base.iterdir()
                   if d.is_dir() and (d / "manifest.json").exists())
-
-
-def _gather_frames(render_dirs, stride, max_frames, only=""):
-    frames = []
-    for rd in render_dirs:
-        m = json.loads((rd / "manifest.json").read_text())
-        picked = m.get("frames", [])
-        if only:
-            picked = [f for f in picked if only in f["file"]]
-        else:
-            picked = picked[::stride]
-            if max_frames > 0:
-                picked = picked[:max_frames]
-        picked = [f for f in picked
-                  if (rd / f["file"]).exists() and (rd / f["file"]).stat().st_size > 50_000]
-        print(f"  + {rd.name}: {len(picked)} frames")
-        frames.extend((rd, f) for f in picked)
-    return frames
 
 
 def _union_for_prompts(proc, pil, prompts):
@@ -324,7 +306,7 @@ def main() -> int:
             pts_cache[rd] = apply_transform(T, pts)
         return pts_cache[rd]
 
-    frames = _gather_frames(render_dirs, args.stride, args.max_frames, args.only_frame)
+    frames = gather_frames(render_dirs, args.stride, args.max_frames, args.only_frame)
     if not frames:
         print("ERROR: no usable frames", file=sys.stderr); return 3
     print(f"[2/4] {len(frames)} frames across {len(render_dirs)} run(s)")

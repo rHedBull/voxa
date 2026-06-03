@@ -12,6 +12,7 @@ imports them lazily). ``load_ply``/``union_mask`` are torch-free.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -64,3 +65,33 @@ def load_ply(path: Path, orientation: str = "Z+"):
     rgb = np.stack([v["red"], v["green"], v["blue"]], axis=-1).astype(np.uint8)
     R = euler_xyz_matrix(*ORIENTATION_PRESETS[orientation])
     return pts @ R.T, rgb
+
+
+# Stub renders (failed/empty PNGs) are tiny; skip anything under this.
+_MIN_FRAME_BYTES = 50_000
+
+
+def gather_frames(render_dirs, stride: int = 1, max_frames: int = 0, only: str = ""):
+    """Collect ``(render_dir, frame_dict)`` pairs from each dir's manifest.json.
+
+    Samples every ``stride``-th frame, capped at ``max_frames`` when > 0. When
+    ``only`` is given it overrides sampling and keeps frames whose file name
+    contains that substring. Drops frames whose PNG is missing or stub-sized, and
+    prints a per-dir count.
+    """
+    out: list[tuple[Path, dict]] = []
+    for rd in render_dirs:
+        manifest = json.loads((rd / "manifest.json").read_text())
+        picked = manifest.get("frames", [])
+        if only:
+            picked = [f for f in picked if only in f["file"]]
+        else:
+            picked = picked[::stride]
+            if max_frames > 0:
+                picked = picked[:max_frames]
+        picked = [f for f in picked
+                  if (rd / f["file"]).exists()
+                  and (rd / f["file"]).stat().st_size > _MIN_FRAME_BYTES]
+        print(f"  + {rd.name}: {len(picked)} frames")
+        out.extend((rd, f) for f in picked)
+    return out

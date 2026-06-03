@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 from scenes.reproject import (  # noqa: E402
     ORIENTATION_PRESETS, look_at_view, project_points, depth_buffer_mask,
 )
-from sam3_common import load_ply, build_processor  # noqa: E402
+from sam3_common import load_ply, build_processor, gather_frames  # noqa: E402
 
 
 def main():
@@ -57,17 +57,7 @@ def main():
     N = pts.shape[0]
     print(f"      {N:,} points")
 
-    all_frames = []
-    for rd in args.renders:
-        m = json.loads((rd / "manifest.json").read_text())
-        picked = m["frames"][::args.stride]
-        if args.max_frames > 0:
-            picked = picked[: args.max_frames]
-        picked = [f for f in picked
-                  if (rd / f["file"]).exists()
-                  and (rd / f["file"]).stat().st_size > 50_000]
-        print(f"  + {rd.name}: {len(picked)} frames")
-        all_frames.extend((rd, f) for f in picked)
+    all_frames = gather_frames(args.renders, args.stride, args.max_frames)
     print(f"[2/4] Using {len(all_frames)} frames")
 
     print(f"[3/4] Loading SAM3 on {args.device}…")
