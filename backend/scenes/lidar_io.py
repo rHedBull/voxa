@@ -158,7 +158,7 @@ def load_annotated(src: SceneSource, lidar_root: Optional[Path],
 
     is_from_prelabel = False
 
-    scan_dir = Path(src.source_path).parent.parent
+    scan_dir = Path(src.extras["scan_dir"])
 
     if labels is None:
         pre = load_prelabel(scan_dir, n_points=len(pc))

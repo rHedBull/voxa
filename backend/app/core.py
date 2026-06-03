@@ -24,6 +24,7 @@ from scenes.lidar_io import (
 )
 from scenes.point_cloud import PointCloud, load_glb, load_ply
 from scenes.reproject import euler_xyz_matrix
+from scenes.scan_layout import ScanLayout
 from scenes.scene_registry import (
    SceneSource, discover, load_lidar_root_from_env,
    resolve as resolve_scene,
@@ -310,14 +311,12 @@ def _stale_prelabel_check(src) -> bool:
     from labeling.segment_io import compute_fingerprint
 
     scan_dir_str = src.extras.get("scan_dir") if src.extras else None
-    if scan_dir_str is None and src.tier == "annotated":
-        scan_dir_str = str(Path(src.source_path).parent.parent)
     if scan_dir_str is None:
         return False
 
-    scan_dir = Path(scan_dir_str)
-    labels_meta_path = scan_dir / "labels" / "gt_segment_metadata.json"
-    prelabel_path = scan_dir / "prelabel" / "ransac_instance_ids.npy"
+    lay = ScanLayout(Path(scan_dir_str))
+    labels_meta_path = lay.gt_segment_metadata
+    prelabel_path = lay.ransac_instance_ids
     if not (labels_meta_path.exists() and prelabel_path.exists()):
         return False
 
