@@ -235,6 +235,10 @@ meta.json                    → schema_version: 2
 
 - A scan with `labels/` but no `session/` still gets `sessions/legacy/` with
   working arrays copied from the GT (so resuming continues from the save).
+- The legacy session's pins are **recomputed** from the migrated
+  `prelabel/ransac/instance_ids.npy` and the cloud — not copied from the old
+  `prelabel_fingerprint` field — so the pin provably matches what is on disk
+  after migration.
 - The script refuses loudly per scan on anything unexpected (extra files in
   `prelabel/`, shape mismatches) rather than guessing; `--dry-run` prints the
   plan.
