@@ -11,24 +11,14 @@ import numpy as np
 import pytest
 from plyfile import PlyData, PlyElement
 
+from tests.conftest import write_scene_ply
+
 # backend/ is already on sys.path via conftest.py (VOXA_DATA_DIR import triggers conftest).
 # We locate the worktree root (backend/tests/ = parents[0], backend/ = parents[1],
 # worktree root = parents[2]) so we can pass cwd= to subprocess.
 _WORKTREE_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _WORKTREE_ROOT / "scripts" / "migrate_scan_v2.py"
 
-
-def _write_ply(path: Path, n: int = 8) -> None:
-    """Write a tiny PLY with deterministic xyz (same seed as test_load_endpoint)."""
-    rng = np.random.default_rng(0)
-    pts = rng.standard_normal((n, 3)).astype(np.float32)
-    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
-             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
-    arr = np.zeros(n, dtype=dtype)
-    arr['x'], arr['y'], arr['z'] = pts[:, 0], pts[:, 1], pts[:, 2]
-    arr['red'] = arr['green'] = arr['blue'] = 200
-    path.parent.mkdir(parents=True, exist_ok=True)
-    PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(str(path))
 
 
 def build_v13_root(tmp_path: Path, *, with_session: bool = True) -> Path:
@@ -42,7 +32,7 @@ def build_v13_root(tmp_path: Path, *, with_session: bool = True) -> Path:
     scan_dir = root / "annotated" / "demo"
 
     # source/scan.ply
-    _write_ply(scan_dir / "source" / "scan.ply", n=8)
+    write_scene_ply(scan_dir / "source" / "scan.ply", n=8)
 
     # labels/
     (scan_dir / "labels").mkdir(parents=True, exist_ok=True)

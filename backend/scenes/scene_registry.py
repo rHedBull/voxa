@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from scenes.scan_meta import is_z_up_from_meta
 from scenes.scan_layout import ScanLayout
 
 
@@ -114,10 +115,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
         n_points = int(meta.get("n_points") or 0) or None
         # is_z_up: PLYs sampled from a glTF mesh inherit the GLB's Y-up frame,
         # while PLYs sampled from a LAZ inherit the Z-up surveying frame.
-        # Default: assume Z-up unless meta.json explicitly says otherwise.
-        is_z_up = True
-        if meta.get("source_mesh") and not meta.get("source_laz"):
-            is_z_up = False
+        is_z_up = is_z_up_from_meta(meta)
         # Resolve source LAZ (the cloud the PLY was subsampled from) so the
         # viewer can pop full-density points back from the original file when a
         # cuboid is selected. Path stored in meta is canonical archive-relative

@@ -552,7 +552,10 @@ function MainApp() {
   const onRenameSession = useCallbackApp(async (sid, name) => {
     try {
       await VoxaAPI.renameSession(activeScene, sid, name);
-      setSessions(await VoxaAPI.listSessions(activeScene));
+      // The server only updates the name — patch the local list in place
+      // instead of re-fetching every session.json.
+      setSessions((prev) => prev.map((s) => (
+        s.session_id === sid ? { ...s, name } : s)));
     } catch (err) {
       console.error('renameSession failed:', err);
       window.alert(`Rename session failed: ${err.message || err}`);
@@ -570,7 +573,7 @@ function MainApp() {
         loadedSceneRef.current = null;
         setActiveSessionId(null);
       } else {
-        setSessions(await VoxaAPI.listSessions(activeScene));
+        setSessions((prev) => prev.filter((s) => s.session_id !== sid));
       }
     } catch (err) {
       console.error('deleteSession failed:', err);

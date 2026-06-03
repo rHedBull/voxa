@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import numpy as np
 
-from labeling.segment_io import atomic_write_json, atomic_write_npy, compute_fingerprint
+from labeling.segment_io import (atomic_write_json, atomic_write_npy,
+                                 compute_fingerprint, utc_now_iso)
 from scenes.scan_layout import ScanLayout
 
 _ID_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -53,7 +53,7 @@ def register_preseg(layout: ScanLayout, preseg_id: str, instance_ids: np.ndarray
         "params": params,
         "fingerprint": compute_fingerprint(instance_ids),
         "n_segments": int(np.unique(instance_ids[instance_ids >= 0]).size),
-        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "created_at": utc_now_iso(),
     }
     atomic_write_json(d / "meta.json", meta)
     return PresegInfo(**meta)

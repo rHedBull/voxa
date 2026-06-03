@@ -113,6 +113,16 @@ def test_corrupt_session_listed_not_hidden(scan):
     assert infos[0].corrupt is True
 
 
+def test_rename_delete_reject_traversal_ids(scan):
+    """sids arrive from URL segments; the routes 404 traversal, but the
+    store guards too (defense in depth — delete is rmtree)."""
+    for bad in ("../evil", "..", ".hidden", "a/b"):
+        with pytest.raises(ValueError, match="session_id"):
+            ss.delete_session(scan, bad)
+        with pytest.raises(ValueError, match="session_id"):
+            ss.rename_session(scan, bad, "x")
+
+
 def test_verify_pins_missing_session_raises(scan):
     with pytest.raises(FileNotFoundError):
         ss.verify_pins(scan, "20990101-000000_blank", source_fp=SRC_FP)

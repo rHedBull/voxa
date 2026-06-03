@@ -171,6 +171,13 @@ def _utc_timestamp() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
+def utc_now_iso() -> str:
+    """UTC timestamp for session/preseg metadata (ISO, second resolution).
+    Single home — session_store, preseg_store and the migration script all
+    stamp with this."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def save_labels(
     scan_dir: Path,
     session_id: str,

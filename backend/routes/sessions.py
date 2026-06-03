@@ -59,6 +59,8 @@ def sessions_rename(tier: str, name: str, sid: str, req: RenameSessionRequest):
     _, lay = _annotated_layout(f"{tier}/{name}")
     try:
         rename_session(lay, sid, req.name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     return {"ok": True}
@@ -72,6 +74,8 @@ def sessions_delete(tier: str, name: str, sid: str):
     _, lay = _annotated_layout(f"{tier}/{name}")
     try:
         delete_session(lay, sid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     if _state.get("session_id") == sid:

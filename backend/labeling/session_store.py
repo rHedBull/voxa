@@ -14,9 +14,19 @@ from typing import Optional
 import numpy as np
 
 from labeling.segment_io import (atomic_write_json, filter_tiny_segments,
-                                 load_session_aux, save_session_aux)
+                                 load_session_aux, save_session_aux,
+                                 utc_now_iso)
 from preseg.preseg_store import load_preseg, read_preseg_meta
 from scenes.scan_layout import ScanLayout
+
+
+def _validate_session_id(session_id: str) -> None:
+    """session ids are single path segments; anything else could escape
+    sessions/ when joined into filesystem paths (defense in depth — the
+    routes' URL normalization already 404s traversal attempts)."""
+    if (not session_id or "/" in session_id or "\\" in session_id
+            or session_id in (".", "..") or session_id.startswith(".")):
+        raise ValueError(f"invalid session_id {session_id!r}")
 
 
 class PinMismatch(Exception):
@@ -39,8 +49,6 @@ class SessionInfo:
     corrupt: bool = False
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def create_session(layout: ScanLayout, *, name: str, preseg_id: Optional[str],
@@ -71,7 +79,7 @@ def create_session(layout: ScanLayout, *, name: str, preseg_id: Optional[str],
     # exist_ok=False makes the create atomic — a same-second double create
     # fails here instead of silently overwriting the first writer's files.
     sp.dir.mkdir(parents=True, exist_ok=False)
-    created_at = _now()
+    created_at = utc_now_iso()
     aux = {
         "preseg_id": preseg_id,
         "preseg_fingerprint": preseg_fp,
@@ -116,6 +124,7 @@ def list_sessions(layout: ScanLayout) -> list[SessionInfo]:
 
 
 def rename_session(layout: ScanLayout, session_id: str, name: str) -> None:
+    _validate_session_id(session_id)
     sp = layout.session(session_id)
     aux = load_session_aux(sp.dir)
     if aux is None:
@@ -125,6 +134,7 @@ def rename_session(layout: ScanLayout, session_id: str, name: str) -> None:
 
 
 def delete_session(layout: ScanLayout, session_id: str) -> None:
+    _validate_session_id(session_id)
     sp = layout.session(session_id)
     if not sp.dir.is_dir():
         raise FileNotFoundError(f"session {session_id} not found")

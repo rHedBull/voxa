@@ -37,9 +37,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from labeling.segment_io import atomic_write_json, atomic_write_npy, compute_fingerprint
+from labeling.segment_io import (atomic_write_json, atomic_write_npy,
+                                 compute_fingerprint, utc_now_iso)
 from preseg.preseg_store import register_preseg
 from scenes.lidar_io import z_up_to_y_up_xyz
+from scenes.scan_meta import is_z_up_from_meta
 from scenes.point_cloud import load_ply
 from scenes.scan_layout import ScanLayout
 
@@ -58,17 +60,6 @@ def _read_ply_positions(ply_path: Path) -> np.ndarray:
     """
     pc, _ = load_ply(ply_path)
     return pc.points
-
-
-def _is_z_up(meta: dict) -> bool:
-    """Mirror the scene_registry / _scene_is_z_up logic for annotated scans.
-
-    Y-up only if meta has source_mesh AND no source_laz.  Default: Z-up.
-    (Same rule as scenes/scene_registry.py:119 and app/core.py:_scene_is_z_up.)
-    """
-    if meta.get("source_mesh") and not meta.get("source_laz"):
-        return False
-    return True
 
 
 def _display_positions(pts: np.ndarray, z_up: bool) -> np.ndarray:
@@ -97,10 +88,6 @@ def _mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(
         path.stat().st_mtime, tz=timezone.utc
     ).isoformat(timespec="seconds")
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _check_shape(arr_path: Path, n_points: int, label: str) -> str | None:
@@ -296,7 +283,7 @@ def _migrate_scan(scan_dir: Path, *, dry_run: bool) -> tuple[bool, str]:
                     shutil.move(str(src_p), str(legacy_sp.output_dir / fname))
 
         # Compute source_fingerprint (must match what /api/load computes)
-        z_up = _is_z_up(meta)
+        z_up = is_z_up_from_meta(meta)
         display_pts = _display_positions(positions, z_up)
         source_fingerprint = compute_fingerprint(display_pts)
 
@@ -306,7 +293,7 @@ def _migrate_scan(scan_dir: Path, *, dry_run: bool) -> tuple[bool, str]:
             ts_source = legacy_sp.output_dir / "gt_class_ids.npy"
         elif (session_dir / "current.json").exists():
             ts_source = session_dir / "current.json"
-        ts = _mtime_iso(ts_source) if ts_source else _now_iso()
+        ts = _mtime_iso(ts_source) if ts_source else utc_now_iso()
 
         hidden_inst_ids = old_current.get("hidden_inst_ids", [])
         dirty = bool(old_current.get("dirty", False))

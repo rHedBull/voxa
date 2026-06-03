@@ -44,7 +44,7 @@ def client():
     return TestClient(main.app)
 
 
-def _write_annotated_scene_ply(path: Path, n: int = 8) -> None:
+def write_scene_ply(path: Path, n: int = 8) -> None:
     rng = np.random.default_rng(0)
     pts = rng.standard_normal((n, 3)).astype(np.float32)
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
@@ -63,7 +63,7 @@ def build_annotated_root(tmp_path: Path) -> tuple[Path, str]:
     test files can use it without cross-module helper imports."""
     root = tmp_path / "lidar"
     scan_dir = root / "annotated" / "demo"
-    _write_annotated_scene_ply(scan_dir / "source" / "scan.ply", n=8)
+    write_scene_ply(scan_dir / "source" / "scan.ply", n=8)
     (scan_dir / "meta.json").write_text(json.dumps({
         "scan_name": "demo", "n_points": 8, "coords": "world", "units": "meters",
         "schema_version": "2.0", "class_map_version": 1, "source_mesh": "mesh.glb",
