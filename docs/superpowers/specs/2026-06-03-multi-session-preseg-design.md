@@ -82,6 +82,9 @@ Removed relative to v1.3: top-level `labels/`, `session/`, `annotation_history/`
 - `session_id` is generated at creation as `<YYYYMMDD-HHMMSS>_<preseg_id|blank>`.
 - All per-point arrays in `prelabel/*/` and `sessions/*/` MUST have shape
   `(N_pts,)` matching `source/scan.ply`.
+- The dtype asymmetry is intentional and carried over from v1.3: working
+  class ids are `int8` (autosave compactness), output `gt_class_ids` are
+  `int32` — do not unify.
 - v1.3 invariants carry over per session output: invariant 3
   (`class_id == -1 ⟺ instance_id == -1`), invariant 4 (per-segment class
   consistency), invariant 6 (`meta.json::class_map_version` ==
@@ -172,6 +175,8 @@ The only code that touches `sessions/*` structure:
   working state with its existing autosave debounce; it is constructed against
   `sessions/<id>/` paths. `_aux_payload()` becomes the `session.json` body
   (gains `name`, `created_at`; `preseg_run_id` renamed `preseg_id`).
+  `segment_io.SESSION_SCHEMA_VERSION` bumps 1 → 2; `saved_at` continues to be
+  stamped in `save_session_aux()` at write time, not in `_aux_payload()`.
 - `save_labels()` (`labeling/segment_io.py`) writes to
   `sessions/<id>/output/` and `sessions/<id>/history/`.
 - `load_prelabel()` (`segment_io.py`) takes a `preseg_id`.
@@ -185,7 +190,7 @@ The only code that touches `sessions/*` structure:
 | `PATCH /api/scenes/{id}/sessions/{sid}` | new — body `{name}` → rename |
 | `DELETE /api/scenes/{id}/sessions/{sid}` | new — delete; requires `?confirm=true` |
 | `GET /api/scenes/{id}/presegs` | new — list preseg results |
-| `POST /api/load` | gains optional `session_id`; default = last-worked; if the scan has no sessions, loads cloud only and reports `sessions: []` (UI then shows the picker). Pin verification here → 409 `{detail, diverged: "preseg"|"source"}` |
+| `POST /api/load` | gains optional `session_id`; default = last-worked; if the scan has no sessions, loads cloud only and reports `sessions: []` (UI then shows the picker). Pin verification here → 409 `{detail, diverged: "preseg"|"source"}`. The existing `keep_prev_seg` carry-over heuristic (`routes/load.py:49-56`) is removed — "switch session = flush autosave + load the other" supersedes it |
 | `PUT /api/segment/save` | unchanged signature; writes into the active session's `output/` |
 
 Session CRUD routes operate on disk via `session_store` and do not require the
@@ -235,7 +240,11 @@ meta.json                    → schema_version: 2
   plan.
 - Voxa v2 reads ONLY v2. A v1.3 scan fails scene discovery with a
   "run scripts/migrate_scan_v2.py" hint.
-- `scripts/import_scene.sh` emits the v2 skeleton.
+- The annotated-scan scaffolder is `engine/data/tools/scaffold_annotation.py`
+  (sibling data repo, **outside the voxa tree**) — it must be updated to emit
+  the v2 skeleton, as a companion change in that repo. Voxa's own
+  `scripts/import_scene.sh` only feeds the legacy `data/scenes/` workflow and
+  is untouched.
 - `docs/scan-schema.md` and the shared `lidar/SCHEMA.md` are updated in the
   same PR; sibling tools adopt v2 when they next touch the archive.
 
