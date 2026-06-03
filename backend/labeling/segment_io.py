@@ -1,4 +1,4 @@
-"""SCHEMA-aware reader for prelabel/, writer for labels/, history pruning.
+"""SCHEMA-aware session-output writer + working-state I/O + history pruning.
 
 Pure I/O. No FastAPI, no in-memory state. Loaders return aligned arrays;
 writers validate invariants and recompute gt_segment_metadata.json from the

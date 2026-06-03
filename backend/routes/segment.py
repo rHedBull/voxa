@@ -100,8 +100,8 @@ def segment_save():
         os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
         not in ("1", "true", "yes", "on")
     )
-    # Build a sanitized snapshot for labels/ on the side; do NOT touch
-    # in-memory state. SCHEMA invariant 3 (class==-1 ⟺ inst==-1, see
+    # Build a sanitized snapshot for the session output/ on the side; do NOT
+    # touch in-memory state. SCHEMA invariant 3 (class==-1 ⟺ inst==-1, see
     # segment_io._validate_invariants) requires stripping preseg-only
     # points (inst≥0, class=-1) on export because preseg is a suggestion,
     # not authoritative GT. The SegmentSession itself is the working
@@ -118,7 +118,7 @@ def segment_save():
         out_inst = out_inst.copy()
         out_inst[unclassified] = np.int32(-1)
     # Autosave first so the recovery file reflects the unmutated working
-    # canvas, independent of the labels/ export.
+    # canvas, independent of the output/ export.
     seg.flush_autosave()
     try:
         from labeling.segment_io import save_labels
