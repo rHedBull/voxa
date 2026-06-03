@@ -36,7 +36,6 @@ def test_v2_preseg_paths(tmp_path):
     d = lay.preseg_dir("ransac")
     assert d == lay.presegs_root / "ransac"
     assert lay.presegs_root == lay.scan_dir / "prelabel"
-    assert (d / "instance_ids.npy").name == "instance_ids.npy"
 
 
 def test_v2_session_paths(tmp_path):

@@ -136,6 +136,9 @@ class ScanLayout:
     # v2: prelabel/<preseg_id>/ + sessions/<session_id>/
     @property
     def presegs_root(self) -> Path:
+        # Same dir as the v1.3 prelabel_dir on purpose — v2 nests one subdir
+        # per preseg result inside it; the v1.3 accessors are removed once all
+        # consumers are on v2.
         return self.scan_dir / "prelabel"
 
     def preseg_dir(self, preseg_id: str) -> Path:
