@@ -289,8 +289,9 @@ def save_session_aux(
     *,
     class_ids: Optional[np.ndarray] = None,
     instance_ids: Optional[np.ndarray] = None,
-) -> None:
-    """Atomically persist editor session state.
+) -> dict:
+    """Atomically persist editor session state. Returns the payload as
+    written (callers use its ``saved_at`` stamp).
 
     Order: working_*.npy first, then session.json (commit pointer). On a
     crash between the npy renames and session.json rename, the next reload
@@ -308,6 +309,7 @@ def save_session_aux(
     payload.setdefault("schema_version", SESSION_SCHEMA_VERSION)
     payload["saved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     atomic_write_json(session_dir / "session.json", payload)
+    return payload
 
 
 def load_session_aux(session_dir: Path) -> Optional[dict]:

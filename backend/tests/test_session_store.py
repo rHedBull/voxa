@@ -111,3 +111,15 @@ def test_corrupt_session_listed_not_hidden(scan):
     scan.session(a.session_id).session_json.write_text("{broken")
     infos = ss.list_sessions(scan)
     assert infos[0].corrupt is True
+
+
+def test_verify_pins_missing_session_raises(scan):
+    with pytest.raises(FileNotFoundError):
+        ss.verify_pins(scan, "20990101-000000_blank", source_fp=SRC_FP)
+
+
+def test_last_worked_empty_and_corrupt_only(scan):
+    assert ss.last_worked([]) is None
+    a = ss.create_session(scan, name="a", preseg_id=None, n_points=8, source_fp=SRC_FP)
+    scan.session(a.session_id).session_json.write_text("{broken")
+    assert ss.last_worked(ss.list_sessions(scan)) is None

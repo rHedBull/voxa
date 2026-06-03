@@ -68,8 +68,9 @@ def create_session(layout: ScanLayout, *, name: str, preseg_id: Optional[str],
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     session_id = f"{ts}_{preseg_id or 'blank'}"
     sp = layout.session(session_id)
-    if sp.dir.exists():
-        raise FileExistsError(f"session {session_id} already exists")
+    # exist_ok=False makes the create atomic — a same-second double create
+    # fails here instead of silently overwriting the first writer's files.
+    sp.dir.mkdir(parents=True, exist_ok=False)
     created_at = _now()
     aux = {
         "preseg_id": preseg_id,
@@ -80,9 +81,10 @@ def create_session(layout: ScanLayout, *, name: str, preseg_id: Optional[str],
         "name": name,
         "created_at": created_at,
     }
-    save_session_aux(sp.dir, aux, class_ids=class_ids, instance_ids=instance_ids)
+    written = save_session_aux(sp.dir, aux,
+                               class_ids=class_ids, instance_ids=instance_ids)
     return SessionInfo(session_id=session_id, name=name, preseg_id=preseg_id,
-                       created_at=created_at, saved_at=created_at,
+                       created_at=created_at, saved_at=written["saved_at"],
                        dirty=False, has_output=False)
 
 

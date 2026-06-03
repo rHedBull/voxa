@@ -284,10 +284,10 @@ def test_session_aux_round_trip(tmp_path):
     np.testing.assert_array_equal(wi, inst_ids)
 
 
-def test_load_working_arrays_returns_none_without_current_json(tmp_path):
+def test_load_working_arrays_returns_none_without_session_json(tmp_path):
     session_dir = tmp_path / "session"
     session_dir.mkdir()
-    # Working arrays present but no current.json → ignore (commit-pointer rule).
+    # Working arrays present but no session.json → ignore (commit-pointer rule).
     atomic_write_npy(session_dir / "working_class_ids.npy",
                      np.zeros(50, dtype=np.int8))
     atomic_write_npy(session_dir / "working_segment_ids.npy",
