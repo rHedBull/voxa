@@ -16,6 +16,11 @@ v2 layout:
 
 Usage:
   python scripts/migrate_scan_v2.py [--dry-run] [--scan NAME ...] LIDAR_ROOT
+
+NOTE: the per-scan migration is not transactional — a crash mid-migration can
+leave a scan partially migrated (e.g. sessions/ present but meta.json still at
+1.3), which the next run REFUSES rather than guessing. Recovery is manual:
+inspect the scan dir and finish or revert the listed steps by hand.
 """
 from __future__ import annotations
 
@@ -47,6 +52,9 @@ def _read_ply_positions(ply_path: Path) -> np.ndarray:
     ``vstack().T`` view), and the recenter step bakes that mean into every
     coordinate. The source-fingerprint pin must match what /api/load computes,
     so we go through the loader's own reader rather than re-stacking columns.
+    Colors/labels are loaded and discarded — wasteful for huge clouds, but
+    reading only xyz would mean replicating load_ply's stacking, which risks
+    exactly the divergence this function exists to prevent.
     """
     pc, _ = load_ply(ply_path)
     return pc.points

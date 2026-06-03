@@ -225,6 +225,20 @@ def test_labels_without_session(tmp_path):
 # (d) refusal: stray file in prelabel/ → exit 1, disk untouched
 # ---------------------------------------------------------------------------
 
+def test_refusal_existing_sessions_dir(tmp_path):
+    """A v1.3-meta scan that already has sessions/ (e.g. a crashed prior
+    migration) is refused, not guessed at."""
+    root = build_v13_root(tmp_path)
+    scan_dir = root / "annotated" / "demo"
+    (scan_dir / "sessions").mkdir()
+
+    result = _run_migrate(root)
+    assert result.returncode == 1
+    assert "REFUSED" in result.stdout
+    assert "sessions/" in result.stdout
+    assert (scan_dir / "labels").exists()  # untouched
+
+
 def test_refusal_stray_prelabel_file(tmp_path):
     root = build_v13_root(tmp_path)
     scan_dir = root / "annotated" / "demo"
