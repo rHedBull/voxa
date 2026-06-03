@@ -71,7 +71,7 @@ def segment_state():
         n_assigned=int(labeled.sum()),
         n_segments=int(np.unique(instance_ids[labeled]).size) if labeled.any() else 0,
         n_points=int(len(seg.instance_ids)),
-        preseg_run_id=seg.preseg_run_id,
+        preseg_run_id=seg.preseg_id,
         preseg_fingerprint=seg.preseg_fingerprint,
         source_fingerprint=seg.source_fingerprint,
         is_from_prelabel=bool(seg.is_from_prelabel),

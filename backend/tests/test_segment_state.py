@@ -138,7 +138,7 @@ def test_segment_session_has_preseg_layer():
     assert s.preseg_ids.shape == (10,)
     assert s.preseg_ids.dtype == np.int32
     assert (s.preseg_ids == -1).all()
-    assert s.preseg_run_id is None
+    assert s.preseg_id is None
     assert s.preseg_fingerprint is None
 
 
@@ -152,9 +152,9 @@ def test_freeze_preseg_stamps_run_id_and_fingerprint():
         positions=pts,
     )
     new_pre = np.arange(10, dtype=np.int32)
-    s.freeze_preseg(new_pre, run_id="abc")
+    s.freeze_preseg(new_pre, preseg_id="abc")
     np.testing.assert_array_equal(s.preseg_ids, new_pre)
-    assert s.preseg_run_id == "abc"
+    assert s.preseg_id == "abc"
     assert s.preseg_fingerprint.startswith("sha256:")
 
 
@@ -255,7 +255,7 @@ def test_snap_to_preseg_undoable():
     assert (s.instance_ids == 1).all()
 
 
-def test_autosave_writes_working_files_and_current_json(tmp_path):
+def test_autosave_writes_working_files_and_session_json(tmp_path):
     import numpy as np, json
     from labeling.segment_state import SegmentSession
     pts = np.zeros((4, 3), dtype=np.float32)
@@ -268,12 +268,13 @@ def test_autosave_writes_working_files_and_current_json(tmp_path):
     )
     s.apply_set_class(np.array([0, 1], dtype=np.int32), class_id=2)
     s.flush_autosave()
-    assert (tmp_path / "current.json").exists()
+    assert (tmp_path / "session.json").exists()
     assert (tmp_path / "working_class_ids.npy").exists()
     assert (tmp_path / "working_segment_ids.npy").exists()
-    payload = json.loads((tmp_path / "current.json").read_text())
+    payload = json.loads((tmp_path / "session.json").read_text())
     assert payload["dirty"] is True
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
+    assert "is_from_prelabel" not in payload
 
 
 def test_autosave_includes_hidden_and_preseg_run(tmp_path):
@@ -287,13 +288,14 @@ def test_autosave_includes_hidden_and_preseg_run(tmp_path):
         session_dir=tmp_path,
         autosave_debounce_s=0.0,
     )
-    s.freeze_preseg(np.array([0, 0, 1, 1], dtype=np.int32), run_id="r1")
+    s.freeze_preseg(np.array([0, 0, 1, 1], dtype=np.int32), preseg_id="r1")
     s.hide_instance(0)
     s.flush_autosave()
-    payload = json.loads((tmp_path / "current.json").read_text())
-    assert payload["preseg_run_id"] == "r1"
+    payload = json.loads((tmp_path / "session.json").read_text())
+    assert payload["preseg_id"] == "r1"
     assert payload["hidden_inst_ids"] == [0]
     assert payload["preseg_fingerprint"].startswith("sha256:")
+    assert "is_from_prelabel" not in payload
 
 
 def test_autosave_disabled_when_no_session_dir(tmp_path):

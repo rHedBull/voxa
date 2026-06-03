@@ -53,12 +53,14 @@ class SegmentSession:
         self.instance_ids = instance_ids
         self.positions = positions.astype(np.float32, copy=False)
         self.preseg_ids: np.ndarray = np.full(n, -1, dtype=np.int32)
-        self.preseg_run_id: Optional[str] = None
+        self.preseg_id: Optional[str] = None
         self.preseg_fingerprint: Optional[str] = None
         self.source_fingerprint: Optional[str] = None
         self.hidden_inst_ids: set[int] = set()
         self.stale_prelabel: bool = False
         self.is_from_prelabel: bool = bool(is_from_prelabel)
+        self.name: str = ""
+        self.created_at: Optional[str] = None
         self._undo: deque[_Delta] = deque()
         self._redo: deque[_Delta] = deque()
         self.history_cap: int = 100
@@ -131,7 +133,8 @@ class SegmentSession:
         self,
         preseg_ids: np.ndarray,
         *,
-        run_id: Optional[str] = None,
+        preseg_id: Optional[str] = None,
+        run_id: Optional[str] = None,  # deprecated alias; use preseg_id
     ) -> None:
         """Replace the immutable preseg layer. Not undoable; this is a
         session-scope event."""
@@ -142,7 +145,8 @@ class SegmentSession:
                 f"got {preseg_ids.shape}",
             )
         self.preseg_ids = preseg_ids.astype(np.int32, copy=False)
-        self.preseg_run_id = run_id
+        # preseg_id is the canonical kwarg; run_id is kept for compatibility
+        self.preseg_id = preseg_id if preseg_id is not None else run_id
         self.preseg_fingerprint = compute_fingerprint(self.preseg_ids)
         self.schedule_autosave(write_arrays=True)
 
@@ -271,14 +275,33 @@ class SegmentSession:
 
     def _aux_payload(self) -> dict:
         return {
-            "schema_version": 1,
-            "preseg_run_id": self.preseg_run_id,
+            "preseg_id": self.preseg_id,
             "preseg_fingerprint": self.preseg_fingerprint,
             "source_fingerprint": self.source_fingerprint,
             "hidden_inst_ids": sorted(int(x) for x in self.hidden_inst_ids),
-            "is_from_prelabel": bool(self.is_from_prelabel),
             "dirty": bool(self.dirty),
+            "name": self.name,
+            "created_at": self.created_at,
         }
+
+    @classmethod
+    def from_aux(cls, aux: dict, *, class_ids, instance_ids, positions,
+                 session_dir) -> "SegmentSession":
+        """Inverse of _aux_payload(): rebuild in-memory session state from a
+        parsed session.json. Every field written there is restored here —
+        keep the two methods in lockstep."""
+        seg = cls(class_ids=class_ids, instance_ids=instance_ids,
+                  positions=positions,
+                  is_from_prelabel=aux.get("preseg_id") is not None,
+                  session_dir=session_dir)
+        seg.preseg_id = aux.get("preseg_id")
+        seg.preseg_fingerprint = aux.get("preseg_fingerprint")
+        seg.source_fingerprint = aux.get("source_fingerprint")
+        seg.name = aux.get("name") or ""
+        seg.created_at = aux.get("created_at")
+        seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
+        seg.dirty = bool(aux.get("dirty", False))
+        return seg
 
     def _do_autosave(self, write_arrays: bool) -> None:
         if self.session_dir is None:

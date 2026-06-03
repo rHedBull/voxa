@@ -259,7 +259,28 @@ def prune_history(history_dir: Path, *, keep: int = 10) -> None:
         shutil.rmtree(p)
 
 
-SESSION_SCHEMA_VERSION = 1
+SESSION_SCHEMA_VERSION = 2
+
+
+def filter_tiny_segments(class_ids: np.ndarray, instance_ids: np.ndarray,
+                         min_points: int) -> tuple[np.ndarray, np.ndarray]:
+    """Reset (class_id, instance_id) to (-1, -1) for any point belonging to
+    an instance with fewer than ``min_points`` points. Returns fresh copies."""
+    inst = np.asarray(instance_ids, dtype=np.int32)
+    cls = np.asarray(class_ids, dtype=np.int8)
+    if inst.size == 0 or min_points <= 1:
+        return cls.copy(), inst.copy()
+    labeled = inst >= 0
+    if not labeled.any():
+        return cls.copy(), inst.copy()
+    ids, counts = np.unique(inst[labeled], return_counts=True)
+    drop_ids = ids[counts < int(min_points)]
+    if drop_ids.size == 0:
+        return cls.copy(), inst.copy()
+    drop_mask = np.isin(inst, drop_ids)
+    new_cls = cls.copy(); new_inst = inst.copy()
+    new_cls[drop_mask] = -1; new_inst[drop_mask] = -1
+    return new_cls, new_inst
 
 
 def save_session_aux(
@@ -271,9 +292,9 @@ def save_session_aux(
 ) -> None:
     """Atomically persist editor session state.
 
-    Order: working_*.npy first, then current.json (commit pointer). On a
-    crash between the npy renames and current.json rename, the next reload
-    sees the previous-consistent current.json and ignores any half-updated
+    Order: working_*.npy first, then session.json (commit pointer). On a
+    crash between the npy renames and session.json rename, the next reload
+    sees the previous-consistent session.json and ignores any half-updated
     working_*.
     """
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -286,12 +307,12 @@ def save_session_aux(
     payload = dict(aux)
     payload.setdefault("schema_version", SESSION_SCHEMA_VERSION)
     payload["saved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    atomic_write_json(session_dir / "current.json", payload)
+    atomic_write_json(session_dir / "session.json", payload)
 
 
 def load_session_aux(session_dir: Path) -> Optional[dict]:
-    """Read current.json or return None if absent/unreadable."""
-    p = session_dir / "current.json"
+    """Read session.json or return None if absent/unreadable."""
+    p = session_dir / "session.json"
     if not p.exists():
         return None
     try:
@@ -303,7 +324,7 @@ def load_session_aux(session_dir: Path) -> Optional[dict]:
 def load_working_arrays(
     session_dir: Path, n_points: int,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    """Return (class_ids int8, instance_ids int32) iff current.json exists
+    """Return (class_ids int8, instance_ids int32) iff session.json exists
     AND both working files are present AND shapes match n_points."""
     if load_session_aux(session_dir) is None:
         return None

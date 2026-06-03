@@ -261,22 +261,22 @@ def test_session_aux_round_trip(tmp_path):
     inst_ids = np.full(100, -1, dtype=np.int32)
     inst_ids[10:20] = 7
     aux = {
-        "schema_version": 1,
-        "preseg_run_id": "20260513-100000",
+        "preseg_id": "20260513-100000_ransac",
         "preseg_fingerprint": "sha256:abc",
         "source_fingerprint": "sha256:def",
         "hidden_inst_ids": [7],
-        "is_from_prelabel": False,
         "dirty": True,
+        "name": "test session",
+        "created_at": "2026-05-13T10:00:00+00:00",
     }
     save_session_aux(session_dir, aux, class_ids=class_ids, instance_ids=inst_ids)
-    assert (session_dir / "current.json").exists()
+    assert (session_dir / "session.json").exists()
     assert (session_dir / "working_class_ids.npy").exists()
     assert (session_dir / "working_segment_ids.npy").exists()
 
     out = load_session_aux(session_dir)
     assert out is not None
-    assert out["preseg_run_id"] == "20260513-100000"
+    assert out["preseg_id"] == "20260513-100000_ransac"
     assert out["hidden_inst_ids"] == [7]
 
     wc, wi = load_working_arrays(session_dir, n_points=100)
@@ -297,7 +297,7 @@ def test_load_working_arrays_returns_none_without_current_json(tmp_path):
 
 def test_load_working_arrays_returns_none_on_shape_mismatch(tmp_path):
     session_dir = tmp_path / "session"
-    save_session_aux(session_dir, {"schema_version": 1},
+    save_session_aux(session_dir, {},
                      class_ids=np.zeros(50, dtype=np.int8),
                      instance_ids=np.zeros(50, dtype=np.int32))
     assert load_working_arrays(session_dir, n_points=999) is None

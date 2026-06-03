@@ -364,10 +364,10 @@ def test_load_recovers_in_progress_session_after_server_restart(
     })
     assert r.status_code == 200, r.text
 
-    # Force-drain autosave debounce so working_* + current.json are on disk.
+    # Force-drain autosave debounce so working_* + session.json are on disk.
     seg_before.flush_autosave()
     assert seg_before.session_dir is not None
-    assert (seg_before.session_dir / "current.json").exists()
+    assert (seg_before.session_dir / "session.json").exists()
     assert (seg_before.session_dir / "working_class_ids.npy").exists()
 
     # Force-clear in-memory state to simulate a server restart.

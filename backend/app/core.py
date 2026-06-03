@@ -181,27 +181,11 @@ def _y_up_to_z_up_xyz(pts: np.ndarray) -> np.ndarray:
     return out
 
 def _filter_tiny_segments(labels, min_points: int):
-    """Reset (class_id, instance_id) to (-1, -1) for any point belonging
-    to an instance with fewer than ``min_points`` points. Keeps the
-    arrays in-place-friendly: returns a fresh LabelArrays so the caller
-    can swap without mutating the loader's outputs."""
-    inst = np.asarray(labels.instance_ids, dtype=np.int32)
-    cls = np.asarray(labels.class_ids, dtype=np.int8)
-    if inst.size == 0 or min_points <= 1:
-        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
-    labeled = inst >= 0
-    if not labeled.any():
-        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
-    ids, counts = np.unique(inst[labeled], return_counts=True)
-    drop_ids = ids[counts < int(min_points)]
-    if drop_ids.size == 0:
-        return LabelArrays(class_ids=cls.copy(), instance_ids=inst.copy())
-    drop_mask = np.isin(inst, drop_ids)
-    new_cls = cls.copy()
-    new_inst = inst.copy()
-    new_cls[drop_mask] = -1
-    new_inst[drop_mask] = -1
-    return LabelArrays(class_ids=new_cls, instance_ids=new_inst)
+    """Thin LabelArrays wrapper; the array logic lives in
+    labeling.segment_io.filter_tiny_segments (shared with session seeding)."""
+    from labeling.segment_io import filter_tiny_segments
+    cls, inst = filter_tiny_segments(labels.class_ids, labels.instance_ids, min_points)
+    return LabelArrays(class_ids=cls, instance_ids=inst)
 
 def _scene_is_z_up(src: SceneSource) -> bool:
     """Decide whether the scene's source frame is Z-up (surveying / LAS).
@@ -272,15 +256,19 @@ def _seed_or_recover_session(src, pc, labels, is_from_prelabel, *,
         if aux is not None and aux.get("source_fingerprint") == source_fp:
             wa = load_working_arrays(session_dir, n_points=len(pc))
             if wa is not None:
+                # Transitional: old files may have is_from_prelabel; new ones use
+                # preseg_id is not None as the canonical derivation.
+                is_from_prelabel = bool(
+                    aux.get("is_from_prelabel", aux.get("preseg_id") is not None))
                 seg = SegmentSession(
                     class_ids=wa[0],
                     instance_ids=wa[1],
                     positions=pc.points,
-                    is_from_prelabel=bool(aux.get("is_from_prelabel", False)),
+                    is_from_prelabel=is_from_prelabel,
                     session_dir=session_dir,
                 )
                 seg.source_fingerprint = source_fp
-                seg.preseg_run_id = aux.get("preseg_run_id")
+                seg.preseg_id = aux.get("preseg_id")
                 seg.preseg_fingerprint = aux.get("preseg_fingerprint")
                 seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
                 seg.dirty = bool(aux.get("dirty", False))
