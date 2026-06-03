@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-03-multi-session-preseg-design.md` — read it first; it is the contract.
 
-**Scope note (planning decision):** multi-session applies to the **annotated tier only**. Non-annotated tiers (legacy/decimated/raw) keep their existing single recovery-session under `<data_dir>/sessions/<tier>__<name>/` exactly as today. The session picker is hidden for them.
+**Scope note (planning decision):** multi-session applies to the **annotated tier only**. Non-annotated tiers (legacy/decimated/raw) have no labeling sessions at all in v2: segment apply/save was already gated to the annotated tier (409 otherwise), so the old `<data_dir>/sessions/<tier>__<name>/` recovery path is dead code and Task 4 drops it along with `keep_prev_seg` (the `SceneSource.session_dir` field stays for annotated, pointing at `sessions_root`). The session picker is hidden for non-annotated tiers.
 
 **Worktree:** all work happens in `/home/hendrik/coding/engine/tools/labeling/voxa/.claude/worktrees/multi-session-spec` on branch `feat/multi-session-spec`. Run backend tests with `.venv/bin/pytest` from the **original repo root's venv** (`/home/hendrik/coding/engine/tools/labeling/voxa/.venv/bin/pytest`) with `--rootdir` defaulting fine; if imports fail, `npm run test:backend` inside the worktree auto-creates a venv.
 
@@ -509,9 +509,14 @@ def _now() -> str:
 
 
 def create_session(layout: ScanLayout, *, name: str, preseg_id: Optional[str],
-                   n_points: int, source_fp: str) -> SessionInfo:
+                   n_points: int, source_fp: str,
+                   min_segment_points: int = 0) -> SessionInfo:
     """Seed working arrays from prelabel/<preseg_id>/ (or all -1 for blank)
-    and freeze both fingerprint pins. The only moment a preseg is chosen."""
+    and freeze both fingerprint pins. The only moment a preseg is chosen.
+    ``min_segment_points`` > 0 drops seeded segments smaller than the
+    threshold to (-1, -1) — seed-time analogue of the loader's old
+    ``_filter_tiny_segments`` (a resumed session must round-trip
+    byte-identical, so filtering happens here, never on resume)."""
     if preseg_id is not None and not _ID_RE.match(preseg_id):
         raise ValueError(f"preseg_id {preseg_id!r} must match {_ID_RE.pattern}")
     if preseg_id is not None:
@@ -675,7 +680,7 @@ This is the switchover task: the loader stops reading `labels/`/`prelabel/` and 
                           n_points=8, source_fp=source_fp)
 ```
 
-and update `meta.json` to include `"schema_version": "2.0", "class_map_version": 1`. Make `build_annotated_root` return `(root, sess.session_id)` and fix the two fixtures that call it. **Gotcha:** the route computes `source_fp` from the cloud after `_z_up_to_y_up`; the fixture meta must therefore set `"source_mesh": true` (no `source_laz`) so `is_z_up=False` and no rotation is applied, keeping fingerprints equal.
+and update `meta.json` to include `"schema_version": "2.0", "class_map_version": 1`. Make `build_annotated_root` return `(root, sess.session_id)` and fix `client_with_annotated_scene` (the one fixture that calls it; `scan_dir_for_loaded_scene` rebuilds the path manually). Add `session_id=None` to the `_reset_main_state` fixture's `_state.update(...)` (conftest.py:31-34) so the new state key doesn't leak across tests. **Gotcha:** the route computes `source_fp` from the cloud after `_z_up_to_y_up`; the fixture meta must therefore set `"source_mesh": true` (no `source_laz`) so `is_z_up=False` and no rotation is applied, keeping fingerprints equal.
 
 - [ ] **Step 2: lidar_io + registry edits** as listed above. Run `pytest backend/tests/test_lidar_io.py backend/tests/test_scene_registry.py -v`, update assertions (e.g. labels now always None from `load_annotated`; v1.3 fixture scans must be skipped by discovery — add an explicit test:
 
@@ -918,7 +923,7 @@ CLI: `python scripts/migrate_scan_v2.py [--dry-run] [--scan NAME ...] LIDAR_ROOT
 6. Remove now-empty `labels/`, `session/`, `annotation_history/` dirs; set `meta.json` `schema_version: "2.0"` (preserve all other keys).
 7. `--dry-run` prints the per-scan plan and changes nothing.
 
-Implementation note: import backend modules with `sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))` — same pattern as `scripts/preseg/_common.py` (check and mirror it).
+Implementation note: import backend modules with `sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))` — same pattern as `scripts/preseg/presegment.py:40` (check and mirror it).
 
 - [ ] **Step 1: failing tests** — `test_migrate_v2.py` with a `build_v13_root(tmp_path)` helper (copy the **old** v1.3 fixture body that Task 4 removed from conftest — labels/, session/current.json, prelabel/ransac_*, meta `"1.3"`). Tests: (a) full migrate → v2 layout asserts (sessions/legacy/output/gt_*.npy exist, session.json pins == recomputed fingerprints, prelabel/ransac/meta.json exists, no labels/ dir, meta schema "2.0"); (b) idempotent second run no-op; (c) labels-without-session synthesizes working arrays equal to GT; (d) refusal: stray file in prelabel/ → scan skipped, exit code != 0, disk untouched; (e) `--dry-run` changes nothing.
 - [ ] **Step 2: fail run**, **Step 3: implement**, **Step 4: `pytest backend/tests/test_migrate_v2.py -v` → PASS**.
@@ -931,7 +936,7 @@ Implementation note: import backend modules with `sys.path.insert(0, str(Path(__
 **Files:**
 - Modify: `scripts/preseg/presegment.py` (and `presegment_sam3.py` if it writes `prelabel/ransac_*` — `grep -n "ransac_\|prelabel" scripts/preseg/*.py` first)
 
-- [ ] **Step 1:** Read the scripts' output sections; replace direct `prelabel/ransac_*` writes with `preseg_store.register_preseg(layout, preseg_id, ...)` where `preseg_id` comes from a new `--preseg-id` CLI arg (default `ransac` for the RANSAC script, `sam3_<runid>` for the SAM3 one), `generator`/`params` filled from the script's own config.
+- [ ] **Step 1:** Read the scripts' output sections; both `presegment.py` and `presegment_sam3.py` write via `_common.write_prelabel` — reroute that single helper through `preseg_store.register_preseg(layout, preseg_id, ...)` where `preseg_id` comes from a new `--preseg-id` CLI arg (default `ransac` for the RANSAC script, `sam3_<runid>` for the SAM3 one), `generator`/`params` filled from the script's own config.
 - [ ] **Step 2:** `pytest backend/tests/test_presegment.py -v` (update if it asserts old paths) → PASS.
 - [ ] **Step 3: Commit** — `git commit -m "feat: preseg pipelines publish via register_preseg"`
 
