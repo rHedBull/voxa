@@ -310,9 +310,12 @@ function MainApp() {
     }).catch((e) => {
       if (cancel) return;
       // Pin mismatch / corrupt session: surface a blocking banner and leave
-      // the scene unloaded so the user can pick another session.
+      // the scene unloaded so the user can pick another session. The failed
+      // session must NOT stay "active" — otherwise switchSession's equality
+      // guard would silently swallow a retry of the same session.
       if (e.status === 409 && e.detail) {
         setPinError(e.detail);
+        setActiveSessionId(null);
       } else {
         setLoadError(String(e.message || e));
       }

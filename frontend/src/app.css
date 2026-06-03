@@ -804,6 +804,9 @@ kbd {
   font-family: 'JetBrains Mono', monospace;
 }
 .pin-error-banner .ghost-btn { width: auto; flex: 0 0 auto; }
+.pin-error-banner .dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+}
 
 /* Number input inside ins-grid */
 .ins-grid .ins-input { width: 100%; }
