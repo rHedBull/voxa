@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from plyfile import PlyData, PlyElement
 
 # Add backend to sys.path — same pattern as scripts/preseg/presegment.py:40
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,14 +34,22 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from labeling.segment_io import atomic_write_json, atomic_write_npy, compute_fingerprint
 from preseg.preseg_store import register_preseg
+from scenes.lidar_io import z_up_to_y_up_xyz
+from scenes.point_cloud import load_ply
 from scenes.scan_layout import ScanLayout
 
 
 def _read_ply_positions(ply_path: Path) -> np.ndarray:
-    """Return (N, 3) float32 array of xyz from a PLY file."""
-    ply = PlyData.read(str(ply_path))
-    v = ply["vertex"]
-    return np.stack([v["x"], v["y"], v["z"]], axis=1).astype(np.float32)
+    """Return the (N, 3) float32 xyz array EXACTLY as the loader produces it.
+
+    Bit-exactness matters: float32 ``mean`` results differ in the last bits
+    depending on the array's memory layout (load_ply returns a non-contiguous
+    ``vstack().T`` view), and the recenter step bakes that mean into every
+    coordinate. The source-fingerprint pin must match what /api/load computes,
+    so we go through the loader's own reader rather than re-stacking columns.
+    """
+    pc, _ = load_ply(ply_path)
+    return pc.points
 
 
 def _is_z_up(meta: dict) -> bool:
@@ -60,25 +67,22 @@ def _display_positions(pts: np.ndarray, z_up: bool) -> np.ndarray:
     """Apply the same load-time transforms used in routes/load.py so
     source_fingerprint matches what /api/load computes.
 
-    1. z_up → y_up rotation if needed:
-       (x, y, z)_z_up → (x, z, -y)_y_up
-       (mirrors z_up_to_y_up_xyz in scenes/lidar_io.py:147)
-    2. Recenter when any |coord| > 1e3:
-       subtract bbox centroid (mean) exactly as _recenter in app/core.py:114 does.
-       NB: _recenter uses mean (center = pc.points.mean(axis=0)), not (min+max)/2.
+    1. z_up → y_up rotation via the loader's own ``z_up_to_y_up_xyz`` (the
+       single source of truth — never replicate it).
+    2. Recenter exactly as _recenter in app/core.py:114 does: subtract the
+       mean centroid, but ONLY when the centroid magnitude itself exceeds
+       1e3 (the trigger is on the mean, not on individual coords).
+
+    Every op runs on the loader's own array object (see _read_ply_positions)
+    so summation order — and therefore the float32 mean — is bit-identical
+    to what /api/load computes.
     """
-    out = pts.astype(np.float32, copy=True)
-    if z_up:
-        # (x, y, z) → (x, z, -y) — app/core.py:_z_up_to_y_up / lidar_io.py:z_up_to_y_up_xyz
-        tmp = out.copy()
-        out[:, 0] = tmp[:, 0]
-        out[:, 1] = tmp[:, 2]
-        out[:, 2] = -tmp[:, 1]
-    # _recenter: subtract mean when max(|coord|) >= 1e3
-    if float(np.max(np.abs(out))) >= 1e3:
-        center = out.mean(axis=0)
+    out = z_up_to_y_up_xyz(pts) if z_up else pts
+    # _recenter: subtract the mean centroid iff max(|mean|) >= 1e3
+    center = out.mean(axis=0)
+    if float(np.max(np.abs(center))) >= 1e3:
         out = (out - center).astype(np.float32)
-    return out
+    return out.astype(np.float32)
 
 
 def _mtime_iso(path: Path) -> str:

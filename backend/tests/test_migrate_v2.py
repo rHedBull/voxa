@@ -293,3 +293,55 @@ def test_post_migration_load(tmp_path, monkeypatch):
     assert body["session_id"] == "legacy"
     assert body["class_ids"] is not None, "class_ids should be present after migration"
     assert body["num_points"] == 8
+
+
+def test_post_migration_load_zup_utm_scan(tmp_path, monkeypatch):
+    """Regression: a Z-up scan at UTM-scale coordinates exercises BOTH the
+    z-up→y-up rotation AND the recenter rule in the migration's
+    source-fingerprint replication. Any divergence from the loader's
+    transforms (core._z_up_to_y_up / core._recenter) makes the pin mismatch
+    and this load come back 409 instead of 200."""
+    root = tmp_path / "lidar"
+    scan_dir = root / "annotated" / "utm"
+
+    rng = np.random.default_rng(1)
+    pts = rng.standard_normal((8, 3)).astype(np.float32)
+    pts[:, 0] += 700_000.0   # UTM easting
+    pts[:, 1] += 5_300_000.0  # UTM northing
+    pts[:, 2] += 400.0        # elevation
+    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+    arr = np.zeros(8, dtype=dtype)
+    arr['x'], arr['y'], arr['z'] = pts[:, 0], pts[:, 1], pts[:, 2]
+    arr['red'] = arr['green'] = arr['blue'] = 200
+    (scan_dir / "source").mkdir(parents=True)
+    PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
+        str(scan_dir / "source" / "scan.ply"))
+
+    (scan_dir / "labels").mkdir()
+    gt = np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32)
+    np.save(scan_dir / "labels" / "gt_class_ids.npy", gt)
+    np.save(scan_dir / "labels" / "gt_segment_ids.npy", gt)
+    (scan_dir / "labels" / "gt_segment_metadata.json").write_text(
+        json.dumps({"n_points": 8, "segments": []}))
+    # source_laz (and no source_mesh) → the loader treats the scan as Z-up.
+    (scan_dir / "meta.json").write_text(json.dumps({
+        "scan_name": "utm", "n_points": 8, "schema_version": "1.3",
+        "source_laz": "lidar/laz/utm.laz",
+    }))
+    (root / "classes.json").write_text(json.dumps({
+        "version": 1, "unlabeled_id": -1,
+        "classes": [{"id": 0, "name": "pipe"}, {"id": 1, "name": "tank"},
+                    {"id": 2, "name": "equipment"}],
+    }))
+
+    result = _run_migrate(root)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    import main
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    r = client.post("/api/load", json={"name": "annotated/utm", "max_points": 100})
+    assert r.status_code == 200, r.text
+    assert r.json()["session_id"] == "legacy"
