@@ -44,7 +44,11 @@ def sessions_create(tier: str, name: str, req: CreateSessionRequest):
                               n_points=len(_state["pc"]),
                               source_fp=_state["source_fp"],
                               min_segment_points=MIN_SEGMENT_POINTS)
-    except (FileNotFoundError, ValueError, FileExistsError) as e:
+    except FileExistsError as e:
+        # Same-second session-id collision — a transient conflict, not a bad
+        # request; the client can simply retry.
+        raise HTTPException(409, str(e))
+    except (FileNotFoundError, ValueError) as e:
         raise HTTPException(400, str(e))
     return asdict(info)
 

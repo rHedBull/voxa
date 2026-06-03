@@ -53,12 +53,20 @@ def register_preseg(layout: ScanLayout, preseg_id: str, instance_ids: np.ndarray
 
 
 def read_preseg_meta(layout: ScanLayout, preseg_id: str) -> dict:
-    """Parsed prelabel/<id>/meta.json. Raises if absent/unreadable."""
+    """Parsed prelabel/<id>/meta.json. Raises FileNotFoundError if the file
+    is absent or missing required identity keys — both mean "no valid v2
+    preseg here" to callers (listing → 500, pin check → mismatch)."""
     meta_path = layout.preseg_dir(preseg_id) / "meta.json"
     if not meta_path.exists():
         raise FileNotFoundError(
             f"preseg '{preseg_id}' has no meta.json (not a v2 preseg?)")
-    return json.loads(meta_path.read_text())
+    meta = json.loads(meta_path.read_text())
+    for key in ("preseg_id", "fingerprint"):
+        if key not in meta:
+            raise FileNotFoundError(
+                f"preseg '{preseg_id}': meta.json is missing required key "
+                f"'{key}' — re-run register_preseg")
+    return meta
 
 
 def list_presegs(layout: ScanLayout) -> list[PresegInfo]:

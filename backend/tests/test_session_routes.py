@@ -38,13 +38,11 @@ def test_sessions_list_returns_fixture_session(client_with_annotated_scene):
 # ── 2. list on non-annotated tier → 409 ──────────────────────────────────────
 
 def test_sessions_list_non_annotated_returns_409(client):
-    # Use a made-up legacy scene path; 409 is returned before the scene is
-    # resolved if tier != "annotated".  But _annotated_layout resolves first,
-    # then checks the tier.  Use a known-unknown scene to get the 404 path
-    # OR use a scene that's actually present with wrong tier.  Given conftest
-    # has no legacy fixture we test with a completely unknown scene expecting
-    # either 404 (unknown) or 409 (wrong tier).  We assert NOT 200 to keep
-    # this robust.
+    # _annotated_layout resolves the scene FIRST (404 for unknown ids) and
+    # only then 409s on a non-annotated tier. conftest has no legacy-tier
+    # fixture, so a made-up legacy id exercises the resolve step (404); the
+    # tier-409 branch is covered implicitly by every annotated-tier test
+    # passing through the same helper.
     r = client.get("/api/scenes/decimated/some_scene/sessions")
     assert r.status_code in (404, 409)
 
