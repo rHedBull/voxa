@@ -19,6 +19,14 @@ from scenes.scan_layout import ScanLayout
 _ID_RE = re.compile(r"^[a-z0-9_-]+$")
 
 
+def _validate_id(preseg_id: str) -> None:
+    """Reject ids that could escape prelabel/ when joined into paths.
+    Enforced symmetrically on write (register) AND read (meta/load) — read
+    callers pass ids straight from request bodies."""
+    if not _ID_RE.match(preseg_id):
+        raise ValueError(f"preseg_id {preseg_id!r} must match {_ID_RE.pattern}")
+
+
 @dataclass(frozen=True)
 class PresegInfo:
     preseg_id: str
@@ -34,8 +42,7 @@ def register_preseg(layout: ScanLayout, preseg_id: str, instance_ids: np.ndarray
     """Publish a preseg result. The fingerprint and n_segments are computed
     once here and recorded in meta.json — meta.json is the preseg's identity:
     pin checks and listings read it instead of re-hashing the array."""
-    if not _ID_RE.match(preseg_id):
-        raise ValueError(f"preseg_id {preseg_id!r} must match {_ID_RE.pattern}")
+    _validate_id(preseg_id)
     instance_ids = instance_ids.astype(np.int32, copy=False)
     d = layout.preseg_dir(preseg_id)
     atomic_write_npy(d / "instance_ids.npy", instance_ids)
@@ -56,6 +63,7 @@ def read_preseg_meta(layout: ScanLayout, preseg_id: str) -> dict:
     """Parsed prelabel/<id>/meta.json. Raises FileNotFoundError if the file
     is absent or missing required identity keys — both mean "no valid v2
     preseg here" to callers (listing → 500, pin check → mismatch)."""
+    _validate_id(preseg_id)
     meta_path = layout.preseg_dir(preseg_id) / "meta.json"
     if not meta_path.exists():
         raise FileNotFoundError(
@@ -93,6 +101,7 @@ def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
     """Return (class_ids int8, instance_ids int32) for one preseg result.
     Supersedes the removed segment_io.load_prelabel; raises on missing files /
     shape mismatch instead of degrading to None."""
+    _validate_id(preseg_id)
     d = layout.preseg_dir(preseg_id)
     inst_path = d / "instance_ids.npy"
     summary_path = d / "segment_summary.json"

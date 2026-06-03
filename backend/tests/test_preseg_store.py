@@ -39,6 +39,17 @@ def test_register_rejects_bad_id(scan):
                         generator="x", params={})
 
 
+def test_read_paths_reject_traversal_ids(scan):
+    """ids come from request bodies on the read path too — '..' must never
+    reach a filesystem join (write/read symmetry)."""
+    from preseg.preseg_store import read_preseg_meta
+    for bad in ("../evil", "..", "a/b"):
+        with pytest.raises(ValueError, match="preseg_id"):
+            load_preseg(scan, bad, n_points=8)
+        with pytest.raises(ValueError, match="preseg_id"):
+            read_preseg_meta(scan, bad)
+
+
 def test_load_shape_mismatch_raises(scan):
     register_preseg(scan, "ransac", _inst(), summary={"segments": []},
                     generator="x", params={})

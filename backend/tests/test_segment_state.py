@@ -14,6 +14,14 @@ def _seed():
                           positions=np.zeros((8, 3), dtype=np.float32))
 
 
+def _seed_preseg(s, preseg_ids, *, preseg_id=None):
+    """Seed the immutable preseg layer the way app.core._resume_session does
+    (freeze_preseg was removed in v2 — sessions pin their preseg at creation)."""
+    import numpy as np
+    s.preseg_ids = preseg_ids.astype(np.int32, copy=False)
+    s.preseg_id = preseg_id
+
+
 def test_set_class_changes_specified_indices():
     s = _seed()
     delta = s.apply_set_class(indices=np.array([1, 2], dtype=np.int32),
@@ -142,23 +150,7 @@ def test_segment_session_has_preseg_layer():
     assert s.preseg_fingerprint is None
 
 
-def test_freeze_preseg_stamps_run_id_and_fingerprint():
-    import numpy as np
-    from labeling.segment_state import SegmentSession
-    pts = np.zeros((10, 3), dtype=np.float32)
-    s = SegmentSession(
-        class_ids=np.full(10, -1, dtype=np.int8),
-        instance_ids=np.full(10, -1, dtype=np.int32),
-        positions=pts,
-    )
-    new_pre = np.arange(10, dtype=np.int32)
-    s.freeze_preseg(new_pre, preseg_id="abc")
-    np.testing.assert_array_equal(s.preseg_ids, new_pre)
-    assert s.preseg_id == "abc"
-    assert s.preseg_fingerprint.startswith("sha256:")
-
-
-def test_freeze_preseg_immutable_through_merge():
+def test_preseg_layer_immutable_through_merge():
     import numpy as np
     from labeling.segment_state import SegmentSession
     pts = np.zeros((10, 3), dtype=np.float32)
@@ -167,7 +159,7 @@ def test_freeze_preseg_immutable_through_merge():
         instance_ids=np.array([0]*5 + [1]*5, dtype=np.int32),
         positions=pts,
     )
-    s.freeze_preseg(np.array([0]*5 + [1]*5, dtype=np.int32))
+    _seed_preseg(s, np.array([0]*5 + [1]*5, dtype=np.int32))
     s.apply_merge(source_inst=0, target_inst=1)
     assert (s.instance_ids == 1).all()
     np.testing.assert_array_equal(s.preseg_ids, np.array([0]*5 + [1]*5))
@@ -183,7 +175,7 @@ def test_current_inst_ids_for_preseg_after_merge():
         instance_ids=np.array([0]*5 + [1]*5, dtype=np.int32),
         positions=pts,
     )
-    s.freeze_preseg(s.instance_ids.copy())
+    _seed_preseg(s, s.instance_ids.copy())
     s.apply_merge(source_inst=0, target_inst=1)
     assert s.current_inst_ids_for_preseg(0) == {1}
     assert s.current_inst_ids_for_preseg(1) == {1}
@@ -217,7 +209,7 @@ def test_hide_survives_merge():
         instance_ids=np.array([0]*5 + [1]*5, dtype=np.int32),
         positions=pts,
     )
-    s.freeze_preseg(s.instance_ids.copy())
+    _seed_preseg(s, s.instance_ids.copy())
     s.hide_instance(0)
     s.apply_merge(source_inst=0, target_inst=1)
     assert s.current_inst_ids_for_preseg(0) == {1}
@@ -232,7 +224,7 @@ def test_snap_to_preseg_reverts_merged_object():
         instance_ids=np.array([0]*5 + [1]*5, dtype=np.int32),
         positions=pts,
     )
-    s.freeze_preseg(np.array([0]*5 + [1]*5, dtype=np.int32))
+    _seed_preseg(s, np.array([0]*5 + [1]*5, dtype=np.int32))
     s.apply_merge(source_inst=0, target_inst=1)
     assert (s.instance_ids == 1).all()
     s.snap_to_preseg([1])
@@ -248,7 +240,7 @@ def test_snap_to_preseg_undoable():
         instance_ids=np.array([0]*5 + [1]*5, dtype=np.int32),
         positions=pts,
     )
-    s.freeze_preseg(np.array([0]*5 + [1]*5, dtype=np.int32))
+    _seed_preseg(s, np.array([0]*5 + [1]*5, dtype=np.int32))
     s.apply_merge(0, 1)
     s.snap_to_preseg([1])
     s.undo()
@@ -288,13 +280,16 @@ def test_autosave_includes_hidden_and_preseg_run(tmp_path):
         session_dir=tmp_path,
         autosave_debounce_s=0.0,
     )
-    s.freeze_preseg(np.array([0, 0, 1, 1], dtype=np.int32), preseg_id="r1")
+    _seed_preseg(s, np.array([0, 0, 1, 1], dtype=np.int32), preseg_id="r1")
+    # In production the pin is set from session.json by from_aux; the
+    # autosave payload must carry it through unchanged.
+    s.preseg_fingerprint = "sha256:pinned-at-create"
     s.hide_instance(0)
     s.flush_autosave()
     payload = json.loads((tmp_path / "session.json").read_text())
     assert payload["preseg_id"] == "r1"
     assert payload["hidden_inst_ids"] == [0]
-    assert payload["preseg_fingerprint"].startswith("sha256:")
+    assert payload["preseg_fingerprint"] == "sha256:pinned-at-create"
     assert "is_from_prelabel" not in payload
 
 

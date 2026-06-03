@@ -127,29 +127,14 @@ class SegmentSession:
         return self._delta_payload(d, direction="redo")
 
     # ── Preseg layer ──
-
-    def freeze_preseg(
-        self,
-        preseg_ids: np.ndarray,
-        *,
-        preseg_id: Optional[str] = None,
-    ) -> None:
-        """Replace the immutable preseg layer. Not undoable; this is a
-        session-scope event."""
-        from labeling.segment_io import compute_fingerprint
-        if preseg_ids.shape != self.instance_ids.shape:
-            raise ValueError(
-                f"freeze_preseg: expected {self.instance_ids.shape}, "
-                f"got {preseg_ids.shape}",
-            )
-        self.preseg_ids = preseg_ids.astype(np.int32, copy=False)
-        self.preseg_id = preseg_id
-        self.preseg_fingerprint = compute_fingerprint(self.preseg_ids)
-        self.schedule_autosave(write_arrays=True)
+    # The immutable preseg layer (`preseg_ids` + pins) is populated by
+    # app.core._resume_session from the on-disk session/preseg stores; no
+    # in-memory mutator exists in v2 (sessions pin their preseg at creation).
 
     def current_inst_ids_for_preseg(self, preseg_id: int) -> set[int]:
         """Which live instance ids does preseg cluster `preseg_id` currently
-        cover? Resolves through any merges/reassigns since freeze_preseg."""
+        cover? Resolves through any merges/reassigns since the session was
+        seeded."""
         mask = self.preseg_ids == int(preseg_id)
         if not mask.any():
             return set()
