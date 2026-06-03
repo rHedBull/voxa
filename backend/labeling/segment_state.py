@@ -134,7 +134,6 @@ class SegmentSession:
         preseg_ids: np.ndarray,
         *,
         preseg_id: Optional[str] = None,
-        run_id: Optional[str] = None,  # deprecated alias; use preseg_id
     ) -> None:
         """Replace the immutable preseg layer. Not undoable; this is a
         session-scope event."""
@@ -145,8 +144,7 @@ class SegmentSession:
                 f"got {preseg_ids.shape}",
             )
         self.preseg_ids = preseg_ids.astype(np.int32, copy=False)
-        # preseg_id is the canonical kwarg; run_id is kept for compatibility
-        self.preseg_id = preseg_id if preseg_id is not None else run_id
+        self.preseg_id = preseg_id
         self.preseg_fingerprint = compute_fingerprint(self.preseg_ids)
         self.schedule_autosave(write_arrays=True)
 
