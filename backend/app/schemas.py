@@ -197,4 +197,11 @@ class ExportPlyRequest(BaseModel):
     ops: list[_ObbOp] | None = None
     boxes: list[_ObbBox] | None = None
 
+class CreateSessionRequest(BaseModel):
+    name: str
+    preseg_id: Optional[str] = None
+
+class RenameSessionRequest(BaseModel):
+    name: str
+
 __all__ = [n for n in list(globals()) if not n.startswith("__")]
