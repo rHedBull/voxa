@@ -308,4 +308,4 @@ def test_autosave_disabled_when_no_session_dir(tmp_path):
         positions=pts,
     )
     s.apply_set_class(np.array([0], dtype=np.int32), class_id=1)
-    assert not (tmp_path / "current.json").exists()
+    assert not (tmp_path / "session.json").exists()
