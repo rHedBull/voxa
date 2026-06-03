@@ -17,6 +17,8 @@ from typing import Optional
 
 import numpy as np
 
+from scenes.scan_layout import ScanLayout
+
 
 def compute_fingerprint(arr: np.ndarray) -> str:
     """Content-addressed sha256 of a numpy array's bytes. Stable across
@@ -56,9 +58,9 @@ def load_prelabel(
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """Read prelabel/ if present. Returns (class_ids int8, instance_ids int32)
     or None when no prelabel exists / arrays are malformed."""
-    pre = scan_dir / "prelabel"
-    inst_path = pre / "ransac_instance_ids.npy"
-    summary_path = pre / "ransac_segment_summary.json"
+    lay = ScanLayout(scan_dir)
+    inst_path = lay.ransac_instance_ids
+    summary_path = lay.ransac_segment_summary
     if not inst_path.exists() or not summary_path.exists():
         return None
     try:
@@ -90,7 +92,7 @@ def _load_class_registry(scan_dir: Path) -> Optional[dict]:
     naturally hit the None branch, so callers must treat schema-aware
     enrichment + validation as optional.
     """
-    candidate = scan_dir.parent.parent / "classes.json"
+    candidate = ScanLayout(scan_dir).classes_json
     if not candidate.exists():
         return None
     try:
@@ -103,7 +105,7 @@ def _load_class_registry(scan_dir: Path) -> Optional[dict]:
 
 
 def _read_meta_class_map_version(scan_dir: Path) -> Optional[int]:
-    meta_path = scan_dir / "meta.json"
+    meta_path = ScanLayout(scan_dir).meta_json
     if not meta_path.exists():
         return None
     try:
@@ -219,31 +221,30 @@ def save_labels(
                          registry=registry,
                          meta_class_map_version=meta_version)
 
-    labels_dir = scan_dir / "labels"
-    labels_dir.mkdir(parents=True, exist_ok=True)
+    lay = ScanLayout(scan_dir)
+    lay.labels_dir.mkdir(parents=True, exist_ok=True)
+    gt_files = (lay.gt_class_ids, lay.gt_segment_ids, lay.gt_segment_metadata)
 
-    if write_history and (labels_dir / "gt_class_ids.npy").exists():
-        snap_dir = scan_dir / "annotation_history" / _utc_timestamp()
+    if write_history and lay.gt_class_ids.exists():
+        snap_dir = lay.annotation_history_dir / _utc_timestamp()
         snap_dir.mkdir(parents=True, exist_ok=True)
-        for fname in ("gt_class_ids.npy", "gt_segment_ids.npy",
-                      "gt_segment_metadata.json"):
-            src = labels_dir / fname
+        for src in gt_files:
             if src.exists():
-                shutil.copy2(src, snap_dir / fname)
-        prune_history(scan_dir / "annotation_history", keep=history_keep)
+                shutil.copy2(src, snap_dir / src.name)
+        prune_history(lay.annotation_history_dir, keep=history_keep)
     elif write_history:
-        (scan_dir / "annotation_history" / _utc_timestamp()).mkdir(parents=True, exist_ok=True)
-        prune_history(scan_dir / "annotation_history", keep=history_keep)
+        (lay.annotation_history_dir / _utc_timestamp()).mkdir(parents=True, exist_ok=True)
+        prune_history(lay.annotation_history_dir, keep=history_keep)
 
-    np.save(labels_dir / "gt_class_ids.npy", class_ids.astype(np.int32))
-    np.save(labels_dir / "gt_segment_ids.npy", instance_ids.astype(np.int32))
+    np.save(lay.gt_class_ids, class_ids.astype(np.int32))
+    np.save(lay.gt_segment_ids, instance_ids.astype(np.int32))
     meta = _build_segment_metadata(class_ids, instance_ids, positions,
                                    registry=registry)
     if prelabel_fingerprint is not None:
         meta["prelabel_fingerprint"] = prelabel_fingerprint
     if source_fingerprint is not None:
         meta["source_fingerprint"] = source_fingerprint
-    (labels_dir / "gt_segment_metadata.json").write_text(json.dumps(meta, indent=2))
+    lay.gt_segment_metadata.write_text(json.dumps(meta, indent=2))
 
 
 def prune_history(history_dir: Path, *, keep: int = 10) -> None:

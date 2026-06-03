@@ -92,7 +92,7 @@ def segment_save():
     src = _resolve(_state["scene"])
     if src.tier != "annotated":
         raise HTTPException(409, "Save is only supported on annotated/<scene> tier")
-    scan_dir = Path(src.source_path).parent.parent
+    scan_dir = Path(src.extras["scan_dir"])
     write_history = (
         os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
         not in ("1", "true", "yes", "on")

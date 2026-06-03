@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from scenes.scan_layout import ScanLayout
+
 
 VALID_TIERS = ("legacy", "annotated", "decimated", "raw")
 TIER_ORDER = {t: i for i, t in enumerate(VALID_TIERS)}
@@ -101,21 +103,22 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
     for sd in sorted(root.iterdir()):
         if not sd.is_dir():
             continue
-        source_dir = sd / "source"
+        lay = ScanLayout(sd)
+        source_dir = lay.source_dir
         if not source_dir.is_dir():
             continue
-        scan = source_dir / "scan.ply"
+        scan = lay.scan_ply
         if not scan.exists():
             plys = sorted(source_dir.glob("*.ply"))
             if not plys:
                 continue
             scan = plys[0]
-        labels_dir = sd / "labels"
-        gt_class = labels_dir / "gt_class_ids.npy"
-        gt_seg = labels_dir / "gt_segment_ids.npy"
-        seg_meta = labels_dir / "gt_segment_metadata.json"
-        meta_path = sd / "meta.json"
-        mesh_path = sd / "source" / "mesh.glb"
+        labels_dir = lay.labels_dir
+        gt_class = lay.gt_class_ids
+        gt_seg = lay.gt_segment_ids
+        seg_meta = lay.gt_segment_metadata
+        meta_path = lay.meta_json
+        mesh_path = lay.mesh_glb
         has_labels = gt_class.exists() and gt_seg.exists()
         n_points = None
         # is_z_up: PLYs sampled from a glTF mesh inherit the GLB's Y-up
