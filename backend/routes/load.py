@@ -15,7 +15,7 @@ def load_scene(req: LoadRequest):
     src = _resolve(req.name)
     (pc, mesh, intensity, labels, palette, n_classes, n_instances, n_labeled,
      is_from_prelabel, n_source_total) = (
-        _load_scene_source(src, req.max_points, prefer_prelabel=req.prefer_prelabel)
+        _load_scene_source(src, req.max_points)
     )
 
     # LAS / lidar archive scans are Z-up; rotate into Three.js Y-up before
@@ -29,31 +29,43 @@ def load_scene(req: LoadRequest):
     # Recenter for float32 stability (LAS UTM, etc).
     pc, offset = _recenter(pc)
 
-    # Drop segments below a sanity threshold. Some prelabel files in the
-    # wild are essentially `np.arange(n_points)` (every point its own
-    # instance) which floods the UI with hundreds of thousands of
-    # one-point segments and tanks rendering. Anything smaller than
-    # MIN_SEGMENT_POINTS is treated as unlabeled (class=-1, instance=-1)
-    # so the user starts from a clean slate.
-    if labels is not None:
-        labels = _filter_tiny_segments(labels, MIN_SEGMENT_POINTS)
+    from labeling.segment_io import compute_fingerprint
+    source_fp = compute_fingerprint(pc.points.astype(np.float32))
+
+    # v2: resolve the active session (explicit session_id or last-worked
+    # default) and rebuild its in-memory state. Per-point labels live in the
+    # session, not in the cloud loader. Pin mismatches surface as 409.
+    sessions_meta: list[dict] = []
+    session_id = None
+    seg = None
+    if src.tier == "annotated":
+        from dataclasses import asdict
+        from labeling.session_store import PinMismatch, last_worked, list_sessions
+        lay = ScanLayout(Path(src.extras["scan_dir"]))
+        infos = list_sessions(lay)              # one pass over session.json files
+        sessions_meta = [asdict(s) for s in infos]
+        if req.session_id and req.session_id not in {s.session_id for s in infos}:
+            raise HTTPException(404, f"session {req.session_id!r} not found")
+        session_id = req.session_id or last_worked(infos)
+        if session_id is not None:
+            try:
+                seg = _resume_session(lay, session_id, pc, source_fp)
+            except PinMismatch as e:
+                raise HTTPException(status_code=409, detail={
+                    "error": "session_pin_mismatch",
+                    "diverged": e.diverged,
+                    "session_id": session_id,
+                    "message": str(e)})
+
+    if seg is not None:
+        labels = LabelArrays(class_ids=seg.class_ids, instance_ids=seg.instance_ids)
+        valid_c = seg.class_ids[seg.class_ids >= 0]
+        valid_i = seg.instance_ids[seg.instance_ids >= 0]
+        n_classes = int(valid_c.max()) + 1 if valid_c.size else 0
+        n_instances = int(valid_i.max()) + 1 if valid_i.size else 0
+        n_labeled = int((seg.class_ids >= 0).sum())
 
     sub, idx, sub_intensity, sub_labels = _safe_subsample(pc, req.max_points, intensity, labels)
-
-    # Preserve any live seg session (e.g. RANSAC presegmentation) across
-    # page reloads when the same scene is reloaded with a compatible point
-    # count. Without this guard, the user's preseg work is silently
-    # clobbered by the on-disk labels on every /api/load.
-    prev_scene = _state.get("scene")
-    prev_seg = _state.get("seg")
-    keep_prev_seg = (
-        prev_seg is not None
-        and prev_scene == src.scene_id
-        and len(prev_seg.positions) == len(pc)
-        # Switching GT↔prelabel reseats the source of truth; carrying
-        # over the prior session would silently keep the old mode.
-        and bool(prev_seg.is_from_prelabel) == bool(is_from_prelabel)
-    )
 
     _state.update(
         scene=src.scene_id,
@@ -64,20 +76,10 @@ def load_scene(req: LoadRequest):
         intensity=intensity,
         labels=labels,
         recenter_offset=offset,
+        seg=seg,
+        session_id=session_id,
+        source_fp=source_fp,   # single home; session creation reads this
     )
-    from labeling.segment_io import compute_fingerprint
-    source_fp = compute_fingerprint(pc.points.astype(np.float32))
-
-    seg = _seed_or_recover_session(
-        src, pc, labels, is_from_prelabel,
-        prev_seg=prev_seg, keep_prev_seg=keep_prev_seg, source_fp=source_fp,
-    )
-    _state["seg"] = seg
-
-    # Surface stale prelabel (prelabel/ re-run since labels/ were saved) so the
-    # frontend can warn the user their on-disk labels may be out of date.
-    if seg is not None:
-        seg.stale_prelabel = _stale_prelabel_check(src)
 
     positions = sub.points.astype(np.float32)
     colors = _normalize_colors(sub)
@@ -112,8 +114,7 @@ def load_scene(req: LoadRequest):
             full_payload["seg_ids"] = _b64(box_ids)
             full_payload["seg_centers"] = _b64(box_centers)
             full_payload["seg_sizes"] = _b64(box_sizes)
-    seg_for_meta = _state.get("seg")
-    full_payload["is_from_prelabel"] = bool(seg_for_meta.is_from_prelabel) if seg_for_meta is not None else False
+    full_payload["is_from_prelabel"] = seg.is_from_prelabel if seg else False
 
     subsample_idx_b64 = _b64(idx.astype(np.int32)) if idx is not None else None
 
@@ -176,6 +177,8 @@ def load_scene(req: LoadRequest):
         frame_uncertain=bool(fsum.get("frame_uncertain", False)),
         frame_check=frame_check,
         georef_offset=fsum.get("georef_offset"),
+        session_id=session_id,
+        sessions=sessions_meta,
         **full_payload,
     )
 

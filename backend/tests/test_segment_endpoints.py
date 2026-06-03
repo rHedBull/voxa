@@ -145,7 +145,7 @@ def test_save_then_reload_preserves_preseg_full_round_trip(
     segment with the rest as -1.
     """
     import main
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
 
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
@@ -245,14 +245,14 @@ def test_save_does_not_collapse_preseg_in_session_autosave(
 # ── segment/state hydration ──────────────────────────────────────────────────
 
 def test_segment_state_surfaces_full_session_aux(client_with_annotated_scene):
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
 
     r = client.get("/api/segment/state")
     body = r.json()
     # Should include the fields needed for FE hydration.
-    for k in ("has_seg", "n_points", "preseg_run_id", "preseg_fingerprint",
+    for k in ("has_seg", "n_points", "preseg_id", "preseg_fingerprint",
               "source_fingerprint", "is_from_prelabel",
               "dirty"):
         assert k in body, f"missing field: {k}"

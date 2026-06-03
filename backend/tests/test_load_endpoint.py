@@ -33,28 +33,57 @@ def _write_ply(path: Path, n: int = 8) -> None:
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(str(path))
 
 
+def _seed_v2_session(scan_dir: Path, inst: np.ndarray, *, summary_segments: list,
+                     name: str = "s") -> str:
+    """Register a preseg + create a session seeded from it (scan-schema v2).
+    Returns the session_id. The scan dir must already have source/scan.ply +
+    a v2 meta.json + a sibling classes.json under the lidar root."""
+    from preseg.preseg_store import register_preseg
+    from labeling.session_store import create_session
+    from labeling.segment_io import compute_fingerprint
+    from scenes.scan_layout import ScanLayout
+    lay = ScanLayout(scan_dir)
+    register_preseg(lay, "ransac", inst.astype(np.int32),
+                    summary={"segments": summary_segments},
+                    generator="ransac", params={})
+    ply = PlyData.read(str(scan_dir / "source" / "scan.ply"))["vertex"]
+    pts = np.stack([ply["x"], ply["y"], ply["z"]], axis=1).astype(np.float32)
+    sess = create_session(lay, name=name, preseg_id="ransac",
+                          n_points=len(inst), source_fp=compute_fingerprint(pts))
+    return sess.session_id
+
+
+def _write_classes_json(lidar: Path) -> None:
+    (lidar / "classes.json").write_text(json.dumps({
+        "version": 1, "unlabeled_id": -1,
+        "classes": [{"id": 0, "name": "pipe"},
+                    {"id": 1, "name": "tank"},
+                    {"id": 2, "name": "equipment"}],
+    }))
+
+
 @pytest.fixture
 def lidar_client(tmp_path, monkeypatch):
-    """Spin up a fresh main.app rooted at a synthesized lidar tree."""
+    """Spin up a fresh main.app rooted at a synthesized lidar tree (scan-schema v2)."""
     lidar = tmp_path / "lidar"
     scan = lidar / "annotated" / "demo"
     _write_ply(scan / "source" / "scan.ply", n=8)
-    (scan / "labels").mkdir(parents=True, exist_ok=True)
-    np.save(scan / "labels" / "gt_class_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
-    np.save(scan / "labels" / "gt_segment_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32))
-    (scan / "labels" / "gt_segment_metadata.json").write_text(json.dumps({
-        "n_points": 8, "class_map": {"pipe": 0, "tank": 1, "equipment": 2},
-        "n_gt_segments": 4, "n_labeled_points": 6, "segments": [],
-    }))
-    (scan / "meta.json").write_text(json.dumps({"scan_name": "demo", "n_points": 8}))
+    (scan / "meta.json").write_text(json.dumps({
+        "scan_name": "demo", "n_points": 8, "schema_version": "2.0",
+        "class_map_version": 1, "source_mesh": "mesh.glb"}))
+    _write_classes_json(lidar)
+    _seed_v2_session(scan, np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32),
+                     summary_segments=[{"id": 0, "class_id": 0},
+                                       {"id": 1, "class_id": 1},
+                                       {"id": 2, "class_id": 2},
+                                       {"id": 3, "class_id": 2}], name="demo session")
 
-    # Bare PLY scene as well, for the no-labels case.
+    # Bare PLY scene as well, for the no-sessions case.
     bare = lidar / "annotated" / "stub"
     _write_ply(bare / "source" / "scan.ply", n=4)
-    (bare / "labels").mkdir(parents=True, exist_ok=True)
-    (bare / "meta.json").write_text(json.dumps({"scan_name": "stub", "n_points": 4}))
+    (bare / "meta.json").write_text(json.dumps({
+        "scan_name": "stub", "n_points": 4, "schema_version": "2.0",
+        "source_mesh": "mesh.glb"}))
 
     # Patch main.LIDAR_ROOT in place. Reloading main breaks pydantic model
     # identity (ClassDef-from-old-load isn't ClassDef-from-new-load), so we
@@ -96,61 +125,49 @@ def test_load_annotated_surfaces_labels_and_palette(lidar_client):
     assert inst_arr.tolist() == [-1, 0, 0, 1, 1, 2, -1, 3]
 
 
-def test_load_unlabeled_returns_all_minus_one_arrays(lidar_client):
-    """No labels + no prelabel → loader returns all-(-1) arrays so editing can start."""
+def test_load_scan_without_sessions_returns_empty(lidar_client):
+    """No sessions on disk → no active session → class/instance arrays absent."""
     body = lidar_client.post("/api/load",
                              json={"name": "annotated/stub", "max_points": 100}).json()
-    # class_ids and instance_ids are present but entirely -1.
-    assert body["class_ids"] is not None
-    assert body["instance_ids"] is not None
-    class_arr = np.frombuffer(base64.b64decode(body["class_ids"]), dtype=np.int8)
-    inst_arr = np.frombuffer(base64.b64decode(body["instance_ids"]), dtype=np.int32)
-    assert int(class_arr.min()) == -1 and int(class_arr.max()) == -1
-    assert int(inst_arr.min()) == -1 and int(inst_arr.max()) == -1
-    # Palette is allowed to be absent or empty.
-    assert not body["class_palette"]
+    assert body["class_ids"] is None
+    assert body["instance_ids"] is None
+    assert body["session_id"] is None
+    assert body["sessions"] == []
 
 
-def test_load_prefer_prelabel_skips_gt(lidar_client, tmp_path, monkeypatch):
-    """With prefer_prelabel=True, the loader skips authored GT and surfaces
-    the prelabel/ recommendation instead — even when GT exists."""
-    import main
+def test_load_resumes_last_worked_session(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["session_id"] == session_id
+    assert j["class_ids"] is not None
+    assert {s["session_id"] for s in j["sessions"]} == {session_id}
 
-    lidar = tmp_path / "lidar-pref"
-    scan = lidar / "annotated" / "withpre"
-    _write_ply(scan / "source" / "scan.ply", n=8)
-    (scan / "labels").mkdir(parents=True, exist_ok=True)
-    # Authored GT: 8 points all class 0, instance 0.
-    np.save(scan / "labels" / "gt_class_ids.npy",
-            np.zeros(8, dtype=np.int32))
-    np.save(scan / "labels" / "gt_segment_ids.npy",
-            np.zeros(8, dtype=np.int32))
-    (scan / "meta.json").write_text(json.dumps({"scan_name": "withpre", "n_points": 8}))
-    # Prelabel: different segmentation — class 1, two distinct instances 5 & 7.
-    (scan / "prelabel").mkdir(parents=True, exist_ok=True)
-    np.save(scan / "prelabel" / "ransac_instance_ids.npy",
-            np.array([5, 5, 5, 5, 7, 7, 7, 7], dtype=np.int32))
-    (scan / "prelabel" / "ransac_segment_summary.json").write_text(json.dumps({
-        "segments": [{"id": 5, "class_id": 1, "label": "tank"},
-                     {"id": 7, "class_id": 1, "label": "tank"}],
-    }))
 
-    monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
+def test_load_explicit_unknown_session_404(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "session_id": "nope"})
+    assert r.status_code == 404
 
-    # Default load → GT wins, is_from_prelabel=False.
-    gt_body = lidar_client.post("/api/load",
-                                json={"name": "annotated/withpre", "max_points": 100}).json()
-    gt_inst = np.frombuffer(base64.b64decode(gt_body["instance_ids"]), dtype=np.int32)
-    assert gt_body["is_from_prelabel"] is False
-    assert gt_inst.tolist() == [0] * 8
 
-    # prefer_prelabel=True → GT skipped, prelabel surfaces.
-    pre_body = lidar_client.post("/api/load",
-                                 json={"name": "annotated/withpre", "max_points": 100,
-                                       "prefer_prelabel": True}).json()
-    pre_inst = np.frombuffer(base64.b64decode(pre_body["instance_ids"]), dtype=np.int32)
-    assert pre_body["is_from_prelabel"] is True
-    assert pre_inst.tolist() == [5, 5, 5, 5, 7, 7, 7, 7]
+def test_load_pin_mismatch_409(client_with_annotated_scene, tmp_path):
+    """Re-register the preseg with different content after the session was
+    pinned → its declared fingerprint changes → resume raises 409."""
+    client, scene_id, session_id = client_with_annotated_scene
+    from main import _resolve
+    from scenes.scan_layout import ScanLayout
+    from preseg.preseg_store import register_preseg
+    src = _resolve(scene_id)
+    lay = ScanLayout(Path(src.extras["scan_dir"]))
+    register_preseg(lay, "ransac",
+                    np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int32),
+                    summary={"segments": [{"id": 0, "class_id": 0},
+                                          {"id": 1, "class_id": 1}]},
+                    generator="ransac", params={})
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id})
+    assert r.status_code == 409
+    assert r.json()["detail"]["diverged"] == "preseg"
 
 
 def test_recenter_zero_for_already_centered_scene(lidar_client):
@@ -180,8 +197,8 @@ def test_mesh_endpoint_serves_glb_when_present(lidar_client, tmp_path, monkeypat
                              ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
         str(scan / "source" / "scan.ply"))
-    (scan / "labels").mkdir(parents=True, exist_ok=True)
-    (scan / "meta.json").write_text('{"scan_name": "withmesh", "n_points": 4}')
+    (scan / "meta.json").write_text(
+        '{"scan_name": "withmesh", "n_points": 4, "schema_version": "2.0"}')
     # Pretend mesh — content body doesn't matter for these assertions.
     (scan / "source" / "mesh.glb").write_bytes(b"glTF\x02\x00\x00\x00")
 
@@ -228,7 +245,8 @@ def test_annotated_z_up_swap_when_source_is_laz(lidar_client, tmp_path, monkeypa
     scan_dir = lidar / "annotated" / "tall_laz"
     _write_tall_ply(scan_dir)
     (scan_dir / "meta.json").write_text(
-        '{"scan_name": "tall_laz", "n_points": 10, "source_laz": "x.laz"}')
+        '{"scan_name": "tall_laz", "n_points": 10, "source_laz": "x.laz",'
+        ' "schema_version": "2.0"}')
 
     monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     body = lidar_client.post("/api/load",
@@ -248,7 +266,8 @@ def test_annotated_no_swap_when_source_is_glb(lidar_client, tmp_path, monkeypatc
     scan_dir = lidar / "annotated" / "tall_glb"
     _write_tall_ply(scan_dir)
     (scan_dir / "meta.json").write_text(
-        '{"scan_name": "tall_glb", "n_points": 10, "source_mesh": "source/mesh.glb"}')
+        '{"scan_name": "tall_glb", "n_points": 10, "source_mesh": "source/mesh.glb",'
+        ' "schema_version": "2.0"}')
 
     monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     body = lidar_client.post("/api/load",
@@ -261,7 +280,7 @@ def test_annotated_no_swap_when_source_is_glb(lidar_client, tmp_path, monkeypatc
 
 
 def test_load_annotated_creates_segment_session(client_with_annotated_scene):
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
     import main
@@ -270,7 +289,7 @@ def test_load_annotated_creates_segment_session(client_with_annotated_scene):
 
 
 def test_load_with_want_full_labels_returns_full_arrays(client_with_annotated_scene):
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id, "want_full_labels": True})
     assert r.status_code == 200
     j = r.json()
@@ -282,7 +301,7 @@ def test_load_with_want_full_labels_returns_full_arrays(client_with_annotated_sc
 
 
 def test_load_without_flag_omits_full_arrays(client_with_annotated_scene):
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id})
     j = r.json()
     assert j.get("full_class_ids") is None
@@ -291,7 +310,7 @@ def test_load_without_flag_omits_full_arrays(client_with_annotated_scene):
 
 def test_subsample_idx_absent_when_no_subsampling(client_with_annotated_scene):
     """Cloud fits in max_points → no subsampling → subsample_idx is null."""
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
     j = r.json()
@@ -317,8 +336,9 @@ def test_subsample_idx_present_and_correct_when_subsampling(tmp_path, monkeypatc
     (scan_dir / "source").mkdir(parents=True, exist_ok=True)
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
         str(scan_dir / "source" / "scan.ply"))
-    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
-    (scan_dir / "meta.json").write_text('{"scan_name": "big", "n_points": 20}')
+    (scan_dir / "meta.json").write_text(
+        '{"scan_name": "big", "n_points": 20, "schema_version": "2.0",'
+        ' "source_mesh": "mesh.glb"}')
 
     monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     client = TestClient(main.app)
@@ -347,7 +367,7 @@ def test_load_recovers_in_progress_session_after_server_restart(
 ):
     """First load -> mutate -> simulate server restart -> second load recovers
     the working_*.npy state via current.json commit-pointer."""
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100,
                                        "want_full_labels": True})
     assert r.status_code == 200, r.text
@@ -385,46 +405,6 @@ def test_load_recovers_in_progress_session_after_server_restart(
     assert body["dirty"] is True
 
 
-def test_seg_session_skipped_above_label_cap(monkeypatch, client_with_annotated_scene):
-    client, scene_id = client_with_annotated_scene
-    import main
-    monkeypatch.setattr("app.constants.MAX_LABEL_POINTS", 1, raising=False)
-    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
-    assert r.status_code == 200
-    assert main._state["seg"] is None
-
-
-def test_load_detects_stale_prelabel_fingerprint(client_with_annotated_scene, tmp_path):
-    """labels/gt_segment_metadata.json was written with prelabel_fingerprint=X,
-    but prelabel/ has since been re-run and now hashes to Y. State must
-    surface stale_prelabel=True."""
-    client, scene_id = client_with_annotated_scene
-    import json
-    import numpy as np
-    from pathlib import Path
-    from main import _resolve
-    src = _resolve(scene_id)
-    scan = Path(src.source_path).parent.parent  # source/scan.ply → scan/
-    # Ensure prelabel exists with content fingerprint A.
-    (scan / "prelabel").mkdir(exist_ok=True)
-    np.save(scan / "prelabel" / "ransac_instance_ids.npy",
-            np.full(64, 0, dtype=np.int32))
-    (scan / "prelabel" / "ransac_segment_summary.json").write_text(json.dumps({
-        "segments": [{"id": 0, "class_id": 0}],
-    }))
-    # Pretend labels were seeded from a different prelabel content.
-    meta_p = scan / "labels" / "gt_segment_metadata.json"
-    meta = json.loads(meta_p.read_text())
-    meta["prelabel_fingerprint"] = "sha256:stale_value_doesnt_match_current"
-    meta_p.write_text(json.dumps(meta))
-
-    r = client.post("/api/load", json={"name": scene_id, "max_points": 1000})
-    assert r.status_code == 200
-
-    body = client.get("/api/segment/state").json()
-    assert body.get("stale_prelabel") is True
-
-
 def _wall_ply(path, rgb, R):
     # Wall at z=-5 facing a camera at the origin looking down -z. Store it
     # PRE-rotated by R so that the gate's default orientation="Z+" (xyz @ R.T)
@@ -452,7 +432,7 @@ def _build_render_scene(lidar, name, *, cloud_rgb, img_rgb):
     pts = _wall_ply(scan / "source" / "scan.ply", cloud_rgb, R)
     fp = cloud_fingerprint(pts)
     scan.joinpath("meta.json").write_text(json.dumps({
-        "scan_name": name, "n_points": len(pts), "units": "meters", "schema_version": "1.3",
+        "scan_name": name, "n_points": len(pts), "units": "meters", "schema_version": "2.0",
         "frame": {"canonical_id": f"{name}#local", "transform_to_canonical": np.eye(4).tolist(),
                   "units": "meters", "frame_uncertain": False},
         "derivation": {"scan_id": name, "variant_id": "v1", "parent": "original", "op": "asis",

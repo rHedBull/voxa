@@ -110,94 +110,25 @@ def _build_palette(class_id_to_name: dict[int, str],
     return palette
 
 
-def load_annotated(src: SceneSource, lidar_root: Optional[Path],
-                   *, prefer_prelabel: bool = False) -> AnnotatedScene:
-    """Load an annotated/<scan>/ scene with its label arrays + class palette.
+def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedScene:
+    """Load an annotated/<scan>/ scene's cloud + class palette + scene meta.
 
-    `prefer_prelabel=True` skips the `labels/` GT branch so the model
-    recommendation in `prelabel/` (or fresh inference) surfaces in the
-    UI even on scenes that already have authored GT.
+    v2: per-point labels come from sessions/<id>/ — resolved in the load
+    route, not here. So this returns labels=None and zero counts; the caller
+    pulls the active session's working arrays.
     """
     pc, _mesh = load_ply(src.source_path)
-
-    labels: Optional[LabelArrays] = None
-    n_classes = 0
-    n_instances = 0
-    if not prefer_prelabel and src.extras.get("gt_class_path") and src.extras.get("gt_segment_path"):
-        class_path = Path(src.extras["gt_class_path"])
-        segment_path = Path(src.extras["gt_segment_path"])
-        try:
-            class_ids = np.load(class_path)
-            instance_ids = np.load(segment_path)
-        except (OSError, ValueError):
-            class_ids = instance_ids = None
-
-        if (class_ids is not None and instance_ids is not None
-                and len(class_ids) == len(pc) == len(instance_ids)):
-            ci = class_ids.astype(np.int32)
-            ii = instance_ids.astype(np.int32)
-            # Treat an all-(-1) "labels" file as a placeholder, not authored
-            # GT — the SCHEMA reserves the slot for scenes that haven't been
-            # labeled yet (e.g. annotated/smart_ois). Falling through to the
-            # prelabel/inference tier here is what the loop expects.
-            placeholder = bool((ii < 0).all())
-            if not placeholder:
-                # Squash class IDs into int8 — voxa classes count is small.
-                if int(ci.max(initial=-1)) > 126:
-                    # Out of int8 range — defensive; classes.json caps below 127.
-                    ci8 = np.clip(ci, -1, 126).astype(np.int8)
-                else:
-                    ci8 = ci.astype(np.int8)
-                labels = LabelArrays(class_ids=ci8, instance_ids=ii)
-                valid_classes = ci[ci >= 0]
-                valid_inst = ii[ii >= 0]
-                n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
-                n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
-
-    from labeling.segment_io import load_prelabel  # noqa: PLC0415
-
-    is_from_prelabel = False
-
-    scan_dir = Path(src.extras["scan_dir"])
-
-    if labels is None:
-        pre = load_prelabel(scan_dir, n_points=len(pc))
-        if pre is not None:
-            ci8, ii = pre
-            labels = LabelArrays(class_ids=ci8, instance_ids=ii)
-            valid_classes = ci8[ci8 >= 0]
-            valid_inst = ii[ii >= 0]
-            n_classes = int(valid_classes.max()) + 1 if valid_classes.size else 0
-            n_instances = int(valid_inst.max()) + 1 if valid_inst.size else 0
-            is_from_prelabel = True
-
-    # Trained merge-model fallback (seg_inference.predict_for_scene) is
-    # currently disabled. Presegmentation now runs OFFLINE
-    # (scripts/preseg/presegment*.py write prelabel/ransac_*), surfaced by the
-    # load_prelabel branch above — that is the single recommender path.
-    # To re-enable the model fallback, restore the predict_for_scene call
-    # here and ensure VOXA_SEGMENTATION_REPO + VOXA_MERGE_MODEL point at a
-    # valid bundle.
-
-    if labels is None:
-        labels = LabelArrays(
-            class_ids=np.full(len(pc), -1, dtype=np.int8),
-            instance_ids=np.full(len(pc), -1, dtype=np.int32),
-        )
 
     meta_path = src.extras.get("meta_path")
     meta = _read_segment_metadata(Path(meta_path)) if meta_path else {}
 
-    seg_meta_path = src.extras.get("segment_metadata_path")
-    seg_meta = _read_segment_metadata(Path(seg_meta_path)) if seg_meta_path else {}
-
     class_id_to_name = _read_classes_json(lidar_root)
-    palette = _build_palette(class_id_to_name, seg_meta)
+    palette = _build_palette(class_id_to_name, meta)
 
     return AnnotatedScene(
-        pc=pc, intensity=None, labels=labels, meta=meta,
-        palette=palette, n_classes=n_classes, n_instances=n_instances,
-        is_from_prelabel=is_from_prelabel,
+        pc=pc, intensity=None, labels=None, meta=meta,
+        palette=palette, n_classes=0, n_instances=0,
+        is_from_prelabel=False,
     )
 
 

@@ -25,23 +25,16 @@ def _write_tiny_ply(path: Path, n: int = 8) -> None:
     PlyData([el], text=False).write(str(path))
 
 
-def _make_annotated(scan_dir: Path, *, with_labels: bool = True, n: int = 8) -> None:
-    """Create a SCHEMA-conformant annotated/<name>/ directory."""
+def _make_annotated(scan_dir: Path, *, with_labels: bool = True, n: int = 8,
+                    schema_version: str = "2.0") -> None:
+    """Create a scan-schema v2 annotated/<name>/ directory. ``with_labels``
+    creates a sessions/ dir (has_labels keys on sessions_root existing in v2)."""
     _write_tiny_ply(scan_dir / "source" / "scan.ply", n=n)
-    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
     if with_labels:
-        np.save(scan_dir / "labels" / "gt_class_ids.npy", np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
-        np.save(scan_dir / "labels" / "gt_segment_ids.npy", np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32))
-        (scan_dir / "labels" / "gt_segment_metadata.json").write_text(json.dumps({
-            "n_points": n,
-            "n_gt_segments": 4,
-            "n_labeled_points": 6,
-            "class_map": {"pipe": 0, "tank": 1, "equipment": 2},
-            "segments": [],
-        }))
+        (scan_dir / "sessions" / "s0").mkdir(parents=True, exist_ok=True)
     (scan_dir / "meta.json").write_text(json.dumps({
         "scan_name": scan_dir.name, "n_points": n, "coords": "world",
-        "units": "meters", "class_map_version": 1,
+        "units": "meters", "class_map_version": 1, "schema_version": schema_version,
     }))
 
 
@@ -141,36 +134,15 @@ def test_discover_no_lidar_root_returns_only_legacy(voxa_data):
     assert scenes[0].name == "test_scene"
 
 
-def test_session_dir_for_annotated_tier(voxa_data, lidar_root):
-    s = resolve("annotated/munich_water_pump", voxa_data, lidar_root)
-    assert s.session_dir == lidar_root / "annotated" / "munich_water_pump" / "session"
-
-
-def test_session_dir_for_legacy_tier(voxa_data, lidar_root):
-    s = resolve("legacy/test_scene", voxa_data, lidar_root)
-    assert s.session_dir == voxa_data / "sessions" / "legacy__test_scene"
-
-
-def test_session_dir_for_decimated_tier(voxa_data, lidar_root):
-    s = resolve("decimated/Factory-large", voxa_data, lidar_root)
-    assert s.session_dir == voxa_data / "sessions" / "decimated__Factory-large"
-
-
-def test_session_dir_for_raw_tier(voxa_data, lidar_root):
-    s = resolve("raw/Factory-large", voxa_data, lidar_root)
-    assert s.session_dir == voxa_data / "sessions" / "raw__Factory-large"
-
-
-def test_session_dir_raises_when_data_dir_missing_for_legacy():
-    """Non-annotated tiers require data_dir; surfacing as ValueError prevents
-    writing session files to None."""
-    from scenes.scene_registry import _session_dir_for
-    with pytest.raises(ValueError, match="data_dir"):
-        _session_dir_for("legacy", "foo", None, None)
-    with pytest.raises(ValueError, match="data_dir"):
-        _session_dir_for("decimated", "foo", None, None)
-    with pytest.raises(ValueError, match="data_dir"):
-        _session_dir_for("raw", "foo", None, None)
+def test_v13_scan_not_discovered(tmp_path):
+    # meta.json schema_version "1.3" → absent from discovery (migration hint logged);
+    # a v2 twin in the same root is present.
+    lidar = tmp_path / "lidar"
+    _make_annotated(lidar / "annotated" / "old_v13", schema_version="1.3")
+    _make_annotated(lidar / "annotated" / "new_v2", schema_version="2.0")
+    by_id = {s.scene_id: s for s in discover(tmp_path / "data", lidar)}
+    assert "annotated/old_v13" not in by_id
+    assert "annotated/new_v2" in by_id
 
 
 # ── Mesh discovery + GLB scene-graph validity ──────────────────────────────

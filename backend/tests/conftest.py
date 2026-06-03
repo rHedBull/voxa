@@ -31,6 +31,7 @@ def _reset_main_state():
     main._state.update(
         scene=None, pc=None, mesh=None, subsample_idx=None,
         intensity=None, labels=None, recenter_offset=[0.0, 0.0, 0.0], seg=None,
+        session_id=None, source_fp=None,
     )
 
 
@@ -55,25 +56,17 @@ def _write_annotated_scene_ply(path: Path, n: int = 8) -> None:
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(str(path))
 
 
-def build_annotated_root(tmp_path: Path) -> Path:
-    """Build a synthesized lidar root with one annotated/demo scene with
-    real labels. Lives in conftest (not tests/test_lidar_io) so multiple
+def build_annotated_root(tmp_path: Path) -> tuple[Path, str]:
+    """Build a synthesized lidar root with one annotated/demo scene (scan-schema
+    v2: a registered preseg result + one session seeded from it). Returns
+    (root, session_id). Lives in conftest (not tests/test_lidar_io) so multiple
     test files can use it without cross-module helper imports."""
     root = tmp_path / "lidar"
     scan_dir = root / "annotated" / "demo"
     _write_annotated_scene_ply(scan_dir / "source" / "scan.ply", n=8)
-    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
-    np.save(scan_dir / "labels" / "gt_class_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
-    np.save(scan_dir / "labels" / "gt_segment_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32))
-    (scan_dir / "labels" / "gt_segment_metadata.json").write_text(json.dumps({
-        "n_points": 8, "n_gt_segments": 4, "n_labeled_points": 6,
-        "class_map": {"pipe": 0, "tank": 1, "equipment": 2},
-        "segments": [],
-    }))
     (scan_dir / "meta.json").write_text(json.dumps({
         "scan_name": "demo", "n_points": 8, "coords": "world", "units": "meters",
+        "schema_version": "2.0", "class_map_version": 1, "source_mesh": "mesh.glb",
     }))
     (root / "classes.json").write_text(json.dumps({
         "version": 1, "unlabeled_id": -1,
@@ -81,12 +74,32 @@ def build_annotated_root(tmp_path: Path) -> Path:
                     {"id": 1, "name": "tank"},
                     {"id": 2, "name": "equipment"}],
     }))
-    return root
+
+    # v2: preseg result + one session seeded from it
+    from preseg.preseg_store import register_preseg
+    from labeling.session_store import create_session
+    from labeling.segment_io import compute_fingerprint
+    from scenes.scan_layout import ScanLayout
+    from plyfile import PlyData
+    lay = ScanLayout(scan_dir)
+    inst = np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32)
+    register_preseg(lay, "ransac", inst,
+                    summary={"segments": [{"id": 0, "class_id": 0},
+                                          {"id": 1, "class_id": 1},
+                                          {"id": 2, "class_id": 2},
+                                          {"id": 3, "class_id": 2}]},
+                    generator="ransac", params={})
+    ply = PlyData.read(str(scan_dir / "source" / "scan.ply"))["vertex"]
+    pts = np.stack([ply["x"], ply["y"], ply["z"]], axis=1).astype(np.float32)
+    source_fp = compute_fingerprint(pts)
+    sess = create_session(lay, name="demo session", preseg_id="ransac",
+                          n_points=8, source_fp=source_fp)
+    return root, sess.session_id
 
 
 @pytest.fixture
 def client_with_annotated_scene(monkeypatch, tmp_path):
-    """TestClient + scene_id for a synthesized annotated scene with labels.
+    """TestClient + scene_id + session_id for a synthesized annotated scene.
 
     Reused by Tasks 8–12. Uses monkeypatch.setattr on main.LIDAR_ROOT to
     avoid reloading main (which breaks pydantic model identity).
@@ -94,15 +107,15 @@ def client_with_annotated_scene(monkeypatch, tmp_path):
     import main
     from fastapi.testclient import TestClient
 
-    root = build_annotated_root(tmp_path)
+    root, session_id = build_annotated_root(tmp_path)
     monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
-    return TestClient(main.app), "annotated/demo"
+    return TestClient(main.app), "annotated/demo", session_id
 
 
 @pytest.fixture
 def client_with_loaded_annotated_scene(client_with_annotated_scene):
     """TestClient with annotated/demo already loaded (full-resolution labels in _state)."""
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, _session_id = client_with_annotated_scene
     r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
     assert r.status_code == 200
     return client

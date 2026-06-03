@@ -25,7 +25,7 @@ def _decode_ply_bytes(data: bytes) -> np.ndarray:
 def test_export_ply_returns_full_source_density(client_with_annotated_scene, monkeypatch):
     """Load with max_points=2 (heavy subsample). Source has 8 points; the
     full-density export must return all 8, not just 2."""
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post('/api/load', json={'name': scene_id, 'max_points': 2})
     assert r.status_code == 200
     payload = r.json()
@@ -41,7 +41,7 @@ def test_export_ply_returns_full_source_density(client_with_annotated_scene, mon
 
 def test_export_ply_obb_delete_drops_points(client_with_annotated_scene):
     """An OBB delete op in display frame must reduce the kept count."""
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post('/api/load', json={'name': scene_id, 'max_points': 8})
     assert r.status_code == 200
 
@@ -60,7 +60,7 @@ def test_export_ply_obb_delete_drops_points(client_with_annotated_scene):
 
 
 def test_export_ply_scene_mismatch_409(client_with_annotated_scene):
-    client, scene_id = client_with_annotated_scene
+    client, scene_id, session_id = client_with_annotated_scene
     r = client.post('/api/load', json={'name': scene_id, 'max_points': 2})
     assert r.status_code == 200
 

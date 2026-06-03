@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import time as _time
 import uuid  # noqa: F401  (re-exported via `from app.core import *` for routes/compare.py auto-fit)
@@ -46,6 +45,8 @@ _state: dict[str, Any] = {
     "labels": None,         # LabelArrays (or None)
     "recenter_offset": [0.0, 0.0, 0.0],
     "seg": None,            # SegmentSession | None
+    "session_id": None,     # active session id (annotated tier) | None
+    "source_fp": None,      # fingerprint of the loaded cloud (session creation reads it)
 }
 
 def _annotation_path(scene: str, kind: str) -> Path:
@@ -180,13 +181,6 @@ def _y_up_to_z_up_xyz(pts: np.ndarray) -> np.ndarray:
     out[:, 2] = pts[:, 1]
     return out
 
-def _filter_tiny_segments(labels, min_points: int):
-    """Thin LabelArrays wrapper; the array logic lives in
-    labeling.segment_io.filter_tiny_segments (shared with session seeding)."""
-    from labeling.segment_io import filter_tiny_segments
-    cls, inst = filter_tiny_segments(labels.class_ids, labels.instance_ids, min_points)
-    return LabelArrays(class_ids=cls, instance_ids=inst)
-
 def _scene_is_z_up(src: SceneSource) -> bool:
     """Decide whether the scene's source frame is Z-up (surveying / LAS).
 
@@ -203,8 +197,7 @@ def _scene_is_z_up(src: SceneSource) -> bool:
         return True
     return bool(src.extras.get("is_z_up", True))
 
-def _load_scene_source(src: SceneSource, max_points: int, *,
-                       prefer_prelabel: bool = False):
+def _load_scene_source(src: SceneSource, max_points: int):
     """Dispatch to the right loader.
 
     Returns (pc, mesh, intensity, labels, palette, n_classes, n_instances,
@@ -215,7 +208,7 @@ def _load_scene_source(src: SceneSource, max_points: int, *,
     loaded count already matches the on-disk count.
     """
     if src.tier == "annotated":
-        a = load_annotated(src, constants.LIDAR_ROOT, prefer_prelabel=prefer_prelabel)
+        a = load_annotated(src, constants.LIDAR_ROOT)
         n_labeled = int((a.labels.class_ids >= 0).sum()) if a.labels is not None else 0
         palette = [ClassDef(id=p.id, label=p.label, color=p.color) for p in a.palette]
         return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
@@ -232,96 +225,31 @@ def _load_scene_source(src: SceneSource, max_points: int, *,
     pc, _ = load_ply(src.source_path)
     return (pc, None, None, None, None, None, None, None, False, None)
 
-def _seed_or_recover_session(src, pc, labels, is_from_prelabel, *,
-                             prev_seg, keep_prev_seg, source_fp):
-    """Pick the active SegmentSession for a freshly loaded scene.
-
-    Priority: carry over the prior live session (``keep_prev_seg``), recover an
-    autosaved working session (commit-pointer + fingerprint gated), seed from
-    on-disk labels, or none. Returns the SegmentSession (or None). Does not
-    touch ``_state`` — the caller assigns the result.
-    """
+def _resume_session(lay: ScanLayout, session_id: str, pc, source_fp: str):
+    """Resume one on-disk session: verify pins (PinMismatch propagates to the
+    route → 409), load working arrays, rebuild the in-memory SegmentSession
+    via SegmentSession.from_aux (the inverse of _aux_payload). Fails loudly
+    on unreadable/misshapen arrays — never silently blank. The preseg array
+    is read exactly once (for the snap-to layer); the pin check itself is a
+    string compare against the preseg's meta.json."""
     from labeling.segment_state import SegmentSession
-    from labeling.segment_io import load_session_aux, load_working_arrays
+    from labeling.segment_io import load_working_arrays
+    from labeling.session_store import verify_pins
+    from preseg.preseg_store import load_preseg
 
-    if keep_prev_seg:
-        # Carry over the existing session as-is.
-        return prev_seg
-
-    session_dir = src.session_dir
-
-    # Try recovering an in-progress working session (commit-pointer gated).
-    if session_dir is not None:
-        aux = load_session_aux(session_dir)
-        if aux is not None and aux.get("source_fingerprint") == source_fp:
-            wa = load_working_arrays(session_dir, n_points=len(pc))
-            if wa is not None:
-                # Transitional: old files may have is_from_prelabel; new ones use
-                # preseg_id is not None as the canonical derivation.
-                is_from_prelabel = bool(
-                    aux.get("is_from_prelabel", aux.get("preseg_id") is not None))
-                seg = SegmentSession(
-                    class_ids=wa[0],
-                    instance_ids=wa[1],
-                    positions=pc.points,
-                    is_from_prelabel=is_from_prelabel,
-                    session_dir=session_dir,
-                )
-                seg.source_fingerprint = source_fp
-                seg.preseg_id = aux.get("preseg_id")
-                seg.preseg_fingerprint = aux.get("preseg_fingerprint")
-                seg.hidden_inst_ids = set(int(x) for x in aux.get("hidden_inst_ids", []))
-                seg.dirty = bool(aux.get("dirty", False))
-                return seg
-
-    if labels is not None and len(pc) <= constants.MAX_LABEL_POINTS:
-        seg = SegmentSession(
-            class_ids=labels.class_ids,
-            instance_ids=labels.instance_ids,
-            positions=pc.points,
-            is_from_prelabel=is_from_prelabel,
-            session_dir=session_dir,
-        )
-        seg.source_fingerprint = source_fp
-        return seg
-
-    return None
-
-
-def _stale_prelabel_check(src) -> bool:
-    """True when ``prelabel/`` has been re-run since ``labels/`` were saved.
-
-    Compares the ``prelabel_fingerprint`` recorded in
-    ``labels/gt_segment_metadata.json`` against the current ``prelabel/`` content
-    hash; a mismatch means the on-disk labels may be stale, so the frontend can
-    warn the user. Best-effort: any missing file / read error returns False.
-    """
-    from labeling.segment_io import compute_fingerprint
-
-    scan_dir_str = src.extras.get("scan_dir") if src.extras else None
-    if scan_dir_str is None:
-        return False
-
-    lay = ScanLayout(Path(scan_dir_str))
-    labels_meta_path = lay.gt_segment_metadata
-    prelabel_path = lay.ransac_instance_ids
-    if not (labels_meta_path.exists() and prelabel_path.exists()):
-        return False
-
-    try:
-        saved_fp = json.loads(labels_meta_path.read_text()).get("prelabel_fingerprint")
-        current_fp = compute_fingerprint(np.load(prelabel_path).astype(np.int32))
-    except (OSError, ValueError, json.JSONDecodeError):
-        return False
-
-    if saved_fp and current_fp and saved_fp != current_fp:
-        logging.warning(
-            "scene %s: prelabel/ has been re-run since labels/ were saved "
-            "(was %s, now %s) — labels may be stale",
-            src.scene_id, saved_fp, current_fp,
-        )
-        return True
-    return False
+    aux = verify_pins(lay, session_id, source_fp=source_fp)
+    sp = lay.session(session_id)
+    wa = load_working_arrays(sp.dir, n_points=len(pc))
+    if wa is None:
+        raise HTTPException(409, f"session {session_id}: working arrays "
+                                 f"missing or wrong shape for this cloud")
+    seg = SegmentSession.from_aux(aux, class_ids=wa[0], instance_ids=wa[1],
+                                  positions=pc.points, session_dir=sp.dir)
+    seg.source_fingerprint = source_fp
+    if seg.preseg_id is not None:
+        _, pre_ii = load_preseg(lay, seg.preseg_id, n_points=len(pc))
+        seg.preseg_ids = pre_ii          # immutable preseg layer for snap-to
+    return seg
 
 
 def _mesh_url_for(src: SceneSource) -> Optional[str]:

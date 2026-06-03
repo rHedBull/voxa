@@ -76,7 +76,7 @@ describe('hydrateFromServerState', () => {
                     dirty: false };
     const out = hydrateFromServerState(state, {
       has_seg: true, n_points: 100,
-      preseg_run_id: 'r1', preseg_fingerprint: 'sha256:x',
+      preseg_id: 'r1', preseg_fingerprint: 'sha256:x',
       source_fingerprint: 'sha256:y',
       is_from_prelabel: false, dirty: true,
     });

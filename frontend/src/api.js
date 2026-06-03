@@ -46,12 +46,11 @@ export const VoxaAPI = {
     const r = await fetch('/api/scenes');
     return r.json();
   },
-  async load(name, { maxPoints = null, wantFullLabels = false, preferPrelabel = false } = {}) {
+  async load(name, { maxPoints = null, wantFullLabels = false } = {}) {
     const body = {
       name,
       ...(maxPoints != null ? { max_points: maxPoints } : {}),
       ...(wantFullLabels ? { want_full_labels: true } : {}),
-      ...(preferPrelabel ? { prefer_prelabel: true } : {}),
     };
     const r = await fetch('/api/load', {
       method: 'POST',
