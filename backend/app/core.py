@@ -20,8 +20,10 @@ from fastapi.responses import FileResponse
 
 from scenes.lidar_io import (
     LabelArrays, load_annotated, load_laz, load_laz_region, z_up_to_y_up_xyz,
+    _laz_rgb_to_uint8,
 )
 from scenes.point_cloud import PointCloud, load_glb, load_ply
+from scenes.reproject import euler_xyz_matrix
 from scenes.scene_registry import (
    SceneSource, discover, load_lidar_root_from_env,
    resolve as resolve_scene,
@@ -62,6 +64,16 @@ def _resolve(scene_id: str) -> SceneSource:
     except KeyError:
         raise HTTPException(404, f"Scene not found: {scene_id}")
 
+def _subsample_indices(n: int, max_points: int) -> np.ndarray:
+    """Reservoir down-sample: seeded, ascending indices into ``range(n)``.
+
+    Fixed seed so the full-load and region-pop paths pick the same points
+    reproducibly; sorted so the result preserves on-disk point order."""
+    rng = np.random.default_rng(7)
+    idx = rng.choice(n, size=max_points, replace=False)
+    idx.sort()
+    return idx
+
 def _safe_subsample(
     pc: PointCloud,
     max_points: int,
@@ -71,9 +83,7 @@ def _safe_subsample(
     n = len(pc)
     if n <= max_points:
         return pc, None, intensity, labels
-    rng = np.random.default_rng(7)
-    idx = rng.choice(n, size=max_points, replace=False)
-    idx.sort()
+    idx = _subsample_indices(n, max_points)
     sub = PointCloud(
         points=pc.points[idx],
         colors=pc.colors[idx] if pc.colors is not None else None,
@@ -174,7 +184,6 @@ def _filter_tiny_segments(labels, min_points: int):
     to an instance with fewer than ``min_points`` points. Keeps the
     arrays in-place-friendly: returns a fresh LabelArrays so the caller
     can swap without mutating the loader's outputs."""
-    from scenes.lidar_io import LabelArrays
     inst = np.asarray(labels.instance_ids, dtype=np.int32)
     cls = np.asarray(labels.class_ids, dtype=np.int8)
     if inst.size == 0 or min_points <= 1:
@@ -421,21 +430,10 @@ def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> t
     sizes = np.maximum(maxs - mins, 0.01).astype(np.float32)
     return unique_ids.astype(np.int32), centers, sizes
 
-def _euler_xyz_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
-    """Three.js Euler XYZ → 3x3 rotation matrix (Rz · Ry · Rx)."""
-    cx, sx = np.cos(rx), np.sin(rx)
-    cy, sy = np.cos(ry), np.sin(ry)
-    cz, sz = np.cos(rz), np.sin(rz)
-    return np.array([
-        [cy * cz,  sx * sy * cz - cx * sz,  cx * sy * cz + sx * sz],
-        [cy * sz,  sx * sy * sz + cx * cz,  cx * sy * sz - sx * cz],
-        [-sy,      sx * cy,                 cx * cy],
-    ], dtype=np.float64)
-
 def _obb_mask(points: np.ndarray, box: _ObbBox) -> np.ndarray:
     c = np.asarray(box.center, dtype=np.float64)
     s = np.asarray(box.size, dtype=np.float64)
-    R = _euler_xyz_matrix(*box.rotation)
+    R = euler_xyz_matrix(*box.rotation)
     # local = R^T · (p - c)  → vectorized as (p - c) @ R
     local = (points.astype(np.float64) - c) @ R
     half = s / 2.0
@@ -523,16 +521,8 @@ def _stream_laz_keep(src_path: Path, ops: list, scene_is_z_up: bool,
             continue
         kept_xyz.append(xyz_src[mask])
         if rgb_present and r is not None:
-            cmax = int(max(r.max(initial=0), g.max(initial=0), b.max(initial=0)))
-            if cmax > 255:
-                r8 = (r[mask] >> 8).astype(np.uint8)
-                g8 = (g[mask] >> 8).astype(np.uint8)
-                b8 = (b[mask] >> 8).astype(np.uint8)
-            else:
-                r8 = r[mask].astype(np.uint8)
-                g8 = g[mask].astype(np.uint8)
-                b8 = b[mask].astype(np.uint8)
-            kept_rgb.append(np.column_stack([r8, g8, b8]))
+            rgb8 = _laz_rgb_to_uint8(np.column_stack([r, g, b]))
+            kept_rgb.append(rgb8[mask])
 
     if not kept_xyz:
         return np.zeros((0, 3), dtype=np.float64), None

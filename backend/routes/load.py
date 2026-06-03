@@ -10,7 +10,6 @@ from app.core import *  # noqa: F401,F403
 
 router = APIRouter()
 
-# TODO: any loading refactorable, repaated implementation, all still needed and file paths?
 @router.post("/api/load", response_model=LoadResponse)
 def load_scene(req: LoadRequest):
     src = _resolve(req.name)
@@ -150,7 +149,7 @@ def load_scene(req: LoadRequest):
         if _v["checked"]:
             frame_check = _v
 
-    return LoadResponse( # TODO: check if all still needed!?
+    return LoadResponse(
         scene=src.scene_id,
         num_points=len(pc),
         num_points_total=n_source_total if (n_source_total is not None and n_source_total > len(pc)) else None,

@@ -188,15 +188,8 @@ def _discover_raw(lidar_root: Path, data_dir: Path) -> list[SceneSource]:
     if not root.is_dir():
         return []
     out: list[SceneSource] = []
-    for p in sorted(root.glob("*.laz")):
-        out.append(SceneSource(
-            tier="raw", name=p.stem,
-            source_path=p, source_format="laz",
-            has_labels=False, has_intensity=True,
-            session_dir=_session_dir_for("raw", p.stem, None, data_dir),
-        ))
-    # Some lidar archives also drop .las next to .laz.
-    for p in sorted(root.glob("*.las")):
+    # Some lidar archives drop .las next to .laz; discover() re-sorts by name.
+    for p in sorted([*root.glob("*.laz"), *root.glob("*.las")]):
         out.append(SceneSource(
             tier="raw", name=p.stem,
             source_path=p, source_format="laz",
