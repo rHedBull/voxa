@@ -556,6 +556,10 @@ kbd {
 .inst-row.confirmed .inst-text b { color: var(--text-dim); }
 .inst-row.confirmed .inst-text em { color: var(--text-faint); }
 .inst-row.confirmed .inst-dot { box-shadow: inset 0 0 0 2px var(--bg-elev-2); }
+/* Corrupt sessions in the picker: same dimming, distinct semantic hook. */
+.inst-row.corrupt .inst-text b { color: var(--text-dim); }
+.inst-row.corrupt .inst-text em { color: var(--text-faint); }
+.inst-row.corrupt { cursor: not-allowed; }
 .inst-dot { width: 8px; height: 8px; border-radius: 50%; }
 .inst-text { display: flex; flex-direction: row; align-items: baseline;
              gap: 6px; min-width: 0; overflow: hidden; }

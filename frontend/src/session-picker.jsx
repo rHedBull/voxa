@@ -47,7 +47,7 @@ export default function SessionPicker({ sessions, activeSessionId, presegs, onSe
           const isRenaming = s.session_id === renamingId;
           return (
             <div key={s.session_id}
-              className={'inst-row' + (isActive ? ' selected' : '') + (s.corrupt ? ' confirmed' : '')}
+              className={'inst-row' + (isActive ? ' selected' : '') + (s.corrupt ? ' corrupt' : '')}
               title={s.corrupt ? 'Session is corrupt' : 'Click to switch session'}
               onClick={() => { if (!s.corrupt && !isRenaming) onSelect(s.session_id); }}>
               <span className="inst-dot" style={{ background: s.corrupt ? '#6b7280' : '#10b981' }} />
