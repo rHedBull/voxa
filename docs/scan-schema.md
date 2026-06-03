@@ -2,6 +2,8 @@
 
 What voxa expects on disk for an annotated scan. The canonical, broader schema lives at `lidar/SCHEMA.md` in the data tree; this doc captures the subset voxa actually reads + writes so the layout is discoverable from inside the repo.
 
+In code, this layout is encoded once in `backend/scenes/scan_layout.py::ScanLayout` — every module that needs a path inside a scan dir (`scene_registry`, `lidar_io`, `segment_io`, the save route, stale-prelabel check) resolves it there rather than hard-coding subpaths. Update `ScanLayout` and this doc together when the on-disk layout changes.
+
 ## Where scans live
 
 ```
