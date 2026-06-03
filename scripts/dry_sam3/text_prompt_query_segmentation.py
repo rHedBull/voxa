@@ -28,11 +28,11 @@ grey, unseen darker.
 Run from anaconda base (torch + sam3), NOT voxa's .venv.
 
 Examples:
-  python scripts/dry_sam3/prompt_segment.py \
+  python scripts/dry_sam3/text_prompt_query_segmentation.py \
     --scan /home/hendrik/coding/engine/data/lidar/annotated/navvis_vlx3_water_treatment \
     --queries floor,wall --out /tmp/sam3_floor_wall
 
-  python scripts/dry_sam3/prompt_segment.py \
+  python scripts/dry_sam3/text_prompt_query_segmentation.py \
     --scan .../navvis_vlx3_water_treatment --queries pipe --out /tmp/sam3_pipe
 """
 from __future__ import annotations
@@ -47,15 +47,15 @@ import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
 
-sys.path.insert(0, str(Path(__file__).parent))
-from project_masks import (  # noqa: E402  (read-only reuse, nothing patched)
-    ORIENTATION_PRESETS, look_at_view, project_points,
-    depth_buffer_mask, load_ply, build_processor, segment, union_mask,
-)
-
-# Frame-aware remap support (scan-schema v1.3).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
+from scenes.reproject import (  # noqa: E402
+    ORIENTATION_PRESETS, look_at_view, project_points, depth_buffer_mask,
+)
+from sam3_common import load_ply, build_processor, segment, union_mask  # noqa: E402
+
+# Frame-aware remap support (scan-schema v1.3).
 try:
     from scenes.scan_meta import read_scan_meta  # noqa: E402
     from scenes.fingerprint import cloud_fingerprint  # noqa: E402

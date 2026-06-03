@@ -2,7 +2,7 @@
 
 Pipeline (all offline, no voxa code changes):
   1. Load PLY, run voxa's voxel supervoxel preseg → N points → S supervoxels.
-  2. Load SAM3 per-point features (from extract_features.py).
+  2. Load SAM3 per-point features (from point_feature_extraction.py).
   3. Mean-pool features per supervoxel.
   4. Build supervoxel adjacency in 3D (kNN on supervoxel centroids).
   5. Greedy union-find merge of adjacent supervoxels whose mean features
@@ -93,7 +93,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ply", required=True, type=Path)
     ap.add_argument("--features", required=True, type=Path,
-                    help="features.npy from extract_features.py")
+                    help="features.npy from point_feature_extraction.py")
     ap.add_argument("--seen", type=Path, default=None,
                     help="seen.npy; defaults to <features dir>/seen.npy")
     ap.add_argument("--out", required=True, type=Path)

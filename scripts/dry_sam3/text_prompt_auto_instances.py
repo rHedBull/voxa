@@ -17,11 +17,12 @@ from PIL import Image
 from plyfile import PlyData, PlyElement
 
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from project_masks import (
-    ORIENTATION_PRESETS, look_at_view, project_points,
-    depth_buffer_mask, load_ply, build_processor, segment,
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+from scenes.reproject import (  # noqa: E402
+    ORIENTATION_PRESETS, look_at_view, project_points, depth_buffer_mask,
 )
+from sam3_common import load_ply, build_processor, segment  # noqa: E402
 
 
 def random_palette(n: int, seed: int = 7) -> np.ndarray:
