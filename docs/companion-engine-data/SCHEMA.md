@@ -103,7 +103,7 @@ Each preseg result is a self-contained subdirectory:
   ]
 }
 ```
-`class_map_version` must equal `lidar/classes.json::version` at write time (invariant 6).
+`class_map_version` records which `lidar/classes.json::version` was active at save time (output mirror). Invariant 6 enforcement reads `meta.json::class_map_version`, not this field.
 
 ### `meta.json` (required)
 ```json
@@ -135,7 +135,7 @@ Human-readable description: what the scan is, who captured it, annotation status
 3. **Per session output**: `gt_class_ids[i] == -1` ⟺ `gt_segment_ids[i] == -1`.
 4. **Per session output**: for every point with `gt_segment_ids[i] = s` and `s != -1`: `gt_class_ids[i] == segment_metadata.segments[s].class_id`.
 5. All non-`-1` class IDs are present in `lidar/classes.json`.
-6. **Per session output**: `class_map_version` in `gt_segment_metadata.json` matches the active `lidar/classes.json`.
+6. **Per session output**: enforced by `segment_io._validate_invariants` comparing `meta.json::class_map_version` (read via `_read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped. The `class_map_version` written into `gt_segment_metadata.json` records which registry version the save used and is never read back for enforcement.
 
 ## GT model: no canonical output, enumerate sessions
 

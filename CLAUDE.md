@@ -39,9 +39,9 @@ npx vitest run src/api.test.js      # single frontend test (run from ./frontend 
 ## Architecture
 
 **Backend** (`backend/`, FastAPI, served by `uvicorn main:app`):
-- `main.py` — all HTTP endpoints, Pydantic schemas, in-memory `_state` holding the single active `PointCloud`. The IoU diff is axis-aligned (rotation ignored) and matched greedily within class.
+- `main.py` — assembles the FastAPI app and registers routers from `backend/routes/*.py`. HTTP endpoints live in `routes/{load,segment,sessions,compare,export,meta}.py`; Pydantic schemas in `app/schemas.py`; in-memory `_state` + helpers (`_recenter`, `_resume_session`, …) in `app/core.py`. The IoU diff is axis-aligned (rotation ignored) and matched greedily within class.
 - `scene_registry.py` — multi-root scene discovery. Returns `SceneSource` for each tier (`legacy` / `annotated` / `decimated` / `raw`). Scene IDs are tier-prefixed (`annotated/munich_water_pump`); bare legacy names still resolve.
-- `lidar_io.py` — `load_annotated` (SCHEMA-conformant v2 scans; reads working arrays from `sessions/<id>/`) and `load_laz` (chunked, stride-sampled via `laspy[lazrs]`). Auto-recenter for float32 stability lives in `main.py::_recenter`.
+- `lidar_io.py` — `load_annotated` (SCHEMA-conformant v2 scans; reads working arrays from `sessions/<id>/`) and `load_laz` (chunked, stride-sampled via `laspy[lazrs]`). Auto-recenter for float32 stability lives in `app/core.py::_recenter`.
 - `point_cloud.py`, `supervoxels.py`, `clustering.py`, `fitting.py` — carried over from the old `3d-labeler`. Only the PLY/GLB loader and a small `auto-fit` (snap a cuboid to points inside an AABB) are wired into the current frontend; the supervoxel / cluster / RANSAC modules are present for future use but not exposed via routes.
 - Static frontend is mounted at `/` **only if `dist/` exists**, so `/api/*` always wins. In dev mode (`dist/` absent) the FastAPI process is API-only and Vite owns the UI.
 
@@ -58,7 +58,7 @@ data/
 ├── scenes/<name>/source.{ply,glb}              # input
 └── annotations/<name>/{ground_truth,predictions}.json
 ```
-Both annotation files share one schema (`AnnotationDoc` in `main.py`); a model's output dropped at `predictions.json` is enough to power Compare mode.
+Both annotation files share one schema (`AnnotationDoc` in `app/schemas.py`); a model's output dropped at `predictions.json` is enough to power Compare mode.
 
 **Annotated scan layout** (scan-schema v2, under `$VOXA_LIDAR_ROOT/annotated/<name>/`):
 ```
@@ -78,12 +78,12 @@ See `docs/scan-schema.md` for the full layout + per-file contracts + required vs
 - **EDITMODE markers**: `App.jsx` defines tweak defaults inside `/*EDITMODE-BEGIN*/ ... /*EDITMODE-END*/`. The Agentation/tweaks tooling rewrites this region, so preserve the markers verbatim when editing defaults.
 - **Vite uses polling watchers** (`vite.config.js`) on purpose — to avoid blowing the system-wide inotify limit when many other projects are open. Keep it.
 - **Backend has no autoreload by default** — after editing Python files, kill and restart `npm run dev` (or set `VOXA_RELOAD=1`). This matches the broader "restart server after code changes" rule from the global config.
-- **Single in-memory point cloud**: `_state` in `main.py` holds one cloud at a time. Endpoints that need the points (e.g. `auto-fit`) implicitly depend on a prior `/api/load`. If you add multi-scene workflows, lift this state out first.
+- **Single in-memory point cloud**: `_state` in `app/core.py` holds one cloud at a time. Endpoints that need the points (e.g. `auto-fit`) implicitly depend on a prior `/api/load`. If you add multi-scene workflows, lift this state out first.
 - **Multi-session labeling model**: each annotated scan holds N labeling sessions under `sessions/<session_id>/`. The backend keeps ONE active `SegmentSession` at a time. Label mode (annotated tier) shows a session picker: list, create (name + preseg or blank), rename, delete, switch. Opening a scan auto-resumes the last-worked session (max `saved_at`). Save (Ctrl+S) writes to the active session's `output/` dir; downstream consumers enumerate `sessions/*/output/` — there is no single canonical GT slot.
 - **Session pinning + 409**: each session is pinned at creation to a preseg fingerprint (`prelabel/<id>/meta.json::fingerprint`) and a source fingerprint. On resume, voxa string-compares both pins. Any mismatch returns HTTP 409 `{detail, diverged: "preseg"|"source"}` and renders as a blocking banner in the UI. Re-registering the preseg (via `register_preseg()`) is the only supported way to update a preseg.
 - **Per-point labels are read-only in Inspect** — annotated scans load working arrays from the active session (`sessions/<id>/working_*.npy`), surfaced through `LoadResponse.class_ids` / `instance_ids` / `class_palette`. Inspect's "Color by Class / Instance" pills consume them. Editing per-point segments is Label mode only.
 - **Scan directory schema** is what voxa expects on disk for an annotated scan (source.ply, prelabel/<preseg_id>/, sessions/<session_id>/, renders/, sam3/, ...). See `docs/scan-schema.md` for the full layout + per-file contracts + required vs optional behavior. v1.3 scans (with `labels/`, `session/`, `annotation_history/`) are not discovered — run `scripts/migrate_scan_v2.py` first.
-- **Auto-recenter on load** — `_recenter` in `main.py` subtracts the bbox centroid when any coord exceeds 1e3 (LAS UTM scenes). The offset is in `LoadResponse.recenter_offset`. Cuboid endpoints operate in the recentered frame.
+- **Auto-recenter on load** — `_recenter` in `app/core.py` subtracts the mean centroid (`points.mean(axis=0)`) when any coord exceeds 1e3 (LAS UTM scenes). The offset is in `LoadResponse.recenter_offset`. Cuboid endpoints operate in the recentered frame.
 - **IoU is axis-aligned** in `_iou_aabb`; cuboid `rotation` is stored but ignored when scoring. Adequate for industrial poses where rotation is small; revisit if you start labeling rotated boxes.
 - **Coordinate system**: Three.js Y-up. Cuboid `center`/`size` are in scene units; `rotation` is `[rx, ry, rz]` Euler XYZ in radians.
 

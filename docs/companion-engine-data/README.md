@@ -30,7 +30,7 @@ Steps 1 and 2 can be applied independently (scaffolder and SCHEMA are documentat
 **`scaffold_annotation.py`** — updated to emit a v2 skeleton:
 - `meta.json` now includes `"schema_version": "2.0"`.
 - No `labels/` directory is created (v2 has no GT slot until a session saves).
-- An empty `prelabel/` directory is created (required for discovery to succeed without a migrate hint; the preseg pipeline fills it via `register_preseg()`).
+- An empty `prelabel/` directory is created as an optional convenience so preseg pipelines have their target dir ready; discovery needs only `source/scan.ply` and a v2 `meta.json` and does not require `prelabel/` to exist (the preseg pipeline fills it via `register_preseg()`).
 - Everything else (source/scan.ply, README.md, meta.json provenance fields, mesh handling, recentering) is unchanged.
 
 **`SCHEMA.md`** — rewritten to v2. Describes `prelabel/<preseg_id>/`, `sessions/<session_id>/`, removes `labels/` / `session/` / `annotation_history/` from the canonical layout.

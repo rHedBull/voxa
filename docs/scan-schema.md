@@ -80,7 +80,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 - **`sessions/<id>/working_segment_ids.npy`** — `int32`, shape `(N_pts,)`. Autosave; in-progress segment state. The `int8`/`int32` dtype asymmetry is intentional and carries over from v1.3 (autosave compactness vs export precision); do not unify.
 - **`sessions/<id>/output/gt_class_ids.npy`** — `int32`, shape `(N_pts,)`. `-1` = unlabeled. Written by explicit Save (Ctrl+S).
 - **`sessions/<id>/output/gt_segment_ids.npy`** — `int32`, shape `(N_pts,)`. `-1` = unlabeled.
-- **`sessions/<id>/output/gt_segment_metadata.json`** — `{ "n_points", "n_gt_segments", "n_labeled_points", "class_map_version", "segments": [...] }`. Invariant 6 requires `class_map_version` here to match `classes.json::version`.
+- **`sessions/<id>/output/gt_segment_metadata.json`** — `{ "n_points", "n_gt_segments", "n_labeled_points", "class_map_version", "segments": [...] }`. The `class_map_version` value here is an output mirror — it records which `classes.json::version` was active at save time. Invariant 6 is enforced by `segment_io._validate_invariants` comparing `meta.json::class_map_version` (read via `_read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped.
 - **`renders/<run>/manifest.json`** — `{ "scene", "frames": [{ "file", "position": [x,y,z], "target": [x,y,z], ... }] }`. SAM3 feature extraction reads `file`/`position`/`target` (or `yaw`).
 
 ### `session.json` schema
@@ -120,7 +120,7 @@ These v1.3 invariants carry over, applied **per session's `output/`**:
 
 1. **Invariant 3**: `class_id == -1 ⟺ instance_id == -1` (per point in the output files). Preseg-only points are dropped to `-1` in export; the in-memory canvas and `working_*.npy` keep the preseg structure for reload.
 2. **Invariant 4**: per-segment class consistency — every point sharing an `instance_id` must share the same `class_id`.
-3. **Invariant 6**: `sessions/<id>/output/gt_segment_metadata.json::class_map_version` must equal `classes.json::version`.
+3. **Invariant 6**: enforced by `segment_io._validate_invariants` comparing `meta.json::class_map_version` (read via `_read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped. The `class_map_version` written into `gt_segment_metadata.json` records which registry version the save used and is never read back for enforcement.
 
 ### Environment
 
@@ -167,4 +167,4 @@ python scripts/migrate_scan_v2.py --scan munich_water_pump /home/hendrik/coding/
 
 The script refuses loudly (per scan) on anything unexpected: a `sessions/` dir already present, unexpected files in `prelabel/`, shape mismatches. Recovery from a mid-migration crash is manual; the second run refuses rather than guessing.
 
-**Voxa v2 reads ONLY v2.** A v1.3 scan fails discovery with a "run scripts/migrate_scan_v2.py" hint logged at WARNING level.
+**Voxa v2 reads ONLY v2.** A non-v2 scan fails discovery and is skipped; the skip is logged at INFO level naming the found `schema_version` and the migrate script (`scripts/migrate_scan_v2.py`).
