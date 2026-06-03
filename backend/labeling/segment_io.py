@@ -201,19 +201,21 @@ def _utc_timestamp() -> str:
 
 def save_labels(
     scan_dir: Path,
+    session_id: str,
     class_ids: np.ndarray,
     instance_ids: np.ndarray,
     *,
     positions: Optional[np.ndarray] = None,
     write_history: bool = True,
     history_keep: int = 10,
-    prelabel_fingerprint: Optional[str] = None,
+    preseg_fingerprint: Optional[str] = None,
     source_fingerprint: Optional[str] = None,
 ) -> None:
     """Validate, snapshot existing labels, then write gt_*.npy + metadata.
 
-    Writes are sequential (3 files); not atomic across files. A history
-    snapshot is taken from the prior on-disk labels before overwrite.
+    Writes into sessions/<session_id>/output/ under scan_dir. Writes are
+    sequential (3 files); not atomic across files. A history snapshot is
+    taken from the prior on-disk labels before overwrite.
     """
     registry = _load_class_registry(scan_dir)
     meta_version = _read_meta_class_map_version(scan_dir)
@@ -221,30 +223,30 @@ def save_labels(
                          registry=registry,
                          meta_class_map_version=meta_version)
 
-    lay = ScanLayout(scan_dir)
-    lay.labels_dir.mkdir(parents=True, exist_ok=True)
-    gt_files = (lay.gt_class_ids, lay.gt_segment_ids, lay.gt_segment_metadata)
+    sp = ScanLayout(scan_dir).session(session_id)
+    sp.output_dir.mkdir(parents=True, exist_ok=True)
+    gt_files = (sp.output_gt_class_ids, sp.output_gt_segment_ids, sp.output_gt_segment_metadata)
 
-    if write_history and lay.gt_class_ids.exists():
-        snap_dir = lay.annotation_history_dir / _utc_timestamp()
+    if write_history and sp.output_gt_class_ids.exists():
+        snap_dir = sp.history_dir / _utc_timestamp()
         snap_dir.mkdir(parents=True, exist_ok=True)
         for src in gt_files:
             if src.exists():
                 shutil.copy2(src, snap_dir / src.name)
-        prune_history(lay.annotation_history_dir, keep=history_keep)
+        prune_history(sp.history_dir, keep=history_keep)
     elif write_history:
-        (lay.annotation_history_dir / _utc_timestamp()).mkdir(parents=True, exist_ok=True)
-        prune_history(lay.annotation_history_dir, keep=history_keep)
+        (sp.history_dir / _utc_timestamp()).mkdir(parents=True, exist_ok=True)
+        prune_history(sp.history_dir, keep=history_keep)
 
-    np.save(lay.gt_class_ids, class_ids.astype(np.int32))
-    np.save(lay.gt_segment_ids, instance_ids.astype(np.int32))
+    np.save(sp.output_gt_class_ids, class_ids.astype(np.int32))
+    np.save(sp.output_gt_segment_ids, instance_ids.astype(np.int32))
     meta = _build_segment_metadata(class_ids, instance_ids, positions,
                                    registry=registry)
-    if prelabel_fingerprint is not None:
-        meta["prelabel_fingerprint"] = prelabel_fingerprint
+    if preseg_fingerprint is not None:
+        meta["preseg_fingerprint"] = preseg_fingerprint
     if source_fingerprint is not None:
         meta["source_fingerprint"] = source_fingerprint
-    lay.gt_segment_metadata.write_text(json.dumps(meta, indent=2))
+    sp.output_gt_segment_metadata.write_text(json.dumps(meta, indent=2))
 
 
 def prune_history(history_dir: Path, *, keep: int = 10) -> None:

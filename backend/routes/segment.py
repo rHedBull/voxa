@@ -83,11 +83,15 @@ def segment_state():
         hull_vertices=_b64(hull_v),
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
+        session_id=_state.get("session_id"),
     )
 
-@router.put("/api/segment/save") # TODO: this is very important, what is actually happening, here what is beeing saved where? what format?
+@router.put("/api/segment/save")
 def segment_save():
     seg = _require_seg()
+    session_id = _state.get("session_id")
+    if session_id is None:
+        raise HTTPException(409, "no active session — load a session before saving")
     src = _resolve(_state["scene"])
     if src.tier != "annotated":
         raise HTTPException(409, "Save is only supported on annotated/<scene> tier")
@@ -120,11 +124,12 @@ def segment_save():
         from labeling.segment_io import save_labels
         save_labels(
             scan_dir,
+            session_id,
             class_ids=out_class,
             instance_ids=out_inst,
             positions=seg.positions,
             write_history=write_history,
-            prelabel_fingerprint=seg.preseg_fingerprint,
+            preseg_fingerprint=seg.preseg_fingerprint,
             source_fingerprint=seg.source_fingerprint,
         )
     except ValueError as e:

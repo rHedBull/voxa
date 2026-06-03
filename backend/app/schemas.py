@@ -180,6 +180,7 @@ class SegmentStateResponse(BaseModel):
     hull_vertices: str = ""
     hull_faces: str = ""
     hull_face_seg: str = ""
+    session_id: Optional[str] = None
 
 class _ObbBox(BaseModel):
     center: list[float]    # [cx, cy, cz] in recentered scene units

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 
 import numpy as np
 
@@ -76,6 +77,15 @@ def test_undo_returns_204_when_stack_empty(client_with_loaded_annotated_scene):
 
 # ── Task 12: save ────────────────────────────────────────────────────────────
 
+def _session_output_dir(scan_dir):
+    """Return the single sessions/<id>/output dir that save created."""
+    sessions_root = scan_dir / "sessions"
+    dirs = [d / "output" for d in sessions_root.iterdir()
+            if (d / "output").is_dir()]
+    assert len(dirs) == 1, f"expected 1 output dir, got {[str(d) for d in dirs]}"
+    return dirs[0]
+
+
 def test_save_writes_labels_to_disk(client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
     client = client_with_loaded_annotated_scene
     client.post("/api/segment/apply", json={
@@ -90,7 +100,8 @@ def test_save_writes_labels_to_disk(client_with_loaded_annotated_scene, scan_dir
     # Demo fixture has 4 instances (ids 0,1,2,3) and 6 labeled points.
     assert j["n_segments"] == 4
     assert j["n_labeled_points"] == 6
-    arr = np.load(scan_dir_for_loaded_scene / "labels" / "gt_class_ids.npy")
+    out_dir = _session_output_dir(scan_dir_for_loaded_scene)
+    arr = np.load(out_dir / "gt_class_ids.npy")
     assert int(arr[1]) == 2 and int(arr[2]) == 2
 
 
@@ -120,8 +131,9 @@ def test_save_drops_unclassified_preseg_on_disk_only(
     assert j["n_labeled_points"] == 1  # only the classified point on disk
 
     # Disk export: invariant 3 satisfied — preseg point reset to (-1, -1).
-    arr_inst = np.load(scan_dir_for_loaded_scene / "labels" / "gt_segment_ids.npy")
-    arr_cls  = np.load(scan_dir_for_loaded_scene / "labels" / "gt_class_ids.npy")
+    out_dir = _session_output_dir(scan_dir_for_loaded_scene)
+    arr_inst = np.load(out_dir / "gt_segment_ids.npy")
+    arr_cls  = np.load(out_dir / "gt_class_ids.npy")
     assert int(arr_inst[0]) == -1
     assert int(arr_cls[0]) == -1
     assert int(arr_inst[1]) == 100
@@ -254,5 +266,34 @@ def test_segment_state_surfaces_full_session_aux(client_with_annotated_scene):
     # Should include the fields needed for FE hydration.
     for k in ("has_seg", "n_points", "preseg_id", "preseg_fingerprint",
               "source_fingerprint", "is_from_prelabel",
-              "dirty"):
+              "dirty", "session_id"):
         assert k in body, f"missing field: {k}"
+    assert body["session_id"] == session_id
+
+
+# ── Task 5: save writes into active session's output/ ────────────────────────
+
+def test_save_writes_into_session_output(client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.put("/api/segment/save")
+    assert r.status_code == 200
+    sessions_root = scan_dir_for_loaded_scene / "sessions"
+    outs = [d / "output" / "gt_class_ids.npy" for d in sessions_root.iterdir()
+            if (d / "output").is_dir()]
+    assert len(outs) == 1 and outs[0].exists()
+    assert not (scan_dir_for_loaded_scene / "labels").exists()  # v2: no top-level labels/
+    meta = json.loads((outs[0].parent / "gt_segment_metadata.json").read_text())
+    assert "preseg_fingerprint" in meta
+
+
+def test_save_without_session_409(client_with_annotated_scene):
+    """Saving without an active session_id in _state must return 409."""
+    import main
+    client, scene_id, _session_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+    # Artificially clear session_id to simulate the no-session condition.
+    main._state["session_id"] = None
+    r = client.put("/api/segment/save")
+    assert r.status_code == 409
+    assert "session" in r.json()["detail"].lower()
