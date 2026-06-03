@@ -29,3 +29,26 @@ def test_paths_match_documented_schema():
 def test_classes_json_is_archive_level():
     # <lidar_root>/annotated/<scan>/ -> <lidar_root>/classes.json
     assert ScanLayout(SCAN).classes_json == Path("/lidar/classes.json")
+
+
+def test_v2_preseg_paths(tmp_path):
+    lay = ScanLayout(tmp_path / "annotated" / "demo")
+    d = lay.preseg_dir("ransac")
+    assert d == lay.presegs_root / "ransac"
+    assert lay.presegs_root == lay.scan_dir / "prelabel"
+    assert (d / "instance_ids.npy").name == "instance_ids.npy"
+
+
+def test_v2_session_paths(tmp_path):
+    lay = ScanLayout(tmp_path / "annotated" / "demo")
+    s = lay.session("20260603-120000_ransac")
+    assert lay.sessions_root == lay.scan_dir / "sessions"
+    assert s.dir == lay.sessions_root / "20260603-120000_ransac"
+    assert s.session_json == s.dir / "session.json"
+    assert s.working_class_ids == s.dir / "working_class_ids.npy"
+    assert s.working_segment_ids == s.dir / "working_segment_ids.npy"
+    assert s.output_dir == s.dir / "output"
+    assert s.output_gt_class_ids == s.output_dir / "gt_class_ids.npy"
+    assert s.output_gt_segment_ids == s.output_dir / "gt_segment_ids.npy"
+    assert s.output_gt_segment_metadata == s.output_dir / "gt_segment_metadata.json"
+    assert s.history_dir == s.dir / "history"

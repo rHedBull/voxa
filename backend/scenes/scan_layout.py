@@ -1,4 +1,4 @@
-"""Canonical on-disk layout of an annotated scan (scan-schema v1.3).
+"""Canonical on-disk layout of an annotated scan (scan-schema v1.3 and v2).
 
 Single executable encoding of the directory contract documented in
 ``docs/scan-schema.md`` (and the cross-tool ``lidar/SCHEMA.md``). Every voxa
@@ -15,6 +15,44 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class SessionPaths:
+    """Paths inside sessions/<session_id>/ (scan-schema v2)."""
+    dir: Path
+
+    @property
+    def session_json(self) -> Path:
+        return self.dir / "session.json"
+
+    @property
+    def working_class_ids(self) -> Path:
+        return self.dir / "working_class_ids.npy"
+
+    @property
+    def working_segment_ids(self) -> Path:
+        return self.dir / "working_segment_ids.npy"
+
+    @property
+    def output_dir(self) -> Path:
+        return self.dir / "output"
+
+    @property
+    def output_gt_class_ids(self) -> Path:
+        return self.output_dir / "gt_class_ids.npy"
+
+    @property
+    def output_gt_segment_ids(self) -> Path:
+        return self.output_dir / "gt_segment_ids.npy"
+
+    @property
+    def output_gt_segment_metadata(self) -> Path:
+        return self.output_dir / "gt_segment_metadata.json"
+
+    @property
+    def history_dir(self) -> Path:
+        return self.dir / "history"
 
 
 @dataclass(frozen=True)
@@ -94,3 +132,18 @@ class ScanLayout:
     @property
     def classes_json(self) -> Path:
         return self.scan_dir.parent.parent / "classes.json"
+
+    # v2: prelabel/<preseg_id>/ + sessions/<session_id>/
+    @property
+    def presegs_root(self) -> Path:
+        return self.scan_dir / "prelabel"
+
+    def preseg_dir(self, preseg_id: str) -> Path:
+        return self.presegs_root / preseg_id
+
+    @property
+    def sessions_root(self) -> Path:
+        return self.scan_dir / "sessions"
+
+    def session(self, session_id: str) -> SessionPaths:
+        return SessionPaths(self.sessions_root / session_id)
