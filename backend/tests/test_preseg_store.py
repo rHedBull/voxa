@@ -50,3 +50,16 @@ def test_fingerprint_stable_across_reload(scan):
     info = register_preseg(scan, "ransac", _inst(), summary={"segments": []},
                            generator="x", params={})
     assert list_presegs(scan)[0].fingerprint == info.fingerprint
+
+
+def test_load_applies_class_map(scan):
+    inst = np.array([0, 0, 1, 1, 5, -1, -1, -1], dtype=np.int32)
+    register_preseg(scan, "ransac", inst,
+                    summary={"segments": [{"id": 0, "class_id": 1},
+                                          {"id": 1, "class_id": 2}]},
+                    generator="x", params={})
+    ci, ii = load_preseg(scan, "ransac", n_points=8)
+    # mapped segments get their class; id 5 (absent from summary) and
+    # unlabeled points stay -1
+    assert ci.tolist() == [1, 1, 2, 2, -1, -1, -1, -1]
+    assert ii.tolist() == inst.tolist()

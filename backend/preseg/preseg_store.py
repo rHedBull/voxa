@@ -88,7 +88,8 @@ def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
     d = layout.preseg_dir(preseg_id)
     inst_path = d / "instance_ids.npy"
     summary_path = d / "segment_summary.json"
-    if not inst_path.exists() or not summary_path.exists():
+    if not (inst_path.exists() and summary_path.exists()
+            and (d / "meta.json").exists()):
         raise FileNotFoundError(f"preseg '{preseg_id}' incomplete under {d}")
     instance_ids = np.load(inst_path).astype(np.int32)
     if instance_ids.shape != (n_points,):
@@ -104,7 +105,11 @@ def load_preseg(layout: ScanLayout, preseg_id: str, n_points: int,
         lut = np.full(max_id + 1, -1, dtype=np.int8)
         for sid, cid in seg_to_class.items():
             if sid >= 0:
-                lut[sid] = cid
+                if not (-128 <= cid <= 127):
+                    raise ValueError(
+                        f"preseg '{preseg_id}': segment {sid} has class_id {cid} "
+                        f"outside int8 range")
+                lut[sid] = np.int8(cid)
         m = (instance_ids >= 0) & (instance_ids <= max_id)
         class_ids[m] = lut[instance_ids[m]]
     return class_ids, instance_ids
