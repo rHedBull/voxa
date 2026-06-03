@@ -82,5 +82,7 @@ def presegs_list(tier: str, name: str):
     _, lay = _annotated_layout(f"{tier}/{name}")
     try:
         return {"presegs": [asdict(p) for p in list_presegs(lay)]}
-    except ValueError as e:
+    except FileNotFoundError as e:
+        # A preseg dir without meta.json is a data-integrity problem on the
+        # server side — surface it loudly rather than hiding the preseg.
         raise HTTPException(500, str(e))
