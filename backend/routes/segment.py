@@ -64,7 +64,7 @@ def segment_state():
     box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(seg.positions), instance_ids)
     from labeling.segment_hulls import compute_hulls as _compute_hulls
     hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
-    return SegmentStateResponse( # tODO: all still needed?
+    return SegmentStateResponse(
         has_state=True,
         has_seg=True,
         dirty=bool(seg.dirty),
