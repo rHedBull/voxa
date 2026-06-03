@@ -107,7 +107,7 @@ def main() -> int:
     instance_ids, summary = presegment(xyz, class_map=class_map, log=log)
 
     publish_preseg(scan_dir, args.preseg_id, instance_ids, summary,
-                   generator="ransac", params={"preseg_id": args.preseg_id})
+                   generator="ransac", params={})
 
     n_assigned = int((instance_ids >= 0).sum())
     print(f"\nWrote prelabel/{args.preseg_id}/instance_ids.npy "

@@ -7,9 +7,9 @@ SIGSEGVs in plane extraction):
 
 Loads the per-point SAM3 features cached by stage 1
 (``presegment_sam3_features.py`` → ``<scan_dir>/sam3/<scene>/sam3_features.npz``),
-runs RANSAC presegmentation with feature-aware splitting, and writes
-``<scan_dir>/prelabel/ransac_instance_ids.npy`` + ``ransac_segment_summary.json``
-(which voxa surfaces as a prelabel when ``labels/`` is empty).
+runs RANSAC presegmentation with feature-aware splitting, and publishes the
+result into ``<scan_dir>/prelabel/<preseg_id>/`` (scan-schema v2) so it can be
+picked when creating a labeling session.
 
 The features are loaded directly with numpy, so torch is not needed here.
 
