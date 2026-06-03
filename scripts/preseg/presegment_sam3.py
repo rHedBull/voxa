@@ -27,19 +27,20 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from preseg.presegment_ransac import presegment  # noqa: E402
 from app.constants import MAX_LABEL_POINTS  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import classes_from_yaml, ply_vertex_count, prelabel_paths, write_prelabel  # noqa: E402
 
 # 0 = presegment the full cloud, bounded by a RAM-safe ceiling (see
 # _ram_safe_ceiling). A positive value forces a subsample of that size.
@@ -48,21 +49,6 @@ DEFAULT_PRESEG_POINTS = 0
 # RANSAC preseg peaks around this much resident memory per point (measured:
 # ~19.5 GB RSS for 3M points). Used to pick a safe full-res ceiling.
 BYTES_PER_POINT = 6_500
-
-
-def _ply_vertex_count(path: Path) -> int:
-    """Read the vertex count from a binary PLY header without loading points.
-
-    Lets us reject oversized clouds before a multi-GB load would OOM.
-    """
-    with open(path, "rb") as f:
-        for _ in range(60):  # headers are short; bail out defensively
-            line = f.readline()
-            if not line or line.strip() == b"end_header":
-                break
-            if line.startswith(b"element vertex"):
-                return int(line.split()[2])
-    raise ValueError(f"no 'element vertex' in PLY header: {path}")
 
 
 def _ram_safe_ceiling() -> int:
@@ -77,14 +63,6 @@ def _ram_safe_ceiling() -> int:
         total = 16e9
     est = int(0.85 * total / BYTES_PER_POINT)
     return max(500_000, min(est, MAX_LABEL_POINTS))
-
-
-def classes_from_yaml(config_path: Path) -> dict[str, int]:
-    """{name_lower: id} by enumeration order — matches main.py::load_classes."""
-    if not config_path.exists():
-        return {}
-    data = yaml.safe_load(config_path.read_text()) or {}
-    return {str(k).lower(): i for i, k in enumerate((data.get("classes", {})).keys())}
 
 
 def main() -> int:
@@ -105,8 +83,7 @@ def main() -> int:
     ply_path = scan_dir / "source" / "scan.ply"
     npz_path = scan_dir / "sam3" / scan_dir.name / "sam3_features.npz"
     out_dir = scan_dir / "prelabel"
-    inst_path = out_dir / "ransac_instance_ids.npy"
-    summary_path = out_dir / "ransac_segment_summary.json"
+    inst_path, summary_path = prelabel_paths(out_dir)
 
     if not npz_path.exists():
         print(f"ERROR: no cached SAM3 features at {npz_path}\n"
@@ -120,7 +97,7 @@ def main() -> int:
     # Cheap header check BEFORE the multi-GB load: a prelabel for a cloud over
     # the label cap is unusable (voxa refuses to load it for labeling), and the
     # load itself would OOM on a 100M+ cloud.
-    n_header = _ply_vertex_count(ply_path)
+    n_header = ply_vertex_count(ply_path)
     if n_header > MAX_LABEL_POINTS:
         print(f"ERROR: {ply_path} has {n_header:,} points > label cap "
               f"{MAX_LABEL_POINTS:,}.\n       Voxa can't load this for labeling, so a "
@@ -175,12 +152,7 @@ def main() -> int:
             features=features, feature_seen=seen, log=print,
         )
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(inst_path, inst.astype(np.int32))
-    summary_path.write_text(json.dumps({"segments": [
-        {"id": int(s["id"]), "class_id": int(s.get("class_id", -1)),
-         "label": s.get("label", "")} for s in summary
-    ]}, indent=2))
+    write_prelabel(out_dir, inst, summary)
     n_assigned = int((inst >= 0).sum())
     print(f"\n[done] wrote {inst_path}")
     print(f"[done] wrote {summary_path}")

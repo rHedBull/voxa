@@ -27,6 +27,12 @@ from typing import Callable, Optional
 import numpy as np
 
 from scenes.fingerprint import cloud_fingerprint
+# Camera/projection math is single-homed in scenes.reproject (the registration
+# health-check and this pipeline MUST project identically); import, don't copy.
+from scenes.reproject import (
+    ORIENTATION_PRESETS, euler_xyz_matrix, look_at_view, project_points,
+    depth_buffer_mask,
+)
 
 
 # Render discovery is per-scene-directory now: renders live under
@@ -39,14 +45,6 @@ RENDERS_ROOT_ENV = "VOXA_RENDERS_ROOT"
 DEFAULT_RENDERS_ROOT = Path(
     "/home/hendrik/coding/engine/product/walker/robot-patrol-sim/renders"
 )
-ORIENTATION_PRESETS = {
-    "Y+": (0.0, 0.0, 0.0),
-    "Z+": (-np.pi / 2, 0.0, 0.0),
-    "X+": (0.0, 0.0, np.pi / 2),
-    "Y-": (np.pi, 0.0, 0.0),
-    "Z-": (np.pi / 2, 0.0, 0.0),
-    "X-": (0.0, 0.0, -np.pi / 2),
-}
 
 
 # ---------------------------------------------------------------------------
@@ -108,70 +106,6 @@ def discover_render_runs(scene_name: str,
             continue
     runs.sort(key=lambda r: -r.mtime)
     return runs
-
-
-# ---------------------------------------------------------------------------
-# Camera math (Three.js perspective, Y-up)
-# ---------------------------------------------------------------------------
-
-def _euler_xyz_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
-    cx, sx = np.cos(rx), np.sin(rx)
-    cy, sy = np.cos(ry), np.sin(ry)
-    cz, sz = np.cos(rz), np.sin(rz)
-    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
-    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
-    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-    return Rz @ Ry @ Rx
-
-
-def _look_at_view(pos: np.ndarray, target: np.ndarray,
-                  up=(0.0, 1.0, 0.0)) -> np.ndarray:
-    f = target - pos
-    f = f / (np.linalg.norm(f) + 1e-12)
-    u = np.array(up, dtype=np.float64)
-    s = np.cross(f, u)
-    s /= (np.linalg.norm(s) + 1e-12)
-    u2 = np.cross(s, f)
-    R = np.stack([s, u2, -f], axis=0)
-    M = np.eye(4)
-    M[:3, :3] = R
-    M[:3, 3] = -R @ pos
-    return M
-
-
-def _project_points(pts_world: np.ndarray, view: np.ndarray,
-                    fov_y_deg: float, W: int, H: int):
-    N = pts_world.shape[0]
-    homo = np.concatenate([pts_world, np.ones((N, 1))], axis=1)
-    cam = (view @ homo.T).T[:, :3]
-    z = -cam[:, 2]
-    in_front = z > 0.05
-    fy = (H / 2.0) / np.tan(np.deg2rad(fov_y_deg) / 2.0)
-    fx = fy
-    u = (cam[:, 0] * fx) / np.maximum(z, 1e-6) + W / 2.0
-    v = (-cam[:, 1] * fy) / np.maximum(z, 1e-6) + H / 2.0
-    return u, v, z, in_front
-
-
-def _depth_buffer_mask(u, v, z, in_front, W, H,
-                       tol_rel=0.01, tol_abs=0.15,
-                       splat_radius=2, max_depth=80.0):
-    valid = (in_front & (u >= 0) & (u < W) & (v >= 0) & (v < H)
-             & (z < max_depth))
-    ui = u[valid].astype(np.int32)
-    vi = v[valid].astype(np.int32)
-    zi = z[valid].astype(np.float32)
-    idx = np.where(valid)[0]
-    zbuf = np.full((H, W), np.inf, dtype=np.float32)
-    for dv in range(-splat_radius, splat_radius + 1):
-        for du in range(-splat_radius, splat_radius + 1):
-            uu = np.clip(ui + du, 0, W - 1)
-            vv = np.clip(vi + dv, 0, H - 1)
-            np.minimum.at(zbuf, (vv, uu), zi)
-    z_at = zbuf[vi, ui]
-    tol = np.maximum(tol_abs, tol_rel * z_at)
-    visible = zi <= (z_at + tol)
-    return idx[visible], ui[visible], vi[visible]
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +187,7 @@ def extract_or_load(
     key = _cache_key(render_dirs, source_fp, fpn_level, pca_dim, orientation, fov)
 
     rx, ry, rz = ORIENTATION_PRESETS[orientation]
-    R = _euler_xyz_matrix(rx, ry, rz)
+    R = euler_xyz_matrix(rx, ry, rz)
 
     # scan-schema v1.3 §5/§3b: if the caller passes the cloud's frame, resolve each
     # render run and remap the cloud into that run's pose frame before projecting.
@@ -331,9 +265,9 @@ def extract_or_load(
         else:
             yaw = float(frame.get("yaw", 0.0))
             tgt = pos + np.array([np.cos(yaw), 0.0, np.sin(yaw)])
-        view = _look_at_view(pos, tgt)
-        u, v, z, in_front = _project_points(_pts_for(rd), view, fov, W, H)
-        vis_idx, vis_u, vis_v = _depth_buffer_mask(u, v, z, in_front, W, H)
+        view = look_at_view(pos, tgt)
+        u, v, z, in_front = project_points(_pts_for(rd), view, fov, W, H)
+        vis_idx, vis_u, vis_v = depth_buffer_mask(u, v, z, in_front, W, H)
         if vis_idx.size == 0:
             continue
 

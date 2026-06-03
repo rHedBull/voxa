@@ -30,34 +30,19 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from preseg.presegment_ransac import presegment  # noqa: E402
 
-
-def _classes_from_yaml(config_path: Path) -> dict[str, int]:
-    """Build a {name_lower: id} mapping from voxa's classes.yaml.
-
-    Voxa's classes.yaml is keyed by name and has no explicit `id`. We
-    assign ids by enumeration order, matching ``main.py::load_classes``.
-    """
-    if not config_path.exists():
-        return {}
-    data = yaml.safe_load(config_path.read_text()) or {}
-    classes = data.get("classes", {})
-    out: dict[str, int] = {}
-    for i, key in enumerate(classes.keys()):
-        out[str(key).lower()] = i
-    return out
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import classes_from_yaml, prelabel_paths, write_prelabel  # noqa: E402
 
 
 def _resolve_scene(arg: str) -> tuple[Path, Path]:
@@ -113,8 +98,7 @@ def main() -> int:
     scan_dir, ply_path = _resolve_scene(args.scene)
     out_dir = args.output or (scan_dir / "prelabel")
 
-    inst_path = out_dir / "ransac_instance_ids.npy"
-    summary_path = out_dir / "ransac_segment_summary.json"
+    inst_path, summary_path = prelabel_paths(out_dir)
     if (inst_path.exists() or summary_path.exists()) and not args.force:
         print(f"Refusing to overwrite existing prelabel in {out_dir} (use --force).",
               file=sys.stderr)
@@ -122,7 +106,7 @@ def main() -> int:
 
     print(f"Loading {ply_path}…")
     xyz = _load_xyz(ply_path)
-    class_map = _classes_from_yaml(args.config)
+    class_map = classes_from_yaml(args.config)
     if not class_map:
         print(f"warning: no classes loaded from {args.config}; class_ids will be -1",
               file=sys.stderr)
@@ -130,14 +114,7 @@ def main() -> int:
     log = (lambda *_: None) if args.quiet else print
     instance_ids, summary = presegment(xyz, class_map=class_map, log=log)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(inst_path, instance_ids.astype(np.int32))
-    summary_path.write_text(json.dumps({"segments": [
-        {"id": int(s["id"]),
-         "class_id": int(s.get("class_id", -1)),
-         "label": s.get("label", "")}
-        for s in summary
-    ]}, indent=2))
+    write_prelabel(out_dir, instance_ids, summary)
 
     n_assigned = int((instance_ids >= 0).sum())
     print(f"\nWrote {inst_path.name} ({len(instance_ids)} pts, "
