@@ -274,6 +274,8 @@ export function CompareMode({ cloud, theme, sceneName, isAnnotated,
           <div>R</div>
           <div>pts A</div>
           <div>pts B</div>
+          <div title="Points B calls this class that A left unlabeled">miss A</div>
+          <div title="Points A calls this class that B left unlabeled">miss B</div>
         </div>
         {rows.map((r) => (
           <div key={r.class_id} className="cmp-table-row">
@@ -286,6 +288,10 @@ export function CompareMode({ cloud, theme, sceneName, isAnnotated,
             <div className="mono">{r.recall != null ? r.recall.toFixed(3) : '—'}</div>
             <div className="mono">{r.n_a.toLocaleString()}</div>
             <div className="mono">{r.n_b.toLocaleString()}</div>
+            <div className="mono cmp-miss" title="Points B calls this class that A left unlabeled">
+              {r.missed_a > 0 ? r.missed_a.toLocaleString() : '—'}</div>
+            <div className="mono cmp-miss" title="Points A calls this class that B left unlabeled">
+              {r.missed_b > 0 ? r.missed_b.toLocaleString() : '—'}</div>
           </div>
         ))}
         {rows.length === 0 && (

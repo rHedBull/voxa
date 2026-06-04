@@ -50,6 +50,11 @@ def compare_class_arrays(a: np.ndarray, b: np.ndarray) -> dict:
             "recall": tp / n_a if n_a else None,
             "n_a": n_a,
             "n_b": n_b,
+            # Coverage gaps: points one source calls class c that the OTHER
+            # left entirely unlabeled — "should have been labeled" misses,
+            # distinct from class confusion (which needs both sides labeled).
+            "missed_a": int((in_b & ~labeled_a).sum()),
+            "missed_b": int((in_a & ~labeled_b).sum()),
         })
     out["per_class"] = per_class
 

@@ -739,9 +739,10 @@ kbd {
 }
 .cmp-table-hd, .cmp-table-row {
   display: grid;
-  grid-template-columns: 1fr 80px 80px 80px 110px 110px;
+  grid-template-columns: 1fr 80px 80px 80px 110px 110px 110px 110px;
   gap: 0; padding: 0 14px; align-items: center;
 }
+.cmp-miss { color: oklch(0.78 0.14 70); }
 .cmp-table-hd {
   position: sticky; top: 0; background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
@@ -752,7 +753,6 @@ kbd {
 }
 .cmp-table-row {
   height: 32px; border-bottom: 1px solid var(--border);
-  cursor: pointer; user-select: none;
 }
 .cmp-table-row:hover { background: var(--bg-elev); }
 

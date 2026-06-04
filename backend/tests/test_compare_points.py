@@ -37,6 +37,19 @@ def test_per_class_iou_precision_recall():
     assert per[1]["recall"] == pytest.approx(1.0)
 
 
+def test_per_class_missed_counts():
+    # idx2: A says 0, B unlabeled → missed_b for class 0
+    # idx4: B says 1, A unlabeled → missed_a for class 1
+    # idx3: both labeled but disagree (A:1, B:0) → confusion, NOT a miss
+    a = np.array([0, 0, 0, 1, -1], dtype=np.int8)
+    b = np.array([0, 0, -1, 0, 1], dtype=np.int8)
+    per = {c["class_id"]: c for c in compare_class_arrays(a, b)["per_class"]}
+    assert per[0]["missed_b"] == 1   # idx2
+    assert per[0]["missed_a"] == 0   # idx3 is labeled in A (as 1) — not a miss
+    assert per[1]["missed_a"] == 1   # idx4
+    assert per[1]["missed_b"] == 0
+
+
 def test_per_class_zero_division_is_null():
     a = np.array([0, 0], dtype=np.int8)
     b = np.array([-1, -1], dtype=np.int8)
