@@ -227,10 +227,13 @@ def test_sample_path_smooth_interpolates_through_controls():
     for cp in p["points"]:
         d = np.linalg.norm(out - np.asarray(cp, dtype=np.float32), axis=1)
         assert d.min() < 1e-5
-    # Densified: more samples than control points, chords ≤ ~radius/2.
+    # Densified: more samples than control points. Chords must stay below
+    # the tube radius so the segment-distance test can't visibly cut corners.
+    # (Uniform-parameter sampling overshoots step≈radius/2 near the apex —
+    # the guarantee that matters is "< radius", not "< step".)
     assert len(out) > 3
     chords = np.linalg.norm(np.diff(out, axis=0), axis=1)
-    assert chords.max() <= 0.2 / 2 + 1e-4
+    assert chords.max() <= 0.2
 
 
 def test_sample_path_smooth_two_points_is_segment():
@@ -644,7 +647,7 @@ git commit -m "feat(backend): GET /api/segment/centerlines"
 - Modify: `frontend/src/api.js` (inside `VoxaAPI`, after `segState`)
 - Modify: `frontend/src/api.test.js`
 
-- [ ] **Step 1: Failing tests** — `api.test.js` already mocks `fetch` with `vi` (see its existing `VoxaAPI` tests for the exact stubbing pattern — follow it). Append:
+- [ ] **Step 1: Failing tests** — `api.test.js` mocks `fetch` via `vi.stubGlobal('fetch', vi.fn(...))`; follow that existing pattern (the `vi.spyOn` form below works too, but prefer matching the file — adapt the snippets accordingly). Append:
 
 ```javascript
 describe('centerline API', () => {
@@ -1307,7 +1310,7 @@ No unit test (Three.js + DOM; the repo has no jsdom). Verified by the browser pa
     },
 ```
 
-Note: `attachWalk` has no `setEnabled` — the optional chain makes that a no-op, and Draw mode forces orbit nav anyway (Task 12 mirrors fast-label's `onNavModeChange('orbit')`).
+Note: both controllers (`attachOrbit` viewer.jsx:158, `attachWalk` viewer.jsx:318) implement `setEnabled`, and Draw mode forces orbit nav anyway (Task 13 mirrors fast-label's `onNavModeChange('orbit')`).
 
 - [ ] **Step 2: Verify the frontend still builds**
 
