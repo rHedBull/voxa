@@ -80,8 +80,9 @@ def test_per_class_iou_precision_recall():
     assert per[0]["precision"] == pytest.approx(1.0)
     assert per[0]["recall"] == pytest.approx(2 / 3)
     assert per[0]["n_a"] == 3 and per[0]["n_b"] == 2
-    # class 1: tp=1, union=4 → 0.25; precision=1/3; recall=1/1
-    assert per[1]["iou"] == pytest.approx(0.25)
+    # class 1: in_a={idx3}, in_b={idx2,idx3,idx4} → tp=1, union=3 → iou 1/3;
+    # precision=1/3; recall=1/1
+    assert per[1]["iou"] == pytest.approx(1 / 3)
     assert per[1]["precision"] == pytest.approx(1 / 3)
     assert per[1]["recall"] == pytest.approx(1.0)
 
@@ -177,7 +178,8 @@ def compare_class_arrays(a: np.ndarray, b: np.ndarray) -> dict:
     if both.any():
         pairs = a[both].astype(np.int64) * 100_000 + b[both].astype(np.int64)
         uniq, counts = np.unique(pairs, return_counts=True)
-        order = np.argsort(counts)[::-1][:CONFUSION_TOP_N]
+        # stable sort so tied counts keep a deterministic (pair-id) order
+        order = np.argsort(-counts, kind="stable")[:CONFUSION_TOP_N]
         out["confusion"] = [
             {"a_class": int(uniq[i] // 100_000), "b_class": int(uniq[i] % 100_000),
              "n": int(counts[i])}
@@ -382,8 +384,8 @@ def test_cuboid_compare_endpoint_is_gone(client):
 ```
 
 - [ ] **Step 1:** Append route tests; run → FAIL (404 route missing).
-- [ ] **Step 2:** Implement route + schemas + `build_class_palette`; DELETE the cuboid handler, the three schemas, `_iou_aabb` (after the grep), and `backend/tests/test_compare.py`.
-- [ ] **Step 3:** `pytest backend/tests --tb=short -q` → full suite green (~234 + 11 new − 5 deleted; report exact). Sweep: `grep -rn "CompareResponse\|DiffRow\|CompareRequest\|_iou_aabb\|/api/compare/" backend/ frontend/src/ --include="*.py" --include="*.js*"` → only `frontend/src/api.js` (fixed in Task 3) and CLAUDE.md (Task 5) may remain; list anything else and fix.
+- [ ] **Step 2:** Implement route + schemas + `build_class_palette`; DELETE the cuboid handler, the three schemas, `_iou_aabb` (after the grep), `backend/tests/test_compare.py`, AND the three cuboid-compare tests living elsewhere: `test_compare_perfect_match` + `test_compare_disjoint_is_fp_fn` in `backend/tests/test_smoke.py` (~lines 94/118) and `test_compare_skips_pointset_instances` in `backend/tests/test_pointset_persistence.py` (~line 43) — all call the removed `POST /api/compare/`.
+- [ ] **Step 3:** `pytest backend/tests --tb=short -q` → full suite green (234 − 8 deleted + 11 new = ~237; report exact). Sweep: `grep -rn "CompareResponse\|DiffRow\|CompareRequest\|_iou_aabb\|/api/compare/" backend/ frontend/src/ --include="*.py" --include="*.js*"` → only `frontend/src/api.js` (fixed in Task 3) and CLAUDE.md (Task 5) may remain; list anything else and fix.
 - [ ] **Step 4: Commit** — `git commit -m "feat: /api/compare-points route; drop cuboid compare endpoint"`
 
 ---
@@ -490,7 +492,7 @@ Behavior contract for the rewritten `mode-compare.jsx` (keep the existing split-
 
 - [ ] **Step 1:** Docs edits.
 - [ ] **Step 2:** Full suites: backend junitxml (expect ~240, 0 failures — report exact), `npm run test:frontend`, `npm run build`.
-- [ ] **Step 3:** Browser verification (@browser-verification): serve the worktree frontend (`VOXA_FRONTEND_PORT=5174 VOXA_BACKEND=http://127.0.0.1:8765 npx vite` from the worktree — the main backend on :8765 lacks the new route, so ALSO start a worktree backend: `VOXA_PORT=8767 VOXA_LIDAR_ROOT=/home/hendrik/coding/engine/data/lidar .venv-relative scripts/run.sh` — simpler: run `VOXA_PORT=8767 ... npm run dev` from the worktree with `VOXA_FRONTEND_PORT=5174 VOXA_BACKEND=http://127.0.0.1:8767`, leaving the user's :5173/:8765 untouched). On `annotated/munich_water_pump` (has legacy session + you may save a second session): open Compare → dropdowns populated, disabled no-output sessions visible, split view colored by class per side, per-class table + confusion list render, empty-state on a scan with <2 sources, zero console errors. Screenshot.
+- [ ] **Step 3:** Browser verification (@browser-verification): from the worktree run `VOXA_PORT=8767 VOXA_FRONTEND_PORT=5174 VOXA_BACKEND=http://127.0.0.1:8767 npm run dev` — both vite.config.js and scripts/run.sh honor these env vars; the user's :5173/:8765 stay untouched. NOTE: the worktree has no `.venv` (it lives in the main checkout), so the first run builds a venv + installs requirements — expect a one-time delay. On `annotated/munich_water_pump` (has legacy session + you may save a second session): open Compare → dropdowns populated, disabled no-output sessions visible, split view colored by class per side, per-class table + confusion list render, empty-state on a scan with <2 sources, zero console errors. Screenshot.
 - [ ] **Step 4: Commit** — `git commit -m "docs: per-point compare"`
 
 ---
