@@ -76,6 +76,11 @@ Ctrl+click) → **staged** (ended with Esc; editable, not yet labeled) →
 Deleting an **applied** path removes its stored centerline but does not
 unlabel its points — use undo right after an apply, or re-label over it.
 
+Raycast pick priority on click: control-point sphere > tube mesh > cloud /
+empty space. Staged paths live in memory only — they are lost on reload or
+session switch; only applied paths persist (see Persistence). Throughout
+this doc, "confirm" and "apply" are the same action (Enter).
+
 Extraction semantics: every point within `radius` of the path gets the new
 class+instance — later applies overwrite earlier ones where tubes overlap
 (latest wins). With the blank-session workflow this is the natural behavior,
@@ -101,6 +106,10 @@ leave holes at full resolution).
   Catmull-Rom curve for smooth paths) in the class color. Drag interaction
   moves a control point on the plane through the point, parallel to the
   screen. Reuses the existing raycast point-pick for placement.
+  Integration seam to watch: scroll-to-resize must gate the orbit
+  controller's wheel-zoom on "a path is selected", which is state owned
+  outside `viewer.jsx` — plan for an explicit hook/prop rather than an
+  internal hack.
 - `api.js`: one new call, `centerlineApply(paths, targetClass, targetInst)`.
 
 ### Backend
