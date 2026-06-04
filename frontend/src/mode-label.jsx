@@ -1183,7 +1183,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               active={showDiff}
             />
           )}
-          {segState && (
+          {segState && !drawMode && (
             <>
               <ToolButton mini
                 icon="◫"
