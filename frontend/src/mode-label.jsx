@@ -7,7 +7,9 @@ import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
-import { PresegmentList } from './segment-tools.jsx';
+import { PresegmentList, focusSegment } from './segment-tools.jsx';
+import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
+         FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 
@@ -75,6 +77,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // viewport (NaN'd in the position buffer). Default on so the labeling
   // workflow naturally reveals what's left to label.
   const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
+  // Fast labeling sub-mode: step through unpromoted presegments largest-first
+  // and confirm a class per segment. Queue/handlers live further down (they
+  // need promotedSegIds + confirmSegmentSelection); the flag is declared here
+  // because the selection-overlay effect needs it for the orange highlight.
+  const [fastMode, setFastMode] = useStateLabel(false);
+  const [fastPos, setFastPos] = useStateLabel(0);
+  const [fastPendingCls, setFastPendingCls] = useStateLabel(null);
   // 3D box-select: a transformable OBB the user drags via the existing
   // gizmo. On Confirm, every preseg with any point inside the box is toggled
   // into segState.selection. Same UX as the box in Edit mode.
@@ -129,8 +138,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       const f = subIdx ? subIdx[p] : p;
       if (sel.has(inst[f])) mask[p] = 1;
     }
-    v.setSelectedSegmentMask(mask);
-  }, [segState?.selection, segState?.instanceFull, cloud, viewerRef]);
+    v.setSelectedSegmentMask(mask, fastMode ? FAST_HIGHLIGHT_COLOR : undefined);
+  }, [segState?.selection, segState?.instanceFull, cloud, viewerRef, fastMode]);
 
   // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
   // under the cursor. Active in any tool mode whenever segment data exists.
@@ -747,7 +756,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // hotkey picks that class and creates the (unconfirmed) pointset.
   const [classPickerOpen, setClassPickerOpen] = useStateLabel(false);
 
-  const confirmSegmentSelection = useCallbackLabel(async (clsDef) => {
+  const confirmSegmentSelection = useCallbackLabel(async (clsDef, opts) => {
     const targetCls = clsDef || activeClassDef;
     if (!segState || segState.selection.size === 0) return;
     if (!targetCls) return;
@@ -782,6 +791,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         label: `${targetCls.label} ${(counts[targetCls.id] || 0) + 1}`,
         color: targetCls.color,
         source: 'preseg',
+        // Fast labeling promotes + confirms in one step (no review pass).
+        confirmed: !!opts?.confirmed,
       };
       onChange([...instances, newInst]);
     }
@@ -808,6 +819,56 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       if (editingId === selectedId) setEditingId(null);
     }
   }, [selectedId, editingId, instances, onChange]);
+
+  // ── Fast labeling sub-mode ────────────────────────────────────────────────
+  // Queue of unpromoted presegments, largest first. Recomputes after every
+  // confirm (applyDelta refreshes summary, the new instance extends
+  // promotedSegIds), so the confirmed segment drops out and the same index
+  // lands on the next-largest one.
+  const fastQueue = useMemoLabel(
+    () => (fastMode ? deriveFastQueue(segState?.summary, promotedSegIds) : []),
+    [fastMode, segState?.summary, promotedSegIds]);
+  // Single clamped cursor — the queue shrinks on confirm, so fastPos may
+  // point past the end until the next step.
+  const fastIdx = Math.min(fastPos, Math.max(fastQueue.length - 1, 0));
+  const fastSeg = fastMode && fastQueue.length > 0 ? fastQueue[fastIdx] : null;
+
+  // Highlight the current queue segment (drives the orange overlay via the
+  // selection effect above) and center the camera on it.
+  useEffectLabel(() => {
+    if (!fastSeg) return;
+    setSegState((s) => {
+      if (!s) return s;
+      if (s.selection.size === 1 && s.selection.has(fastSeg.id)) return s;
+      return { ...s, selection: new Set([fastSeg.id]) };
+    });
+    focusSegment(viewerRef, cloud, segState, fastSeg.id);
+    // eslint-disable-next-line
+  }, [fastSeg?.id]);
+
+  // Leaving fast mode clears the queue highlight and any pending confirm.
+  useEffectLabel(() => {
+    if (fastMode) return;
+    setFastPendingCls(null);
+    setSegState((s) => (s && s.selection.size ? { ...s, selection: new Set() } : s));
+  }, [fastMode, setSegState]);
+
+  // WASD steps the queue — force orbit nav so the walk controller can't
+  // swallow those keys.
+  useEffectLabel(() => {
+    if (fastMode && navMode === 'walk') onNavModeChange?.('orbit');
+  }, [fastMode, navMode, onNavModeChange]);
+
+  const fastStep = useCallbackLabel((delta) => {
+    setFastPos((p) => stepIndex(fastQueue.length, p, delta));
+  }, [fastQueue.length]);
+
+  const fastConfirm = useCallbackLabel(async () => {
+    if (!fastSeg || !fastPendingCls) return;
+    const cls = fastPendingCls;
+    setFastPendingCls(null);
+    await confirmSegmentSelection(cls, { confirmed: true });
+  }, [fastSeg, fastPendingCls, confirmSegmentSelection]);
 
   // Gizmo drag callback. Patches the targeted instance by id (not by selectedId)
   // since the viewer dispatches based on its own gizmoTargetIdRef snapshot.
@@ -843,6 +904,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      // Fast labeling owns the keyboard while active (FastLabelKeys /
+      // FastConfirmModal run in capture phase); keep the regular Label
+      // hotkeys (add cuboid, densify, frame, …) out of the way.
+      if (fastMode) return;
       // Ctrl/Cmd+Enter is tool-agnostic: with a presegment selection it
       // collapses the selection into a new instance; otherwise it toggles
       // the confirmed flag on the active cuboid (the legacy behaviour).
@@ -892,10 +957,28 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, confirmSegmentSelection]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, confirmSegmentSelection, fastMode]);
 
   return (
     <div className="mode-root label">
+      <FastLabelKeys
+        active={fastMode && !fastPendingCls}
+        classes={classes}
+        onStep={fastStep}
+        onPickClass={setFastPendingCls}
+        onExit={() => setFastMode(false)}
+      />
+      {fastMode && (
+        <FastLabelHUD queue={fastQueue} pos={fastIdx} classes={classes} />
+      )}
+      {fastPendingCls && fastSeg && (
+        <FastConfirmModal
+          seg={fastSeg}
+          cls={fastPendingCls}
+          onConfirm={fastConfirm}
+          onCancel={() => setFastPendingCls(null)}
+        />
+      )}
       {classPickerOpen && (
         <ClassPickerModal
           classes={classes}
@@ -944,6 +1027,16 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           })}
         </div>
 
+        {segState && (
+          <button
+            className={'tool-btn' + (fastMode ? ' active' : '')}
+            style={{ margin: '10px 0 0', width: '100%', justifyContent: 'center',
+                     borderColor: fastMode ? '#ffa500' : undefined }}
+            onClick={() => { setFastPos(0); setFastMode((f) => !f); }}
+            title="Step through presegments largest-first; number key + Enter labels and confirms each">
+            ⚡ {fastMode ? 'Exit fast labeling' : 'Fast labeling'}
+          </button>
+        )}
         <PresegmentList
           segState={segState}
           setSegState={setSegState}
