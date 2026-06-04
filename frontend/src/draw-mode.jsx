@@ -40,7 +40,7 @@ export function DrawKeys({ active, classes, onKey }) {
   return null;
 }
 
-function DrawHUD({ state, classes, toast }) {
+function DrawHUD({ state, toast }) {
   const drawing = !!state.active;
   const nSel = state.selection.size;
   return (
@@ -246,7 +246,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
 }
 
 export default function DrawMode({
-  viewerRef, classes, segState, setSegState, onExit,
+  viewerRef, classes, setSegState, onExit,
 }) {
   const [draw, setDraw] = useState(() => initDrawState());
   const [defaultClsIdx, setDefaultClsIdx] = useState(0);
@@ -340,7 +340,7 @@ export default function DrawMode({
   return (
     <>
       <DrawKeys active classes={classes} onKey={onKey} />
-      <DrawHUD state={draw} classes={classes} toast={toast} />
+      <DrawHUD state={draw} toast={toast} />
       <DrawOverlay
         viewerRef={viewerRef}
         draw={draw}
