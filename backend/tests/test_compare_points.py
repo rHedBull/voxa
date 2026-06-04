@@ -43,11 +43,17 @@ def test_per_class_missed_counts():
     # idx3: both labeled but disagree (A:1, B:0) → confusion, NOT a miss
     a = np.array([0, 0, 0, 1, -1], dtype=np.int8)
     b = np.array([0, 0, -1, 0, 1], dtype=np.int8)
-    per = {c["class_id"]: c for c in compare_class_arrays(a, b)["per_class"]}
+    m = compare_class_arrays(a, b)
+    per = {c["class_id"]: c for c in m["per_class"]}
     assert per[0]["missed_b"] == 1   # idx2
     assert per[0]["missed_a"] == 0   # idx3 is labeled in A (as 1) — not a miss
     assert per[1]["missed_a"] == 1   # idx4
     assert per[1]["missed_b"] == 0
+    # Totals = per-class sums (classes partition the labeled points)
+    assert m["n_missed_a"] == 1
+    assert m["n_missed_b"] == 1
+    assert m["n_missed_a"] == sum(c["missed_a"] for c in m["per_class"])
+    assert m["n_missed_b"] == sum(c["missed_b"] for c in m["per_class"])
 
 
 def test_per_class_zero_division_is_null():

@@ -223,6 +223,12 @@ export function CompareMode({ cloud, theme, sceneName, isAnnotated,
                   <b className="mono">{m
                     ? `A: ${m.n_labeled_a.toLocaleString()} · B: ${m.n_labeled_b.toLocaleString()}`
                     : '—'}</b></span>
+                <span className="cmp-metric"
+                  title="Total coverage gaps: labeled in one source, completely unlabeled in the other (per-class breakdown in the miss columns)">
+                  <label>Miss</label>
+                  <b className="mono cmp-miss">{m
+                    ? `A: ${m.n_missed_a.toLocaleString()} · B: ${m.n_missed_b.toLocaleString()}`
+                    : '—'}</b></span>
               </>
             )}
         </div>

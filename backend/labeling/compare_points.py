@@ -30,6 +30,10 @@ def compare_class_arrays(a: np.ndarray, b: np.ndarray) -> dict:
         "n_points": n,
         "n_labeled_a": int(labeled_a.sum()),
         "n_labeled_b": int(labeled_b.sum()),
+        # Total coverage gaps: labeled in one source, unlabeled in the other
+        # (the per-class missed_a/missed_b columns sum to these).
+        "n_missed_a": int((labeled_b & ~labeled_a).sum()),
+        "n_missed_b": int((labeled_a & ~labeled_b).sum()),
         "agreement": float(eq[either].mean()) if either.any() else None,
         "agreement_all": float(eq.mean()) if n else None,
     }
