@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { b64ToFloat32, b64ToInt8, b64ToInt32, newId, decodeLoadResponse, VoxaAPI } from './api.js';
+import { b64ToFloat32, b64ToInt8, b64ToInt32, newId, decodeLoadResponse, decodeCompareResponse, VoxaAPI } from './api.js';
 
 // Encode helpers matching the backend's little-endian binary layout.
 function encodeFloat32(floats) {
@@ -227,6 +227,22 @@ describe('VoxaAPI.load — 409 detail attachment', () => {
 
     expect(thrown.status).toBe(409);
     expect(thrown.message).toBe('load failed: 409');
+  });
+});
+
+describe('decodeCompareResponse', () => {
+  it('decodes metrics, arrays and palette', () => {
+    const enc = (arr) => Buffer.from(Int8Array.from(arr).buffer).toString('base64');
+    const out = decodeCompareResponse({
+      metrics: { agreement: 0.5, per_class: [], confusion: [] },
+      a_class_ids: enc([-1, 0, 1]),
+      b_class_ids: enc([0, 0, 1]),
+      palette: [{ id: 0, label: 'Pipe', color: '#5b8def' }],
+    });
+    expect(out.metrics.agreement).toBe(0.5);
+    expect(Array.from(out.aClassIds)).toEqual([-1, 0, 1]);
+    expect(Array.from(out.bClassIds)).toEqual([0, 0, 1]);
+    expect(out.palette[0].label).toBe('Pipe');
   });
 });
 

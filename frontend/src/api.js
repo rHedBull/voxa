@@ -35,6 +35,15 @@ export function decodeLoadResponse(j) {
   };
 }
 
+export function decodeCompareResponse(j) {
+  return {
+    metrics: j.metrics,
+    aClassIds: b64ToInt8(j.a_class_ids),
+    bClassIds: b64ToInt8(j.b_class_ids),
+    palette: j.palette || [],
+  };
+}
+
 export const VoxaAPI = {
   async health() {
     const r = await fetch('/api/health');
@@ -110,13 +119,20 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`save failed: ${r.status}`);
     return r.json();
   },
-  async compare(scene, iouThreshold = 0.3) {
-    const r = await fetch(`/api/compare/${encodeURIComponent(scene)}`, {
+  async comparePoints(scene, a, b) {
+    const r = await fetch(`/api/compare-points/${scene}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scene, iou_threshold: iouThreshold }),
+      body: JSON.stringify({ a, b }),
     });
-    return r.json();
+    if (!r.ok) {
+      let detail = null;
+      try { detail = (await r.json()).detail; } catch { /* non-JSON body */ }
+      const err = new Error(typeof detail === 'string' ? detail : `compare failed: ${r.status}`);
+      err.status = r.status;
+      throw err;
+    }
+    return decodeCompareResponse(await r.json());
   },
   async autoFit(bboxMin, bboxMax, cls, color, label) {
     const r = await fetch('/api/auto-fit', {
