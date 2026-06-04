@@ -105,7 +105,12 @@ def centerline_apply(req: CenterlineApplyRequest):
         # Same key-absence contract as _serialize_apply on an empty delta.
         return {"op": "centerline", "n_affected": 0, "dirty": bool(seg.dirty)}
     out = seg.apply_reassign(idx, target_inst=req.target_inst, target_class=target_class)
+    # new_instance_id is only present on fresh allocation (target_inst < 0);
+    # on re-apply the requested id is reused.
     instance_id = out.get("new_instance_id", req.target_inst)
+    # merged_from re-capture correctness is the caller's contract: the spec
+    # requires the request to carry the union of the absorbed instances'
+    # paths, so their points land in idx above before we drop their entries.
     update_centerlines(seg.session_dir, instance_id, target_class, paths,
                        req.merged_from)
     body = _serialize_apply(out)
