@@ -17,31 +17,67 @@ presegments and no prior labels. It must not require a preseg to exist.
 
 ## Solution overview
 
-A new **Draw** sub-mode of Label mode (sibling of the Fast-labeling sub-mode):
+A new **Draw** sub-mode of Label mode (sibling of the Fast-labeling sub-mode).
+Paths move through three states: **drawing** (active path growing under
+Ctrl+click) → **staged** (ended with Esc; editable, not yet labeled) →
+**applied** (Enter; backend extracted + labeled the points).
 
-1. User clicks on the cloud → a control point is placed at the raycast-picked
-   point. Consecutive points auto-connect into the active *path* (polyline).
-2. Control points are draggable on a screen-parallel plane to visually center
-   them inside the pipe.
-3. Each path has one radius (pipes have constant diameter). Scroll while the
-   path is selected resizes a live semi-transparent tube preview; a numeric
-   field in the side panel allows exact entry. New paths default to the last
-   used radius.
-4. Paths are straight polylines by default; a per-path **Smooth** toggle
-   switches interpolation to Catmull-Rom through the same control points.
-5. Class is picked with the same number hotkeys as Fast-labeling (from
-   `classes.yaml`), before or during drawing; the tube preview renders in the
-   class color.
-6. Multiple paths can be selected and **merged**: on confirm they share one
-   instance ID (each path keeps its own radius). This handles pipes drawn in
-   several runs (e.g. interrupted by occlusion or junctions).
-7. **Confirm** (Enter) sends the path(s) to the backend, which extracts all
-   full-resolution points within the tube and assigns class + instance through
-   the existing reassign flow. Undo (existing `segUndo`) reverts a confirm.
-   Esc cancels the in-progress path; Backspace removes the last placed point.
+### Workflow
+
+1. Enter Draw sub-mode (button next to Fast-labeling). While active, the
+   sub-mode owns the keyboard (capture-phase, like `FastLabelKeys`).
+2. Press a class hotkey (e.g. `4` = pipe) — sets the class for the active /
+   next path; tube preview renders in the class color.
+3. **Ctrl+click** on the cloud places a control point at the raycast-picked
+   point. The first Ctrl+click starts a path; each further Ctrl+click
+   auto-connects to the previous point. A live semi-transparent tube preview
+   follows at the current radius.
+4. **Esc** ends the active path → it becomes a *staged* pipe segment.
+5. Editing staged (or applied) paths:
+   - Click a control point → select it; drag moves it on a screen-parallel
+     plane (orbit is suppressed during the drag).
+   - Click a path's tube → select the path. **Scroll now resizes its radius**
+     (camera zoom resumes when no path is selected); `+`/`-` nudge in small
+     steps; a numeric field in the panel gives exact entry. New paths default
+     to the last used radius.
+   - Number hotkey → set class of the selected path(s).
+   - **C** → toggle Smooth (Catmull-Rom through the same control points) on
+     the selected path(s); default is straight polyline.
+6. **Merge:** click path A, **Shift+click** path B (and C…) to build a
+   multi-selection, then press **M** to merge them into one group — on apply
+   they share one instance ID (each path keeps its own radius). This handles
+   pipes drawn in several runs (occlusion, junctions).
+7. **Enter** applies the selected path(s) / merged group: backend extracts
+   all full-resolution points within the tube(s) and assigns class +
+   instance through the existing reassign flow. As a shortcut, Enter while
+   still drawing ends the active path and applies it immediately as its own
+   instance. Re-selecting an applied path, editing it, and pressing Enter
+   re-applies it (same instance ID; stored paths replaced, see Persistence).
+8. Undo (existing `segUndo`) reverts an apply.
+
+### Key & mouse map (Draw sub-mode active)
+
+| Input | While drawing | With selection | Nothing active |
+|---|---|---|---|
+| Ctrl+click cloud | add control point | start new path | start new path |
+| Click control point | — | select + drag to move | select + drag to move |
+| Click tube | — | select path (replaces selection) | select path |
+| Shift+click tube | — | add/remove from selection | select path |
+| Click empty space | — | clear selection | — |
+| Scroll | resize active path's radius | resize selected paths' radius | camera zoom |
+| `+` / `-` | nudge radius | nudge radius | — |
+| class hotkeys | set active path's class | set selected paths' class | set default class |
+| `C` | toggle smooth on active path | toggle smooth on selection | — |
+| `M` | — | merge selected paths into one group | — |
+| `Enter` | end path + apply as new instance | apply selected path(s)/group | — |
+| `Esc` | end path → staged | clear selection | exit Draw sub-mode |
+| `Backspace` | remove last placed point | delete selected point / staged path | — |
+
+Deleting an **applied** path removes its stored centerline but does not
+unlabel its points — use undo right after an apply, or re-label over it.
 
 Extraction semantics: every point within `radius` of the path gets the new
-class+instance — later confirms overwrite earlier ones where tubes overlap
+class+instance — later applies overwrite earlier ones where tubes overlap
 (latest wins). With the blank-session workflow this is the natural behavior,
 and undo covers mistakes.
 
