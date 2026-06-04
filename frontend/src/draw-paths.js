@@ -171,11 +171,12 @@ export function mergeSelection(state) {
     : selectedGroups[0];
   const survivorClass = state.paths.find((p) => p.instKey === survivor).classId;
   const absorbed = selectedGroups.filter((g) => g !== survivor);
+  const absorbedSet = new Set(absorbed);
   const absorbedIds = absorbed
     .map((g) => state.instanceIds[g])
     .filter((id) => id != null);
   const paths = state.paths.map((p) =>
-    absorbed.includes(p.instKey)
+    absorbedSet.has(p.instKey)
       ? { ...p, instKey: survivor, classId: survivorClass }
       : p);
   const instanceIds = { ...state.instanceIds };

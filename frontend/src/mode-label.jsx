@@ -78,12 +78,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // viewport (NaN'd in the position buffer). Default on so the labeling
   // workflow naturally reveals what's left to label.
   const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
-  // Fast labeling sub-mode: step through unpromoted presegments largest-first
-  // and confirm a class per segment. Queue/handlers live further down (they
-  // need promotedSegIds + confirmSegmentSelection); the flag is declared here
-  // because the selection-overlay effect needs it for the orange highlight.
-  const [fastMode, setFastMode] = useStateLabel(false);
-  const [drawMode, setDrawMode] = useStateLabel(false);
+  // At most one Label sub-mode is active. Fast labeling steps through
+  // unpromoted presegments largest-first and confirms a class per segment;
+  // Draw labels pipes/tanks via centerline tubes. Declared here because the
+  // selection-overlay effect needs fastMode for the orange highlight. Queue/
+  // handlers live further down (they need promotedSegIds + confirmSegmentSelection).
+  const [subMode, setSubMode] = useStateLabel(null); // null | 'fast' | 'draw' — at most one Label sub-mode active
+  const fastMode = subMode === 'fast';
+  const drawMode = subMode === 'draw';
   const [fastPos, setFastPos] = useStateLabel(0);
   const [fastPendingCls, setFastPendingCls] = useStateLabel(null);
   // 3D box-select: a transformable OBB the user drags via the existing
@@ -168,6 +170,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // selects the segment. Works in all tool modes.
   useEffectLabel(() => {
     if (!segState) return;
+    if (drawMode) return;
     const viewer = viewerRef?.current;
     if (!viewer?.onHullPick) return;
     return viewer.onHullPick((segId, evt) => {
@@ -180,7 +183,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       });
       return true;
     });
-  }, [segState, viewerRef, setSegState]);
+  }, [segState, viewerRef, setSegState, drawMode]);
 
   // Drop the selection box whenever the scene changes.
   useEffectLabel(() => { setSelBox(null); }, [cloud]);
@@ -970,7 +973,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         classes={classes}
         onStep={fastStep}
         onPickClass={setFastPendingCls}
-        onExit={() => setFastMode(false)}
+        onExit={() => setSubMode(null)}
       />
       {fastMode && (
         <FastLabelHUD queue={fastQueue} pos={fastIdx} classes={classes} />
@@ -1036,7 +1039,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             className={'tool-btn' + (fastMode ? ' active' : '')}
             style={{ margin: '10px 0 0', width: '100%', justifyContent: 'center',
                      borderColor: fastMode ? '#ffa500' : undefined }}
-            onClick={() => { setFastPos(0); setDrawMode(false); setFastMode((f) => !f); }}
+            onClick={() => { setFastPos(0); setSubMode((m) => m === 'fast' ? null : 'fast'); }}
             title="Step through presegments largest-first; number key + Enter labels and confirms each">
             ⚡ {fastMode ? 'Exit fast labeling' : 'Fast labeling'}
           </button>
@@ -1046,7 +1049,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             className={'tool-btn' + (drawMode ? ' active' : '')}
             style={{ margin: '6px 0 0', width: '100%', justifyContent: 'center',
                      borderColor: drawMode ? '#4fc3f7' : undefined }}
-            onClick={() => { setFastMode(false); setDrawMode((d) => !d); }}
+            onClick={() => setSubMode((m) => m === 'draw' ? null : 'draw')}
             title="Draw centerline paths to label pipes and tanks within a tube radius">
             ✏ {drawMode ? 'Exit Draw mode' : 'Draw mode'}
           </button>
@@ -1056,7 +1059,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             viewerRef={viewerRef}
             classes={classes}
             setSegState={setSegState}
-            onExit={() => setDrawMode(false)}
+            onExit={() => setSubMode(null)}
           />
         )}
         <PresegmentList

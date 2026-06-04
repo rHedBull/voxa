@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { evtToNdc } from './viewer.jsx';
 import { VoxaAPI } from './api.js';
 import { applyDelta } from './segment-state.js';
 import {
@@ -69,7 +70,7 @@ function DrawHUD({ state, toast }) {
 
 function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
   const layerRef = useRef(null);        // { group, remove }
-  const dragRef = useRef(null);         // { pathKey, pointIdx, plane }
+  const dragRef = useRef(null);         // { pathKey, pointIdx, plane, mesh, last }
   const drawRef = useRef(draw);
   drawRef.current = draw;
   const defaultClsIdxRef = useRef(defaultClsIdx);
@@ -154,10 +155,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
       const group = layerRef.current?.group;
       if (!camera || !group) return [];
       const rect = dom.getBoundingClientRect();
-      raycaster.setFromCamera({
-        x: ((evt.clientX - rect.left) / rect.width) * 2 - 1,
-        y: -((evt.clientY - rect.top) / rect.height) * 2 + 1,
-      }, camera);
+      raycaster.setFromCamera(evtToNdc(evt, rect), camera);
       return raycaster.intersectObjects(group.children, false);
     };
 
@@ -172,7 +170,10 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
         camera.getWorldDirection(normal);
         const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
           normal, sphereHit.object.position.clone());
-        dragRef.current = { ...sphereHit.object.userData.drawPoint, plane };
+        dragRef.current = {
+          ...sphereHit.object.userData.drawPoint, plane,
+          mesh: sphereHit.object, last: null,
+        };
         v.setOrbitEnabled(false);
         evt.stopPropagation();
         return;
@@ -206,18 +207,20 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
       const camera = v.getCamera();
       if (!camera) return;
       const rect = dom.getBoundingClientRect();
-      raycaster.setFromCamera({
-        x: ((evt.clientX - rect.left) / rect.width) * 2 - 1,
-        y: -((evt.clientY - rect.top) / rect.height) * 2 + 1,
-      }, camera);
+      raycaster.setFromCamera(evtToNdc(evt, rect), camera);
       const pt = new THREE.Vector3();
       if (raycaster.ray.intersectPlane(drag.plane, pt)) {
-        setDraw((s) => movePoint(s, drag.pathKey, drag.pointIdx, [pt.x, pt.y, pt.z]));
+        // Sphere tracks live; the tube re-renders once on release. A full
+        // overlay rebuild at pointer rate would thrash geometry alloc/dispose.
+        drag.mesh.position.copy(pt);
+        drag.last = [pt.x, pt.y, pt.z];
       }
     };
 
     const onPointerUp = () => {
-      if (!dragRef.current) return;
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (drag.last) setDraw((cur) => movePoint(cur, drag.pathKey, drag.pointIdx, drag.last));
       dragRef.current = null;
       v.setOrbitEnabled(true);
     };
@@ -255,6 +258,8 @@ export default function DrawMode({
   viewerRef, classes, setSegState, onExit,
 }) {
   const [draw, setDraw] = useState(() => initDrawState());
+  const drawLiveRef = useRef(draw);
+  drawLiveRef.current = draw;
   const [defaultClsIdx, setDefaultClsIdx] = useState(0);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
@@ -280,7 +285,7 @@ export default function DrawMode({
     // the network round-trips survive. Don't read state back out of a
     // setDraw updater: React only invokes updaters eagerly as an
     // optimization, not as a contract.
-    let snapshot = draw;
+    let snapshot = drawLiveRef.current;
     if (snapshot.active) {
       const key = snapshot.active;
       snapshot = endActive(snapshot);
@@ -323,7 +328,7 @@ export default function DrawMode({
     // Clear selection after Enter (spec) — even if some calls failed. Route
     // through a functional updater so concurrent edits in cur survive.
     setDraw((cur) => clearSelection(cur));
-  }, [draw, setSegState, showToast]);
+  }, [setSegState, showToast]);
 
   const onKey = useCallback((action) => {
     switch (action.type) {
@@ -382,7 +387,7 @@ export default function DrawMode({
 // Side-panel section: path list + radius field + actions. Rendered by
 // LabelMode inside the left sidebar (portal-free: this component returns
 // plain divs; LabelMode places it).
-export function DrawPanel({ draw, setDraw, classes, onApply }) {
+function DrawPanel({ draw, setDraw, classes, onApply }) {
   const selected = draw.paths.filter((p) => draw.selection.has(p.key));
   const radiusValue = selected[0]?.radius
     ?? draw.paths.find((p) => p.key === draw.active)?.radius
