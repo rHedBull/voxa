@@ -88,3 +88,58 @@ export function endActive(state) {
   }
   return { ...state, active: null };
 }
+
+export function selectPath(state, pathKey, { additive = false } = {}) {
+  const selection = additive ? new Set(state.selection) : new Set();
+  if (additive && selection.has(pathKey)) selection.delete(pathKey);
+  else selection.add(pathKey);
+  return { ...state, selection };
+}
+
+export function clearSelection(state) {
+  return { ...state, selection: new Set() };
+}
+
+// Radius/class/smooth target the active path while drawing, else the selection.
+function targetKeys(state) {
+  if (state.active) return new Set([state.active]);
+  return state.selection;
+}
+
+const MIN_RADIUS = 0.005;
+
+export function setRadius(state, radius) {
+  const r = Math.max(radius, MIN_RADIUS);
+  const keys = targetKeys(state);
+  if (keys.size === 0) return state;
+  const paths = state.paths.map((p) => keys.has(p.key) ? { ...p, radius: r } : p);
+  return { ...state, paths, lastRadius: r };
+}
+
+export function nudgeRadius(state, dir) {
+  const keys = targetKeys(state);
+  const first = state.paths.find((p) => keys.has(p.key));
+  if (!first) return state;
+  // Multiplicative steps feel uniform across pipe sizes (8% like orbit zoom).
+  return setRadius(state, first.radius * (1 + Math.sign(dir) * 0.08));
+}
+
+export function setClass(state, classId) {
+  const keys = targetKeys(state);
+  if (keys.size === 0) return state;
+  const paths = state.paths.map((p) => keys.has(p.key) ? { ...p, classId } : p);
+  return { ...state, paths };
+}
+
+export function toggleSmooth(state) {
+  const keys = targetKeys(state);
+  if (keys.size === 0) return state;
+  const anyOff = state.paths.some((p) => keys.has(p.key) && !p.smooth);
+  const paths = state.paths.map((p) => keys.has(p.key) ? { ...p, smooth: anyOff } : p);
+  return { ...state, paths };
+}
+
+export function deleteSelected(state) {
+  const paths = state.paths.filter((p) => !state.selection.has(p.key));
+  return { ...state, paths, selection: new Set() };
+}
