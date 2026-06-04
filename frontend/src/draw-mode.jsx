@@ -67,8 +67,183 @@ function DrawHUD({ state, classes, toast }) {
   );
 }
 
-// Stub replaced in the next task.
-function DrawOverlay() { return null; }
+function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
+  const layerRef = useRef(null);        // { group, remove }
+  const dragRef = useRef(null);         // { pathKey, pointIdx, plane }
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
+
+  // One overlay group for the lifetime of the sub-mode.
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!v?.attachOverlayGroup) return undefined;
+    layerRef.current = v.attachOverlayGroup();
+    return () => { layerRef.current?.remove(); layerRef.current = null; };
+  }, [viewerRef]);
+
+  // Rebuild overlay children whenever paths/selection change. Path counts
+  // are tiny (dozens), so dispose-and-rebuild beats incremental bookkeeping.
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer?.group) return;
+    const group = layer.group;
+    while (group.children.length) {
+      const c = group.children.pop();
+      c.geometry?.dispose?.(); c.material?.dispose?.();
+      group.remove(c);
+    }
+    for (const p of draw.paths) {
+      const cls = classes[p.classId];
+      const color = new THREE.Color(cls?.color || '#60a5fa');
+      const isSel = draw.selection.has(p.key) || draw.active === p.key;
+      const applied = draw.instanceIds[p.instKey] != null;
+      const baseOpacity = applied ? 0.10 : 0.25;
+      const tubeMat = new THREE.MeshBasicMaterial({
+        color, transparent: true, depthWrite: false,
+        opacity: isSel ? baseOpacity + 0.15 : baseOpacity,
+      });
+      // Tube: smooth → one TubeGeometry; straight → cylinder per segment.
+      const pts3 = p.points.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+      if (p.smooth && pts3.length >= 3) {
+        const curve = new THREE.CatmullRomCurve3(pts3);
+        const tube = new THREE.Mesh(
+          new THREE.TubeGeometry(curve, pts3.length * 8, p.radius, 12, false), tubeMat);
+        tube.userData.drawPath = p.key;
+        group.add(tube);
+      } else {
+        for (let i = 0; i < pts3.length - 1; i++) {
+          const a = pts3[i], b = pts3[i + 1];
+          const len = a.distanceTo(b);
+          if (len < 1e-6) continue;
+          const cyl = new THREE.Mesh(
+            new THREE.CylinderGeometry(p.radius, p.radius, len, 12, 1, true),
+            tubeMat.clone());
+          cyl.position.copy(a).lerp(b, 0.5);
+          cyl.quaternion.setFromUnitVectors(
+            new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+          cyl.userData.drawPath = p.key;
+          group.add(cyl);
+        }
+      }
+      // Control points — pick priority targets (spec: point > tube > cloud).
+      const sphereR = Math.max(0.02, p.radius * 0.3);
+      p.points.forEach((pt, i) => {
+        const sph = new THREE.Mesh(
+          new THREE.SphereGeometry(sphereR, 12, 8),
+          new THREE.MeshBasicMaterial({ color: isSel ? 0xffffff : color }));
+        sph.position.set(pt[0], pt[1], pt[2]);
+        sph.userData.drawPoint = { pathKey: p.key, pointIdx: i };
+        group.add(sph);
+      });
+    }
+  }, [draw, classes]);
+
+  // Pointer interactions.
+  useEffect(() => {
+    const v = viewerRef.current;
+    const dom = v?.domElement?.();
+    if (!dom) return undefined;
+    const raycaster = new THREE.Raycaster();
+
+    const castOverlay = (evt) => {
+      const camera = v.getCamera();
+      const group = layerRef.current?.group;
+      if (!camera || !group) return [];
+      const rect = dom.getBoundingClientRect();
+      raycaster.setFromCamera({
+        x: ((evt.clientX - rect.left) / rect.width) * 2 - 1,
+        y: -((evt.clientY - rect.top) / rect.height) * 2 + 1,
+      }, camera);
+      return raycaster.intersectObjects(group.children, false);
+    };
+
+    const onPointerDown = (evt) => {
+      if (evt.button !== 0) return;
+      const hits = castOverlay(evt);
+      const sphereHit = hits.find((h) => h.object.userData.drawPoint);
+      if (sphereHit && !evt.ctrlKey) {
+        // Drag start: move the point on a camera-parallel plane through it.
+        const camera = v.getCamera();
+        const normal = new THREE.Vector3();
+        camera.getWorldDirection(normal);
+        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+          normal, sphereHit.object.position.clone());
+        dragRef.current = { ...sphereHit.object.userData.drawPoint, plane };
+        v.setOrbitEnabled(false);
+        evt.stopPropagation();
+        return;
+      }
+      if (evt.ctrlKey || evt.metaKey) {
+        // Place a control point at the picked cloud point.
+        const hit = v.firstHitUnderCursor(evt);
+        if (hit) {
+          setDraw((s) => addPoint(
+            s, [hit.world.x, hit.world.y, hit.world.z],
+            s.active ? s.paths.find((p) => p.key === s.active).classId : defaultClsIdx));
+        }
+        evt.stopPropagation();
+        return;
+      }
+      const tubeHit = hits.find((h) => h.object.userData.drawPath);
+      if (tubeHit) {
+        setDraw((s) => selectPath(s, tubeHit.object.userData.drawPath,
+          { additive: evt.shiftKey }));
+        return;     // don't stop: orbit-from-tube is harmless and feels natural
+      }
+      // Plain click on empty space / cloud clears the selection (keymap).
+      if (drawRef.current.selection.size) setDraw((s) => clearSelection(s));
+    };
+
+    const onPointerMove = (evt) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const camera = v.getCamera();
+      if (!camera) return;
+      const rect = dom.getBoundingClientRect();
+      raycaster.setFromCamera({
+        x: ((evt.clientX - rect.left) / rect.width) * 2 - 1,
+        y: -((evt.clientY - rect.top) / rect.height) * 2 + 1,
+      }, camera);
+      const pt = new THREE.Vector3();
+      if (raycaster.ray.intersectPlane(drag.plane, pt)) {
+        setDraw((s) => movePoint(s, drag.pathKey, drag.pointIdx, [pt.x, pt.y, pt.z]));
+      }
+    };
+
+    const onPointerUp = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      v.setOrbitEnabled(true);
+    };
+
+    // Wheel-resize beats orbit-zoom: orbit's wheel listener bubbles on the
+    // canvas, so a CAPTURE listener on the PARENT runs first and can stop
+    // propagation before the canvas ever sees it. (Capture vs bubble on the
+    // same node would NOT reorder — the parent hop is the trick.)
+    const wheelHost = dom.parentElement || dom;
+    const onWheel = (evt) => {
+      const s = drawRef.current;
+      if (!s.active && s.selection.size === 0) return;   // fall through to zoom
+      evt.preventDefault();
+      evt.stopPropagation();
+      setDraw((cur) => nudgeRadius(cur, -Math.sign(evt.deltaY)));
+    };
+
+    dom.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    wheelHost.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    return () => {
+      dom.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      wheelHost.removeEventListener('wheel', onWheel, { capture: true });
+      v.setOrbitEnabled(true);
+    };
+  }, [viewerRef, setDraw, defaultClsIdx]);
+
+  return null;
+}
 
 export default function DrawMode({
   viewerRef, classes, segState, setSegState, onExit,
