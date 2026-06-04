@@ -80,12 +80,15 @@ export function CompareMode({ cloud, theme, sceneName, isAnnotated,
   const enabled = useMemoCmp(() => sources.filter((s) => !s.disabled), [sources]);
 
   // Defaults: A = active session if it has output, else first enabled source;
-  // B = the next distinct enabled source. Re-derive whenever the scene or
-  // source set changes.
+  // B = the next distinct enabled source. Applied only while the CURRENT
+  // selection is invalid (missing, disabled, or identical) — a source-list
+  // refresh (e.g. a save stamping has_output) must not clobber a manual pick.
   useEffectCmp(() => {
     if (enabled.length < 2) { setSrcA(null); setSrcB(null); return; }
+    const valid = (s) => s && enabled.some((e) => srcKey(e) === srcKey(s));
+    if (valid(srcA) && valid(srcB) && srcKey(srcA) !== srcKey(srcB)) return;
     const active = enabled.find((s) => s.kind === 'session' && s.id === activeSessionId);
-    const a = active || enabled[0];
+    const a = (valid(srcA) && srcA) || active || enabled[0];
     const b = enabled.find((s) => srcKey(s) !== srcKey(a));
     setSrcA(a);
     setSrcB(b || null);

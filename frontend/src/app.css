@@ -689,12 +689,6 @@ kbd {
 .cmp-metric label::after { content: ':'; opacity: 0.5; margin-left: 1px; }
 .cmp-metric b { font-size: 12px; font-weight: 600; }
 .cmp-metric .accent { color: var(--accent); }
-.diff-pills { display: inline-flex; gap: 3px; }
-.diff-pills i {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 22px; height: 18px; padding: 0 5px; border-radius: 4px;
-  font: 600 11px/1 'JetBrains Mono', monospace; font-style: normal;
-}
 .cmp-toggle { display: inline-flex; align-items: center; gap: 6px;
               white-space: nowrap; }
 .cmp-toggle label { font-size: 10px; color: var(--text-faint);
@@ -767,14 +761,6 @@ kbd {
 }
 .cmp-table-row.selected:hover { background: oklch(0.65 0.15 250 / 0.24); }
 .cmp-table-row .inst-edit-btn { justify-self: end; }
-.status-pill {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 28px; height: 18px; padding: 0 6px; border-radius: 4px;
-  font: 600 10px/1 'JetBrains Mono', monospace; letter-spacing: 0.04em;
-}
-.status-pill.tp { background: oklch(0.65 0.15 150 / 0.18); color: oklch(0.78 0.15 150); }
-.status-pill.fp { background: oklch(0.65 0.18 30 / 0.18);  color: oklch(0.78 0.16 30); }
-.status-pill.fn { background: oklch(0.7 0.16 70 / 0.20);   color: oklch(0.85 0.13 70); }
 
 .cmp-class-name { display: inline-flex; align-items: center; gap: 7px;
                   min-width: 0; overflow: hidden; text-overflow: ellipsis;
