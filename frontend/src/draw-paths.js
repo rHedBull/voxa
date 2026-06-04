@@ -143,3 +143,91 @@ export function deleteSelected(state) {
   const paths = state.paths.filter((p) => !state.selection.has(p.key));
   return { ...state, paths, selection: new Set() };
 }
+
+export function mergeSelection(state) {
+  if (state.selection.size < 2) return state;
+  const selectedGroups = [];          // ordered, unique instKeys of the selection
+  for (const p of state.paths) {
+    if (state.selection.has(p.key) && !selectedGroups.includes(p.instKey)) {
+      selectedGroups.push(p.instKey);
+    }
+  }
+  if (selectedGroups.length < 2) return state;
+  // Survivor: lowest applied backend id wins (spec); else first selected group.
+  const appliedGroups = selectedGroups.filter((g) => state.instanceIds[g] != null);
+  const survivor = appliedGroups.length
+    ? appliedGroups.reduce((m, g) => state.instanceIds[g] < state.instanceIds[m] ? g : m)
+    : selectedGroups[0];
+  const survivorClass = state.paths.find((p) => p.instKey === survivor).classId;
+  const absorbed = selectedGroups.filter((g) => g !== survivor);
+  const absorbedIds = absorbed
+    .map((g) => state.instanceIds[g])
+    .filter((id) => id != null);
+  const paths = state.paths.map((p) =>
+    absorbed.includes(p.instKey)
+      ? { ...p, instKey: survivor, classId: survivorClass }
+      : p);
+  const instanceIds = { ...state.instanceIds };
+  const pendingMergedFrom = { ...state.pendingMergedFrom };
+  const carried = absorbed.flatMap((g) => pendingMergedFrom[g] ?? []);
+  for (const g of absorbed) { delete instanceIds[g]; delete pendingMergedFrom[g]; }
+  if (absorbedIds.length || carried.length) {
+    pendingMergedFrom[survivor] = [
+      ...(pendingMergedFrom[survivor] ?? []), ...absorbedIds, ...carried,
+    ];
+  }
+  return { ...state, paths, instanceIds, pendingMergedFrom };
+}
+
+export function buildApplyCalls(state) {
+  // Enter applies whole instances only (spec, workflow item 7).
+  const groups = [];
+  for (const p of state.paths) {
+    if (state.selection.has(p.key) && !groups.includes(p.instKey)) groups.push(p.instKey);
+  }
+  return groups.map((g) => {
+    const paths = state.paths
+      .filter((p) => p.instKey === g)
+      .map((p) => ({ points: p.points, radius: p.radius, smooth: p.smooth }));
+    return {
+      instKey: g,
+      paths,
+      classId: state.paths.find((p) => p.instKey === g).classId,
+      targetInst: state.instanceIds[g] ?? -1,
+      mergedFrom: state.pendingMergedFrom[g] ?? [],
+    };
+  });
+}
+
+export function markApplied(state, instKey, instanceId) {
+  const pendingMergedFrom = { ...state.pendingMergedFrom };
+  delete pendingMergedFrom[instKey];
+  return {
+    ...state,
+    instanceIds: { ...state.instanceIds, [instKey]: instanceId },
+    pendingMergedFrom,
+  };
+}
+
+export function seedFromServer(state, doc) {
+  let s = state;
+  const groupByInstance = {};
+  for (const sp of doc.paths ?? []) {
+    let instKey = groupByInstance[sp.instance_id];
+    const [key, next] = freshKey(s);
+    s = next;
+    if (!instKey) {
+      instKey = key;
+      groupByInstance[sp.instance_id] = instKey;
+      s = { ...s, instanceIds: { ...s.instanceIds, [instKey]: sp.instance_id } };
+    }
+    s = {
+      ...s,
+      paths: [...s.paths, {
+        key, points: sp.points, radius: sp.radius,
+        smooth: !!sp.smooth, classId: sp.class_id, instKey,
+      }],
+    };
+  }
+  return s;
+}

@@ -3,6 +3,7 @@ import {
   initDrawState, addPoint, movePoint, removeLastPoint, endActive,
   selectPath, clearSelection, setRadius, nudgeRadius, setClass,
   toggleSmooth, deleteSelected,
+  mergeSelection, buildApplyCalls, markApplied, seedFromServer,
 } from './draw-paths.js';
 
 const P = (x = 0) => [x, 0, 0];
@@ -113,5 +114,104 @@ describe('selection + path edits', () => {
     s = deleteSelected(s);
     expect(s.paths).toHaveLength(1);
     expect(s.selection.size).toBe(0);
+  });
+});
+
+function applied(state, instKeyToId) {
+  let s = state;
+  for (const [k, id] of Object.entries(instKeyToId)) s = markApplied(s, k, id);
+  return s;
+}
+
+describe('merge + apply calls', () => {
+  it('buildApplyCalls: one call per selected instance group, whole-instance expansion', () => {
+    let s = staged2();
+    const [a, b] = s.paths.map((p) => p.key);
+    s = selectPath(s, a);
+    s = selectPath(s, b, { additive: true });
+    // Unmerged → two independent calls (spec: M is the only merge trigger).
+    const calls = buildApplyCalls(s);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].targetInst).toBe(-1);
+    expect(calls[0].mergedFrom).toEqual([]);
+    expect(calls[0].paths[0].points).toEqual([P(0), P(1)]);
+  });
+
+  it('merge of two staged paths → one call, one shared class', () => {
+    let s = staged2();
+    const [a, b] = s.paths.map((p) => p.key);
+    s = selectPath(s, a); s = selectPath(s, b, { additive: true });
+    s = mergeSelection(s);
+    expect(s.paths[0].instKey).toBe(s.paths[1].instKey);
+    expect(s.paths[1].classId).toBe(s.paths[0].classId);   // survivor's class
+    const calls = buildApplyCalls(s);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].paths).toHaveLength(2);
+  });
+
+  it('selecting one path of a multi-path instance expands to all its paths', () => {
+    let s = staged2();
+    const [a, b] = s.paths.map((p) => p.key);
+    s = selectPath(s, a); s = selectPath(s, b, { additive: true });
+    s = mergeSelection(s);
+    s = clearSelection(s);
+    s = selectPath(s, a);                       // only one sibling selected
+    const calls = buildApplyCalls(s);
+    expect(calls[0].paths).toHaveLength(2);     // whole instance anyway
+  });
+
+  it('applied-applied merge: lowest id survives, others go to mergedFrom', () => {
+    let s = staged2();
+    const [a, b] = s.paths.map((p) => p.key);
+    s = applied(s, { [a]: 9, [b]: 4 });
+    s = selectPath(s, a); s = selectPath(s, b, { additive: true });
+    s = mergeSelection(s);
+    const calls = buildApplyCalls(s);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].targetInst).toBe(4);        // lowest survives
+    expect(calls[0].mergedFrom).toEqual([9]);
+  });
+
+  it('markApplied records id and clears pendingMergedFrom', () => {
+    let s = staged2();
+    const [a, b] = s.paths.map((p) => p.key);
+    s = applied(s, { [a]: 9, [b]: 4 });
+    s = selectPath(s, a); s = selectPath(s, b, { additive: true });
+    s = mergeSelection(s);
+    const survivor = s.paths[0].instKey;
+    s = markApplied(s, survivor, 4);
+    expect(s.instanceIds[survivor]).toBe(4);
+    expect(s.pendingMergedFrom[survivor] ?? []).toEqual([]);
+    // Re-apply after edit: same target, no mergedFrom this time.
+    s = selectPath(clearSelection(s), s.paths[0].key);
+    const again = buildApplyCalls(s);
+    expect(again[0].targetInst).toBe(4);
+    expect(again[0].mergedFrom).toEqual([]);
+  });
+
+  it('staged + applied merge adopts the applied id', () => {
+    let s = staged2();
+    const [a, b] = s.paths.map((p) => p.key);
+    s = applied(s, { [a]: 7 });
+    s = selectPath(s, a); s = selectPath(s, b, { additive: true });
+    s = mergeSelection(s);
+    const calls = buildApplyCalls(s);
+    expect(calls[0].targetInst).toBe(7);
+    expect(calls[0].mergedFrom).toEqual([]);
+  });
+
+  it('seedFromServer rebuilds applied groups keyed by instance_id', () => {
+    const doc = { paths: [
+      { points: [[0, 0, 0], [1, 0, 0]], radius: 0.2, smooth: false, class_id: 0, instance_id: 7 },
+      { points: [[2, 0, 0], [3, 0, 0]], radius: 0.2, smooth: true,  class_id: 0, instance_id: 7 },
+      { points: [[9, 0, 0], [9, 1, 0]], radius: 0.4, smooth: false, class_id: 2, instance_id: 8 },
+    ] };
+    const s = seedFromServer(initDrawState(), doc);
+    expect(s.paths).toHaveLength(3);
+    const groups = new Set(s.paths.map((p) => p.instKey));
+    expect(groups.size).toBe(2);
+    const g7 = s.paths.filter((p) => s.instanceIds[p.instKey] === 7);
+    expect(g7).toHaveLength(2);
+    expect(g7[1].smooth).toBe(true);
   });
 });
