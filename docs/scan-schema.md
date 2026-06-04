@@ -34,6 +34,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 │       ├── session.json               pin + state (schema below)
 │       ├── working_class_ids.npy      int8,  shape (N_pts,)  — autosave
 │       ├── working_segment_ids.npy    int32, shape (N_pts,)  — autosave
+│       ├── instances_gt.json          cuboid/pointset instance doc (right panel) — session-scoped, autosave
 │       ├── output/                    written by Save (Ctrl+S); absent until first explicit save
 │       │   ├── gt_class_ids.npy       int32, shape (N_pts,)
 │       │   ├── gt_segment_ids.npy     int32, shape (N_pts,)

@@ -11,8 +11,8 @@ router = APIRouter()
 
 
 @router.get("/api/annotations/{kind}/{scene:path}", response_model=AnnotationDoc)
-def get_annotation(scene: str, kind: str):
-    p = _annotation_path(scene, kind)
+def get_annotation(scene: str, kind: str, session_id: str | None = None):
+    p = _annotation_path(scene, kind, session_id)
     if not p.exists():
         return AnnotationDoc(scene=scene, kind=kind, instances=[])
     with p.open() as f:
@@ -25,8 +25,9 @@ def get_annotation(scene: str, kind: str):
     )
 
 @router.put("/api/annotations/{kind}/{scene:path}")
-def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest):
-    p = _annotation_path(scene, kind)
+def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest,
+                   session_id: str | None = None):
+    p = _annotation_path(scene, kind, session_id)
     p.parent.mkdir(parents=True, exist_ok=True)
     body = {
         "scene": scene,
