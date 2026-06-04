@@ -339,14 +339,16 @@ export default function DrawMode({
       case 'apply':
         applySelection();
         break;
-      case 'escape':
-        setDraw((s) => {
-          if (s.active) return endActive(s);
-          if (s.selection.size) return clearSelection(s);
-          onExit();
-          return s;
-        });
+      case 'escape': {
+        // Decide on the live state OUTSIDE the updater — calling onExit()
+        // (a LabelMode setState) from inside setDraw runs during render and
+        // trips React's setState-while-rendering warning.
+        const s = drawLiveRef.current;
+        if (s.active) setDraw((cur) => endActive(cur));
+        else if (s.selection.size) setDraw((cur) => clearSelection(cur));
+        else onExit();
         break;
+      }
       case 'backspace':
         setDraw((s) => s.active ? removeLastPoint(s) : deleteSelected(s));
         break;
