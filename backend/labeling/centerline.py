@@ -31,14 +31,34 @@ def _segment_mask(positions: np.ndarray, a: np.ndarray, b: np.ndarray,
 
 
 def tube_indices(positions: np.ndarray, paths: list[dict]) -> np.ndarray:
-    """Unique int32 indices of points within any path's tube."""
+    """Unique int32 indices of points within any path's tube.
+
+    AABB prefilter: for each path, restrict candidate points to those inside
+    the bounding box of the sampled path points expanded by the tube radius.
+    This avoids allocating O(N) temporaries over the full cloud per segment
+    when paths are small relative to the total cloud volume.
+    """
     positions = np.asarray(positions, dtype=np.float32)
     mask = np.zeros(positions.shape[0], dtype=bool)
     for p in paths:
         pts = np.asarray(sample_path(p), dtype=np.float32)
-        r2 = float(p["radius"]) ** 2
+        radius = float(p["radius"])
+        r2 = radius ** 2
+        # AABB of sampled path points expanded by radius.
+        lo = pts.min(axis=0) - radius
+        hi = pts.max(axis=0) + radius
+        cand = np.where(
+            (positions[:, 0] >= lo[0]) & (positions[:, 0] <= hi[0]) &
+            (positions[:, 1] >= lo[1]) & (positions[:, 1] <= hi[1]) &
+            (positions[:, 2] >= lo[2]) & (positions[:, 2] <= hi[2])
+        )[0]
+        if cand.size == 0:
+            continue
+        sub = positions[cand]
+        sub_mask = np.zeros(cand.size, dtype=bool)
         for i in range(len(pts) - 1):
-            mask |= _segment_mask(positions, pts[i], pts[i + 1], r2)
+            sub_mask |= _segment_mask(sub, pts[i], pts[i + 1], r2)
+        mask[cand[sub_mask]] = True
     return np.flatnonzero(mask).astype(np.int32)
 
 
@@ -71,7 +91,12 @@ def load_centerlines(session_dir: Path) -> dict:
     f = Path(session_dir) / CENTERLINES_FILENAME
     if not f.exists():
         return {"paths": []}
-    return json.loads(f.read_text())
+    data = json.loads(f.read_text())
+    if "paths" not in data:
+        raise ValueError(
+            f"malformed centerlines.json in {session_dir}: missing 'paths'"
+        )
+    return data
 
 
 def update_centerlines(session_dir: Path, instance_id: int, class_id: int,

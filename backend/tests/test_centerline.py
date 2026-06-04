@@ -1,8 +1,10 @@
 """Tests for labeling.centerline — tube extraction + path sampling + store."""
 from __future__ import annotations
 
+import json
+
 import numpy as np
-import pytest
+import pytest  # used by pytest.raises
 
 from labeling.centerline import tube_indices
 from labeling.centerline import sample_path
@@ -154,3 +156,39 @@ def test_store_distinct_instances_append(tmp_path):
     update_centerlines(tmp_path, 9, 1, [_path(5.0)], [])
     doc = load_centerlines(tmp_path)
     assert sorted(p["instance_id"] for p in doc["paths"]) == [7, 9]
+
+
+def test_tube_indices_aabb_prefilter_matches_brute_force():
+    """AABB prefilter must return the same result as the old (no-prefilter) logic.
+
+    Uses the existing fixtures as the brute-force reference: run tube_indices on
+    a cloud where most points are far from the path (so the prefilter actually
+    prunes) and assert the hit-set matches _segment_mask applied to the full cloud.
+    """
+    from labeling.centerline import _segment_mask
+
+    rng = np.random.default_rng(42)
+    # 50 k random points spread over a large volume.
+    noise = rng.uniform(-50.0, 50.0, (50_000, 3)).astype(np.float32)
+    # Small cluster near the path (a short X-axis tube).
+    cluster = _cylinder_cloud(axis_len=2.0, radius=0.1, n=500, seed=1)
+    cloud = np.vstack([noise, cluster])
+
+    paths = [{"points": [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]], "radius": 0.15, "smooth": False}]
+
+    # Brute-force reference: apply _segment_mask to the full cloud directly.
+    a = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    b = np.array([2.0, 0.0, 0.0], dtype=np.float32)
+    r2 = 0.15 ** 2
+    ref_idx = np.flatnonzero(_segment_mask(cloud, a, b, r2)).astype(np.int32)
+
+    prefiltered_idx = tube_indices(cloud, paths)
+
+    assert set(prefiltered_idx.tolist()) == set(ref_idx.tolist())
+
+
+def test_load_centerlines_raises_on_missing_paths_key(tmp_path):
+    bad = tmp_path / "centerlines.json"
+    bad.write_text(json.dumps({"not_paths": []}))
+    with pytest.raises(ValueError, match="missing 'paths'"):
+        load_centerlines(tmp_path)
