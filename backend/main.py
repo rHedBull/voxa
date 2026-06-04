@@ -32,7 +32,7 @@ from app.core import (  # noqa: F401
     _y_up_to_z_up_xyz,
     _to_display_frame,
 )
-from routes import compare, export, load, meta, segment
+from routes import compare, export, load, meta, segment, sessions
 
 app = FastAPI(title="Voxa 3D scan studio")
 
@@ -44,7 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for _module in (meta, load, compare, segment, export):
+for _module in (meta, load, compare, segment, export, sessions):
     app.include_router(_module.router)
 
 

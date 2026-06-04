@@ -83,6 +83,23 @@ function MainApp() {
   const [cuboidDirty, setCuboidDirty] = useStateApp(false);
   const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
   const [segState, setSegState] = useStateApp(null);
+  // Multi-session (scan-schema v2): the load response carries the available
+  // sessions + which one resumed. `explicitSessionRef` makes /api/load send a
+  // session_id ONLY when the user explicitly picked one — otherwise the
+  // backend resumes the last-worked session for the scan.
+  const [sessions, setSessions] = useStateApp([]);
+  const [activeSessionId, setActiveSessionId] = useStateApp(null);
+  const [presegs, setPresegs] = useStateApp([]);
+  const [pinError, setPinError] = useStateApp(null);
+  const explicitSessionRef = useRefApp(null);
+  // Scene the load effect last ran for. The effect keys on activeScene, t.mode,
+  // and activeSessionId, but activeSessionId is also set BY the effect (to the
+  // resumed id) and reset to null on scene change — both would re-fire it
+  // pointlessly. So we only honour an activeSessionId change when it came from
+  // an explicit pick (ref set); otherwise a re-run with the same scene+mode and
+  // no pick is a self-echo and is skipped.
+  const loadedSceneRef = useRefApp(null);
+  const loadedModeRef = useRefApp(null);
   // Camera nav mode is shared across the three modes so toggling Inspect →
   // Label preserves whether the user was orbiting or walking.
   const [navMode, setNavMode] = useStateApp('orbit');
@@ -105,6 +122,27 @@ function MainApp() {
   useEffectApp(() => {
     if (!activeScene) return;
     try { localStorage.setItem('voxa.activeScene', activeScene); } catch { /* quota / private mode */ }
+  }, [activeScene]);
+
+  // Each scan resumes its OWN last-worked session, so clear the explicit pick
+  // and reset the resumed id whenever the scene changes. Also (re)fetch the
+  // preseg list for annotated scenes — the create form needs it. Real preseg
+  // errors surface in the console + the picker's inline message; non-annotated
+  // scenes simply have no presegs and skip the fetch.
+  useEffectApp(() => {
+    explicitSessionRef.current = null;
+    setActiveSessionId(null);
+    setSessions([]);
+    setPresegs([]);
+    if (!activeScene) return;
+    const sceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
+    if (sceneObj?.tier !== 'annotated') return;
+    let cancel = false;
+    VoxaAPI.listPresegs(activeScene)
+      .then((ps) => { if (!cancel) setPresegs(ps || []); })
+      .catch((e) => { if (!cancel) console.error('listPresegs failed:', e); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScene]);
 
   // Persist active mode across refreshes (paired with INITIAL_TWEAKS lazy-init).
@@ -168,18 +206,33 @@ function MainApp() {
   // Load cloud + annotations whenever the active scene or mode changes.
   useEffectApp(() => {
     if (!activeScene) return;
+    // Skip self-echoes: a re-run for the same scene+mode with no explicit pick
+    // pending was triggered by our own setActiveSessionId (resume / scene-reset
+    // to null), not by user intent. Re-fetching the cloud then is wasteful.
+    if (!explicitSessionRef.current
+        && activeScene === loadedSceneRef.current
+        && t.mode === loadedModeRef.current) {
+      return;
+    }
+    loadedSceneRef.current = activeScene;
+    loadedModeRef.current = t.mode;
     let cancel = false;
     setLoading(true);
     setLoadError(null);
+    setPinError(null);
     const activeSceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
     const wantFullLabels = t.mode === 'label' && activeSceneObj?.tier === 'annotated';
+    // Only send a session_id when the user explicitly picked one; clear the
+    // ref immediately so a subsequent scene/mode change defaults to last-worked.
+    const explicitSessionId = explicitSessionRef.current;
+    explicitSessionRef.current = null;
     // Run /api/load first, then fetch /api/segment/state. They MUST be
     // sequential: /api/load is what swaps the backend's in-memory seg
     // session over to the new scene; if segState() races ahead it can
     // come back with the previous scene's data (e.g. 482k smart_ais
     // segments hydrated onto a 16k industrial_scan cloud).
     Promise.all([
-      VoxaAPI.load(activeScene, { wantFullLabels }),
+      VoxaAPI.load(activeScene, { wantFullLabels, sessionId: explicitSessionId }),
       VoxaAPI.getAnnotation(activeScene, 'gt'),
     ]).then(async ([c, gtDoc]) => {
       const segLive = await VoxaAPI.segState().catch(() => null);
@@ -187,6 +240,8 @@ function MainApp() {
     }).then(([c, gtDoc, segLive]) => {
       if (cancel) return;
       setCloud(c);
+      setSessions(c.sessions);
+      setActiveSessionId(c.sessionId);
       setCuboidDirty(false);
       if (segLive) {
         // Live seg session wins — includes hulls + any unsaved preseg edits.
@@ -254,13 +309,24 @@ function MainApp() {
       setLoading(false);
     }).catch((e) => {
       if (cancel) return;
-      setLoadError(String(e.message || e));
+      // Pin mismatch / corrupt session: surface a blocking banner and leave
+      // the scene unloaded so the user can pick another session. The failed
+      // session must NOT stay "active" — otherwise switchSession's equality
+      // guard would silently swallow a retry of the same session.
+      if (e.status === 409 && e.detail) {
+        setPinError(e.detail);
+        setActiveSessionId(null);
+      } else {
+        setLoadError(String(e.message || e));
+      }
       setLoading(false);
     });
     VoxaAPI.getAnnotation(activeScene, 'pred')
       .then((d) => !cancel && setPredInstances(d.instances || []));
     return () => { cancel = true; };
-  }, [activeScene, t.mode]); // eslint-disable-line react-hooks/exhaustive-deps
+    // activeSessionId is in the deps so an explicit session pick (which sets
+    // the ref and bumps activeSessionId) re-runs this effect and reloads.
+  }, [activeScene, t.mode, activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const theme = t.theme === 'dark'
     ? { bg: '#0a0b0e', floor: '#15171c' }
@@ -453,6 +519,68 @@ function MainApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, [handleSave]);
 
+  // ── Session picker handlers ─────────────────────────────────────────────
+  // Switching activates a session by marking the explicit pick (so the load
+  // effect sends its session_id) and bumping activeSessionId to re-run the
+  // effect. Edits are autosaved, so we only confirm rather than block.
+  const switchSession = useCallbackApp((sid) => {
+    if (sid === activeSessionId) return;
+    explicitSessionRef.current = sid;
+    setActiveSessionId(sid);
+  }, [activeSessionId]);
+
+  const onSelectSession = useCallbackApp((sid) => {
+    if ((cuboidDirty || segState?.dirty)
+        && !window.confirm('Unsaved changes are autosaved; switch session?')) {
+      return;
+    }
+    switchSession(sid);
+  }, [cuboidDirty, segState?.dirty, switchSession]);
+
+  const onCreateSession = useCallbackApp(async ({ name, presegId }) => {
+    try {
+      // The create route fingerprints the loaded cloud, so the scene must be
+      // loaded first (it is — the picker only shows once a scene is active).
+      const created = await VoxaAPI.createSession(activeScene, { name, presegId });
+      switchSession(created.session_id);
+    } catch (err) {
+      console.error('createSession failed:', err);
+      window.alert(`Create session failed: ${err.message || err}`);
+    }
+  }, [activeScene, switchSession]);
+
+  const onRenameSession = useCallbackApp(async (sid, name) => {
+    try {
+      await VoxaAPI.renameSession(activeScene, sid, name);
+      // The server only updates the name — patch the local list in place
+      // instead of re-fetching every session.json.
+      setSessions((prev) => prev.map((s) => (
+        s.session_id === sid ? { ...s, name } : s)));
+    } catch (err) {
+      console.error('renameSession failed:', err);
+      window.alert(`Rename session failed: ${err.message || err}`);
+    }
+  }, [activeScene]);
+
+  const onDeleteSession = useCallbackApp(async (sid) => {
+    try {
+      await VoxaAPI.deleteSession(activeScene, sid);
+      if (sid === activeSessionId) {
+        // Deleting the active session: force the load effect to re-run (clear
+        // the loaded-scene marker so the guard doesn't treat it as an echo)
+        // and let the backend resume whatever it now considers last-worked.
+        explicitSessionRef.current = null;
+        loadedSceneRef.current = null;
+        setActiveSessionId(null);
+      } else {
+        setSessions((prev) => prev.filter((s) => s.session_id !== sid));
+      }
+    } catch (err) {
+      console.error('deleteSession failed:', err);
+      window.alert(`Delete session failed: ${err.message || err}`);
+    }
+  }, [activeScene, activeSessionId]);
+
   return (
     <div className={'app-shell ' + themeClass}>
       <header className="app-header">
@@ -526,6 +654,19 @@ function MainApp() {
         />
       )}
 
+      {pinError && (
+        <div className="pin-error-banner">
+          <span className="dot" style={{ background: 'oklch(0.65 0.18 25)' }} />
+          <div className="pin-error-text">
+            <b>{pinError.message || 'Session could not be loaded'}</b>
+            {pinError.diverged && (
+              <em>diverged pin: {pinError.diverged}</em>
+            )}
+          </div>
+          <button className="ghost-btn" onClick={() => setPinError(null)}>Dismiss</button>
+        </div>
+      )}
+
       <div className="app-body">
         {t.mode === 'inspect' && (
           <InspectMode key="i" cloud={cloud} loading={loading} theme={theme}
@@ -542,6 +683,10 @@ function MainApp() {
             segState={segState} setSegState={setSegState}
             prelabelRef={prelabelRef}
             onCameraChange={onMainCameraChange}
+            isAnnotated={scenes.find((s) => (s.id || s.name) === activeScene)?.tier === 'annotated'}
+            sessions={sessions} activeSessionId={activeSessionId} presegs={presegs}
+            onSelectSession={onSelectSession} onCreateSession={onCreateSession}
+            onRenameSession={onRenameSession} onDeleteSession={onDeleteSession}
             hasMesh={!!cloud?.meshUrl} />
         )}
         {t.mode === 'compare' && (

@@ -8,6 +8,7 @@ import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
 import { PresegmentList } from './segment-tools.jsx';
+import SessionPicker from './session-picker.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
@@ -54,7 +55,7 @@ function pointsInsideOBBLabel(positions, box) {
   return out;
 }
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession }) {
   const meshPopupRef = useRefLabel(null);
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
@@ -909,6 +910,17 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
       {/* Left: class palette */}
       <aside className="side-l">
+        {isAnnotated && (
+          <SessionPicker
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            presegs={presegs}
+            onSelect={onSelectSession}
+            onCreate={onCreateSession}
+            onRename={onRenameSession}
+            onDelete={onDeleteSession}
+          />
+        )}
         <div className="side-hd">
           <span>Classes</span>
           <span className="badge-soft">{instances.length}</span>

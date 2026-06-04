@@ -71,11 +71,10 @@ def segment_state():
         n_assigned=int(labeled.sum()),
         n_segments=int(np.unique(instance_ids[labeled]).size) if labeled.any() else 0,
         n_points=int(len(seg.instance_ids)),
-        preseg_run_id=seg.preseg_run_id,
+        preseg_id=seg.preseg_id,
         preseg_fingerprint=seg.preseg_fingerprint,
         source_fingerprint=seg.source_fingerprint,
         is_from_prelabel=bool(seg.is_from_prelabel),
-        stale_prelabel=bool(getattr(seg, "stale_prelabel", False)),
         full_class_ids=_b64(class_ids),
         full_instance_ids=_b64(instance_ids),
         seg_ids=_b64(box_ids),
@@ -84,11 +83,15 @@ def segment_state():
         hull_vertices=_b64(hull_v),
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
+        session_id=_state.get("session_id"),
     )
 
-@router.put("/api/segment/save") # TODO: this is very important, what is actually happening, here what is beeing saved where? what format?
+@router.put("/api/segment/save")
 def segment_save():
     seg = _require_seg()
+    session_id = _state.get("session_id")
+    if session_id is None:
+        raise HTTPException(409, "no active session — load a session before saving")
     src = _resolve(_state["scene"])
     if src.tier != "annotated":
         raise HTTPException(409, "Save is only supported on annotated/<scene> tier")
@@ -97,8 +100,8 @@ def segment_save():
         os.environ.get("VOXA_DISABLE_ANNOTATION_HISTORY", "").strip().lower()
         not in ("1", "true", "yes", "on")
     )
-    # Build a sanitized snapshot for labels/ on the side; do NOT touch
-    # in-memory state. SCHEMA invariant 3 (class==-1 ⟺ inst==-1, see
+    # Build a sanitized snapshot for the session output/ on the side; do NOT
+    # touch in-memory state. SCHEMA invariant 3 (class==-1 ⟺ inst==-1, see
     # segment_io._validate_invariants) requires stripping preseg-only
     # points (inst≥0, class=-1) on export because preseg is a suggestion,
     # not authoritative GT. The SegmentSession itself is the working
@@ -115,17 +118,18 @@ def segment_save():
         out_inst = out_inst.copy()
         out_inst[unclassified] = np.int32(-1)
     # Autosave first so the recovery file reflects the unmutated working
-    # canvas, independent of the labels/ export.
+    # canvas, independent of the output/ export.
     seg.flush_autosave()
     try:
         from labeling.segment_io import save_labels
         save_labels(
             scan_dir,
+            session_id,
             class_ids=out_class,
             instance_ids=out_inst,
             positions=seg.positions,
             write_history=write_history,
-            prelabel_fingerprint=seg.preseg_fingerprint,
+            preseg_fingerprint=seg.preseg_fingerprint,
             source_fingerprint=seg.source_fingerprint,
         )
     except ValueError as e:

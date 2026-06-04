@@ -30,6 +30,8 @@ export function decodeLoadResponse(j) {
     segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
     segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
     segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
+    sessionId: j.session_id ?? null,
+    sessions: j.sessions || [],
   };
 }
 
@@ -46,19 +48,29 @@ export const VoxaAPI = {
     const r = await fetch('/api/scenes');
     return r.json();
   },
-  async load(name, { maxPoints = null, wantFullLabels = false, preferPrelabel = false } = {}) {
+  async load(name, { maxPoints = null, wantFullLabels = false, sessionId = null } = {}) {
     const body = {
       name,
       ...(maxPoints != null ? { max_points: maxPoints } : {}),
       ...(wantFullLabels ? { want_full_labels: true } : {}),
-      ...(preferPrelabel ? { prefer_prelabel: true } : {}),
+      ...(sessionId != null ? { session_id: sessionId } : {}),
     };
     const r = await fetch('/api/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`load failed: ${r.status} ${await r.text()}`);
+    if (!r.ok) {
+      if (r.status === 409) {
+        let detail = null;
+        try { detail = (await r.json()).detail; } catch { /* non-JSON body */ }
+        const err = new Error(detail?.message || `load failed: 409`);
+        err.status = 409;
+        err.detail = detail;
+        throw err;
+      }
+      throw new Error(`load failed: ${r.status} ${await r.text()}`);
+    }
     return decodeLoadResponse(await r.json());
   },
   async loadRegion(aabbMin, aabbMax, { maxPoints = null } = {}) {
@@ -163,6 +175,42 @@ export const VoxaAPI = {
       hullFaces: j.hull_faces ? b64ToInt32(j.hull_faces) : null,
       hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
     };
+  },
+  async listSessions(scene) {
+    const r = await fetch(`/api/scenes/${scene}/sessions`);
+    if (!r.ok) throw new Error(`listSessions failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return j.sessions;
+  },
+  async createSession(scene, { name, presegId = null } = {}) {
+    const body = { name, ...(presegId ? { preseg_id: presegId } : {}) };
+    const r = await fetch(`/api/scenes/${scene}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`createSession failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async renameSession(scene, sid, name) {
+    const r = await fetch(`/api/scenes/${scene}/sessions/${sid}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) throw new Error(`renameSession failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async deleteSession(scene, sid) {
+    const r = await fetch(`/api/scenes/${scene}/sessions/${sid}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`deleteSession failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async listPresegs(scene) {
+    const r = await fetch(`/api/scenes/${scene}/presegs`);
+    if (!r.ok) throw new Error(`listPresegs failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return j.presegs;
   },
 };
 

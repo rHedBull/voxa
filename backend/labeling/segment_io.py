@@ -1,4 +1,4 @@
-"""SCHEMA-aware reader for prelabel/, writer for labels/, history pruning.
+"""SCHEMA-aware session-output writer + working-state I/O + history pruning.
 
 Pure I/O. No FastAPI, no in-memory state. Loaders return aligned arrays;
 writers validate invariants and recompute gt_segment_metadata.json from the
@@ -51,34 +51,6 @@ def atomic_write_json(path: Path, payload: dict) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
-
-
-def load_prelabel(
-    scan_dir: Path, n_points: int
-) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    """Read prelabel/ if present. Returns (class_ids int8, instance_ids int32)
-    or None when no prelabel exists / arrays are malformed."""
-    lay = ScanLayout(scan_dir)
-    inst_path = lay.ransac_instance_ids
-    summary_path = lay.ransac_segment_summary
-    if not inst_path.exists() or not summary_path.exists():
-        return None
-    try:
-        instance_ids = np.load(inst_path).astype(np.int32)
-        summary = json.loads(summary_path.read_text())
-        if instance_ids.shape != (n_points,):
-            return None
-        seg_to_class = {
-            int(s["id"]): int(s["class_id"])
-            for s in summary.get("segments", [])
-        }
-    except (OSError, ValueError, json.JSONDecodeError,
-            AttributeError, KeyError, TypeError):
-        return None
-    class_ids = np.full(n_points, -1, dtype=np.int8)
-    for sid, cid in seg_to_class.items():
-        class_ids[instance_ids == sid] = cid
-    return class_ids, instance_ids
 
 
 _TS_RE = re.compile(r"^\d{8}_\d{6}$")
@@ -199,21 +171,30 @@ def _utc_timestamp() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
+def utc_now_iso() -> str:
+    """UTC timestamp for session/preseg metadata (ISO, second resolution).
+    Single home — session_store, preseg_store and the migration script all
+    stamp with this."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def save_labels(
     scan_dir: Path,
+    session_id: str,
     class_ids: np.ndarray,
     instance_ids: np.ndarray,
     *,
     positions: Optional[np.ndarray] = None,
     write_history: bool = True,
     history_keep: int = 10,
-    prelabel_fingerprint: Optional[str] = None,
+    preseg_fingerprint: Optional[str] = None,
     source_fingerprint: Optional[str] = None,
 ) -> None:
     """Validate, snapshot existing labels, then write gt_*.npy + metadata.
 
-    Writes are sequential (3 files); not atomic across files. A history
-    snapshot is taken from the prior on-disk labels before overwrite.
+    Writes into sessions/<session_id>/output/ under scan_dir. Writes are
+    sequential (3 files); not atomic across files. A history snapshot is
+    taken from the prior on-disk labels before overwrite.
     """
     registry = _load_class_registry(scan_dir)
     meta_version = _read_meta_class_map_version(scan_dir)
@@ -221,30 +202,30 @@ def save_labels(
                          registry=registry,
                          meta_class_map_version=meta_version)
 
-    lay = ScanLayout(scan_dir)
-    lay.labels_dir.mkdir(parents=True, exist_ok=True)
-    gt_files = (lay.gt_class_ids, lay.gt_segment_ids, lay.gt_segment_metadata)
+    sp = ScanLayout(scan_dir).session(session_id)
+    sp.output_dir.mkdir(parents=True, exist_ok=True)
+    gt_files = (sp.output_gt_class_ids, sp.output_gt_segment_ids, sp.output_gt_segment_metadata)
 
-    if write_history and lay.gt_class_ids.exists():
-        snap_dir = lay.annotation_history_dir / _utc_timestamp()
+    if write_history and sp.output_gt_class_ids.exists():
+        snap_dir = sp.history_dir / _utc_timestamp()
         snap_dir.mkdir(parents=True, exist_ok=True)
         for src in gt_files:
             if src.exists():
                 shutil.copy2(src, snap_dir / src.name)
-        prune_history(lay.annotation_history_dir, keep=history_keep)
+        prune_history(sp.history_dir, keep=history_keep)
     elif write_history:
-        (lay.annotation_history_dir / _utc_timestamp()).mkdir(parents=True, exist_ok=True)
-        prune_history(lay.annotation_history_dir, keep=history_keep)
+        (sp.history_dir / _utc_timestamp()).mkdir(parents=True, exist_ok=True)
+        prune_history(sp.history_dir, keep=history_keep)
 
-    np.save(lay.gt_class_ids, class_ids.astype(np.int32))
-    np.save(lay.gt_segment_ids, instance_ids.astype(np.int32))
+    np.save(sp.output_gt_class_ids, class_ids.astype(np.int32))
+    np.save(sp.output_gt_segment_ids, instance_ids.astype(np.int32))
     meta = _build_segment_metadata(class_ids, instance_ids, positions,
                                    registry=registry)
-    if prelabel_fingerprint is not None:
-        meta["prelabel_fingerprint"] = prelabel_fingerprint
+    if preseg_fingerprint is not None:
+        meta["preseg_fingerprint"] = preseg_fingerprint
     if source_fingerprint is not None:
         meta["source_fingerprint"] = source_fingerprint
-    lay.gt_segment_metadata.write_text(json.dumps(meta, indent=2))
+    sp.output_gt_segment_metadata.write_text(json.dumps(meta, indent=2))
 
 
 def prune_history(history_dir: Path, *, keep: int = 10) -> None:
@@ -259,7 +240,28 @@ def prune_history(history_dir: Path, *, keep: int = 10) -> None:
         shutil.rmtree(p)
 
 
-SESSION_SCHEMA_VERSION = 1
+SESSION_SCHEMA_VERSION = 2
+
+
+def filter_tiny_segments(class_ids: np.ndarray, instance_ids: np.ndarray,
+                         min_points: int) -> tuple[np.ndarray, np.ndarray]:
+    """Reset (class_id, instance_id) to (-1, -1) for any point belonging to
+    an instance with fewer than ``min_points`` points. Returns fresh copies."""
+    inst = np.asarray(instance_ids, dtype=np.int32)
+    cls = np.asarray(class_ids, dtype=np.int8)
+    if inst.size == 0 or min_points <= 1:
+        return cls.copy(), inst.copy()
+    labeled = inst >= 0
+    if not labeled.any():
+        return cls.copy(), inst.copy()
+    ids, counts = np.unique(inst[labeled], return_counts=True)
+    drop_ids = ids[counts < int(min_points)]
+    if drop_ids.size == 0:
+        return cls.copy(), inst.copy()
+    drop_mask = np.isin(inst, drop_ids)
+    new_cls = cls.copy(); new_inst = inst.copy()
+    new_cls[drop_mask] = -1; new_inst[drop_mask] = -1
+    return new_cls, new_inst
 
 
 def save_session_aux(
@@ -268,12 +270,13 @@ def save_session_aux(
     *,
     class_ids: Optional[np.ndarray] = None,
     instance_ids: Optional[np.ndarray] = None,
-) -> None:
-    """Atomically persist editor session state.
+) -> dict:
+    """Atomically persist editor session state. Returns the payload as
+    written (callers use its ``saved_at`` stamp).
 
-    Order: working_*.npy first, then current.json (commit pointer). On a
-    crash between the npy renames and current.json rename, the next reload
-    sees the previous-consistent current.json and ignores any half-updated
+    Order: working_*.npy first, then session.json (commit pointer). On a
+    crash between the npy renames and session.json rename, the next reload
+    sees the previous-consistent session.json and ignores any half-updated
     working_*.
     """
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -286,12 +289,13 @@ def save_session_aux(
     payload = dict(aux)
     payload.setdefault("schema_version", SESSION_SCHEMA_VERSION)
     payload["saved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    atomic_write_json(session_dir / "current.json", payload)
+    atomic_write_json(session_dir / "session.json", payload)
+    return payload
 
 
 def load_session_aux(session_dir: Path) -> Optional[dict]:
-    """Read current.json or return None if absent/unreadable."""
-    p = session_dir / "current.json"
+    """Read session.json or return None if absent/unreadable."""
+    p = session_dir / "session.json"
     if not p.exists():
         return None
     try:
@@ -303,7 +307,7 @@ def load_session_aux(session_dir: Path) -> Optional[dict]:
 def load_working_arrays(
     session_dir: Path, n_points: int,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    """Return (class_ids int8, instance_ids int32) iff current.json exists
+    """Return (class_ids int8, instance_ids int32) iff session.json exists
     AND both working files are present AND shapes match n_points."""
     if load_session_aux(session_dir) is None:
         return None

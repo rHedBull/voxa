@@ -158,6 +158,78 @@ describe('decodeLoadResponse', () => {
   });
 });
 
+describe('decodeLoadResponse — session/preseg fields (scan-schema v2)', () => {
+  it('maps session_id and sessions when present', () => {
+    const j = {
+      ...makeFakeLoadResponse(),
+      session_id: 'abc-123',
+      sessions: [
+        { session_id: 'abc-123', name: 'main', preseg_id: null, created_at: 't', saved_at: null, dirty: false, has_output: true, corrupt: false },
+      ],
+    };
+    const out = decodeLoadResponse(j);
+    expect(out.sessionId).toBe('abc-123');
+    expect(out.sessions).toHaveLength(1);
+    expect(out.sessions[0].session_id).toBe('abc-123');
+    expect(out.sessions[0].name).toBe('main');
+  });
+
+  it('defaults sessionId to null when absent', () => {
+    const out = decodeLoadResponse(makeFakeLoadResponse());
+    expect(out.sessionId).toBeNull();
+  });
+
+  it('defaults sessions to [] when absent', () => {
+    const out = decodeLoadResponse(makeFakeLoadResponse());
+    expect(out.sessions).toEqual([]);
+  });
+
+  it('passes through a multi-session list unchanged', () => {
+    const sessions = [
+      { session_id: 's1', name: 'alpha', preseg_id: 'p1', created_at: 't1', saved_at: 't2', dirty: true, has_output: false, corrupt: false },
+      { session_id: 's2', name: 'beta',  preseg_id: null, created_at: 't3', saved_at: null,  dirty: false, has_output: true,  corrupt: false },
+    ];
+    const out = decodeLoadResponse({ ...makeFakeLoadResponse(), session_id: 's1', sessions });
+    expect(out.sessions).toHaveLength(2);
+    expect(out.sessions[1].name).toBe('beta');
+  });
+});
+
+describe('VoxaAPI.load — 409 detail attachment', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('attaches detail and status=409 on a pin-mismatch 409', async () => {
+    const detail = { error: 'session_pin_mismatch', diverged: 'preseg', session_id: 'sid1', message: 'preseg changed' };
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ detail }),
+    })));
+
+    let thrown = null;
+    try { await VoxaAPI.load('annotated/demo', {}); } catch (e) { thrown = e; }
+
+    expect(thrown).not.toBeNull();
+    expect(thrown.status).toBe(409);
+    expect(thrown.detail).toEqual(detail);
+    expect(thrown.message).toBe('preseg changed');
+  });
+
+  it('falls back to generic message when 409 body has no message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: { error: 'session_unreadable' } }),
+    })));
+
+    let thrown = null;
+    try { await VoxaAPI.load('annotated/demo', {}); } catch (e) { thrown = e; }
+
+    expect(thrown.status).toBe(409);
+    expect(thrown.message).toBe('load failed: 409');
+  });
+});
+
 describe('VoxaAPI.segApply wire shape', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 

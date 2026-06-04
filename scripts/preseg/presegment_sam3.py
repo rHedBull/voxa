@@ -7,9 +7,9 @@ SIGSEGVs in plane extraction):
 
 Loads the per-point SAM3 features cached by stage 1
 (``presegment_sam3_features.py`` → ``<scan_dir>/sam3/<scene>/sam3_features.npz``),
-runs RANSAC presegmentation with feature-aware splitting, and writes
-``<scan_dir>/prelabel/ransac_instance_ids.npy`` + ``ransac_segment_summary.json``
-(which voxa surfaces as a prelabel when ``labels/`` is empty).
+runs RANSAC presegmentation with feature-aware splitting, and publishes the
+result into ``<scan_dir>/prelabel/<preseg_id>/`` (scan-schema v2) so it can be
+picked when creating a labeling session.
 
 The features are loaded directly with numpy, so torch is not needed here.
 
@@ -40,7 +40,7 @@ from preseg.presegment_ransac import presegment  # noqa: E402
 from app.constants import MAX_LABEL_POINTS  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import classes_from_yaml, ply_vertex_count, prelabel_paths, write_prelabel  # noqa: E402
+from _common import classes_from_yaml, ply_vertex_count, publish_preseg  # noqa: E402
 
 # 0 = presegment the full cloud, bounded by a RAM-safe ceiling (see
 # _ram_safe_ceiling). A positive value forces a subsample of that size.
@@ -71,6 +71,8 @@ def main() -> int:
     ap.add_argument("scan_dir", type=Path, help="annotated/<scan> directory")
     ap.add_argument("--force", action="store_true",
                     help="overwrite existing prelabel files")
+    ap.add_argument("--preseg-id", default="sam3",
+                    help="Preseg identifier written to prelabel/<id>/ (default: sam3)")
     ap.add_argument("--preseg-points", type=int, default=DEFAULT_PRESEG_POINTS,
                     help="0 (default) = presegment the full cloud; a positive value "
                          "presegs a random subsample of that size then NN-propagates "
@@ -82,16 +84,17 @@ def main() -> int:
     scan_dir: Path = args.scan_dir.resolve()
     ply_path = scan_dir / "source" / "scan.ply"
     npz_path = scan_dir / "sam3" / scan_dir.name / "sam3_features.npz"
-    out_dir = scan_dir / "prelabel"
-    inst_path, summary_path = prelabel_paths(out_dir)
+
+    from scenes.scan_layout import ScanLayout
+    preseg_dir = ScanLayout(scan_dir).preseg_dir(args.preseg_id)
 
     if not npz_path.exists():
         print(f"ERROR: no cached SAM3 features at {npz_path}\n"
               f"       run stage 1 first: anaconda/bin/python "
               f"scripts/presegment_sam3_features.py {scan_dir}", file=sys.stderr)
         return 2
-    if (inst_path.exists() or summary_path.exists()) and not args.force:
-        print(f"ERROR: prelabel already exists in {out_dir} (use --force)", file=sys.stderr)
+    if preseg_dir.is_dir() and any(preseg_dir.iterdir()) and not args.force:
+        print(f"ERROR: prelabel already exists in {preseg_dir} (use --force)", file=sys.stderr)
         return 1
 
     # Cheap header check BEFORE the multi-GB load: a prelabel for a cloud over
@@ -152,10 +155,12 @@ def main() -> int:
             features=features, feature_seen=seen, log=print,
         )
 
-    write_prelabel(out_dir, inst, summary)
+    publish_preseg(scan_dir, args.preseg_id, inst, summary,
+                   generator="sam3",
+                   params={"preseg_points": args.preseg_points, "seed": args.seed})
     n_assigned = int((inst >= 0).sum())
-    print(f"\n[done] wrote {inst_path}")
-    print(f"[done] wrote {summary_path}")
+    print(f"\n[done] wrote {preseg_dir}/instance_ids.npy")
+    print(f"[done] wrote {preseg_dir}/segment_summary.json")
     print(f"[done] {n_assigned:,}/{n:,} assigned across {len(summary)} segments")
     return 0
 

@@ -31,21 +31,15 @@ def _write_ply(path: Path, n: int = 8, with_color: bool = True) -> None:
 
 
 def _build_annotated_root(tmp_path: Path) -> Path:
+    """scan-schema v2 annotated root. v2 load_annotated returns labels=None
+    (per-point labels live in sessions/, resolved by the load route), so this
+    only needs source/scan.ply + a v2 meta.json + classes.json."""
     root = tmp_path / "lidar"
     scan_dir = root / "annotated" / "demo"
     _write_ply(scan_dir / "source" / "scan.ply", n=8)
-    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
-    np.save(scan_dir / "labels" / "gt_class_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
-    np.save(scan_dir / "labels" / "gt_segment_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32))
-    (scan_dir / "labels" / "gt_segment_metadata.json").write_text(json.dumps({
-        "n_points": 8, "n_gt_segments": 4, "n_labeled_points": 6,
-        "class_map": {"pipe": 0, "tank": 1, "equipment": 2},
-        "segments": [],
-    }))
     (scan_dir / "meta.json").write_text(json.dumps({
         "scan_name": "demo", "n_points": 8, "coords": "world", "units": "meters",
+        "schema_version": "2.0", "source_mesh": "mesh.glb",
     }))
     (root / "classes.json").write_text(json.dumps({
         "version": 1, "unlabeled_id": -1,
@@ -56,18 +50,18 @@ def _build_annotated_root(tmp_path: Path) -> Path:
     return root
 
 
-def test_load_annotated_returns_aligned_label_arrays(tmp_path):
+def test_load_annotated_returns_cloud_without_labels(tmp_path):
+    """v2: load_annotated loads the cloud + palette but never labels — those
+    come from the active session, resolved in the load route."""
     root = _build_annotated_root(tmp_path)
     src = next(s for s in discover(tmp_path / "voxa-data", root) if s.tier == "annotated")
     out = load_annotated(src, root)
 
     assert len(out.pc) == 8
-    assert out.labels is not None
-    assert out.labels.class_ids.shape == (8,)
-    assert out.labels.instance_ids.shape == (8,)
-    assert out.labels.class_ids.dtype == np.int8
-    assert int(out.n_classes) == 3   # max label id + 1
-    assert int(out.n_instances) == 4
+    assert out.labels is None
+    assert out.n_classes == 0
+    assert out.n_instances == 0
+    assert out.is_from_prelabel is False
 
 
 def test_load_annotated_palette_resolves_labels_from_classes_json(tmp_path):
@@ -81,24 +75,6 @@ def test_load_annotated_palette_resolves_labels_from_classes_json(tmp_path):
     assert by_id[2] == "equipment"
     # All entries get a color even though classes.json doesn't carry one.
     assert all(p.color.startswith("#") for p in out.palette)
-
-
-def test_load_annotated_no_labels(tmp_path):
-    """factory_large-style stub: no .npy files and no prelabel/ → all-(-1) arrays."""
-    root = tmp_path / "lidar"
-    scan_dir = root / "annotated" / "stub"
-    _write_ply(scan_dir / "source" / "scan.ply", n=4)
-    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
-    (scan_dir / "meta.json").write_text(json.dumps({"scan_name": "stub", "n_points": 4}))
-
-    src = next(s for s in discover(tmp_path / "voxa-data", root)
-               if s.tier == "annotated" and s.name == "stub")
-    out = load_annotated(src, root)
-    assert out.labels is not None
-    assert int(out.labels.class_ids.min()) == -1 and int(out.labels.class_ids.max()) == -1
-    assert out.is_from_prelabel is False
-    assert out.n_classes == 0
-    assert out.n_instances == 0
 
 
 def _write_tiny_las(path: Path, n: int = 1000) -> None:
@@ -215,69 +191,3 @@ def test_load_laz_region_applies_recenter_offset(tmp_path):
     assert ((positions >= aabb_min) & (positions <= aabb_max)).all()
 
 
-def test_load_annotated_falls_through_to_prelabel(tmp_path):
-    """When labels/gt_*.npy is absent, prelabel/ becomes the editable seed."""
-    root = tmp_path / "lidar"
-    scan_dir = root / "annotated" / "demo"
-    _write_ply(scan_dir / "source" / "scan.ply", n=8)
-    pre = scan_dir / "prelabel"; pre.mkdir(parents=True)
-    np.save(pre / "ransac_instance_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
-    (pre / "ransac_segment_summary.json").write_text(json.dumps({
-        "segments": [{"id": 0, "class_id": 0},
-                     {"id": 1, "class_id": 1},
-                     {"id": 2, "class_id": 2}],
-    }))
-    (root / "classes.json").write_text(json.dumps({
-        "version": 1, "unlabeled_id": -1,
-        "classes": [{"id": 0, "name": "pipe"}, {"id": 1, "name": "tank"},
-                    {"id": 2, "name": "equipment"}],
-    }))
-
-    src = next(s for s in discover(tmp_path / "voxa-data", root) if s.tier == "annotated")
-    out = load_annotated(src, root)
-
-    assert out.is_from_prelabel is True
-    assert out.labels is not None
-    assert out.labels.instance_ids.shape == (8,)
-    assert int(out.labels.instance_ids[1]) == 0
-    assert int(out.labels.class_ids[1]) == 0
-
-
-def test_load_annotated_empty_when_no_labels_no_prelabel(tmp_path):
-    root = tmp_path / "lidar"
-    scan_dir = root / "annotated" / "demo"
-    _write_ply(scan_dir / "source" / "scan.ply", n=8)
-    src = next(s for s in discover(tmp_path / "voxa-data", root) if s.tier == "annotated")
-    out = load_annotated(src, root)
-    # No labels, no prelabel → labels arrays present but all -1, is_from_prelabel False.
-    assert out.is_from_prelabel is False
-    assert out.labels is not None
-    assert int(out.labels.class_ids.min()) == -1 and int(out.labels.class_ids.max()) == -1
-
-
-def test_load_annotated_treats_all_minus_one_labels_as_placeholder(tmp_path):
-    """All-(-1) gt arrays = "slot reserved, not labeled yet" — fall
-    through to the prelabel chain instead of treating them as authored GT."""
-    root = tmp_path / "lidar"
-    scan_dir = root / "annotated" / "stub"
-    _write_ply(scan_dir / "source" / "scan.ply", n=8)
-    (scan_dir / "labels").mkdir(parents=True, exist_ok=True)
-    np.save(scan_dir / "labels" / "gt_class_ids.npy", np.full(8, -1, dtype=np.int32))
-    np.save(scan_dir / "labels" / "gt_segment_ids.npy", np.full(8, -1, dtype=np.int32))
-
-    pre = scan_dir / "prelabel"; pre.mkdir(parents=True)
-    np.save(pre / "ransac_instance_ids.npy",
-            np.array([-1, 0, 0, 1, 1, 2, -1, 2], dtype=np.int32))
-    (pre / "ransac_segment_summary.json").write_text(json.dumps({
-        "segments": [{"id": 0, "class_id": 0},
-                     {"id": 1, "class_id": 1},
-                     {"id": 2, "class_id": 2}],
-    }))
-
-    src = next(s for s in discover(tmp_path / "voxa-data", root) if s.tier == "annotated")
-    out = load_annotated(src, root)
-    # Placeholder labels skipped → prelabel wins → is_from_prelabel=True.
-    assert out.is_from_prelabel is True
-    assert out.labels is not None
-    assert int(out.labels.instance_ids[1]) == 0

@@ -16,11 +16,13 @@ with the v1 endpoints and existing tests.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from scenes.scan_meta import is_z_up_from_meta
 from scenes.scan_layout import ScanLayout
 
 
@@ -36,7 +38,6 @@ class SceneSource:
     source_format: str           # 'ply' | 'glb' | 'laz'
     has_labels: bool
     has_intensity: bool
-    session_dir: Path            # per-scene dir for session/current.json
     n_points: Optional[int] = None
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -51,23 +52,6 @@ class SceneSource:
 
 def _voxa_legacy_root(data_dir: Path) -> Path:
     return data_dir / "scenes"
-
-
-def _session_dir_for(tier: str, name: str, scan_root: Optional[Path],
-                     data_dir: Optional[Path]) -> Path:
-    """Per-scene session dir for `session/current.json`.
-
-    annotated tier lives inside the SCHEMA scan dir; other tiers live under
-    `<data_dir>/sessions/<tier>__<name>/` (scene_id with '/' -> '__').
-    """
-    if tier == "annotated":
-        if scan_root is None:
-            raise ValueError("scene_registry: scan_root required for annotated tier")
-        return scan_root / "session"
-    if data_dir is None:
-        raise ValueError("scene_registry: data_dir required for non-annotated tier")
-    scene_id_safe = f"{tier}/{name}".replace("/", "__")
-    return data_dir / "sessions" / scene_id_safe
 
 
 def _discover_legacy(data_dir: Path) -> list[SceneSource]:
@@ -90,7 +74,6 @@ def _discover_legacy(data_dir: Path) -> list[SceneSource]:
             tier="legacy", name=sd.name,
             source_path=src, source_format=fmt,
             has_labels=False, has_intensity=False,
-            session_dir=_session_dir_for("legacy", sd.name, None, data_dir),
         ))
     return out
 
@@ -113,55 +96,47 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
             if not plys:
                 continue
             scan = plys[0]
-        labels_dir = lay.labels_dir
-        gt_class = lay.gt_class_ids
-        gt_seg = lay.gt_segment_ids
-        seg_meta = lay.gt_segment_metadata
         meta_path = lay.meta_json
+        # v2 requires a readable meta.json with schema_version 2.x. A scan with
+        # missing/unreadable/older meta is skipped (with a migration hint).
+        try:
+            with meta_path.open() as f:
+                meta = json.load(f)
+        except (OSError, ValueError, json.JSONDecodeError):
+            meta = None
+        if meta is None or not str(meta.get("schema_version") or "").startswith("2"):
+            logging.info(
+                "skipping %s: scan-schema %r != 2.x — run scripts/migrate_scan_v2.py",
+                sd.name, (meta or {}).get("schema_version") if meta else None)
+            continue
+
         mesh_path = lay.mesh_glb
-        has_labels = gt_class.exists() and gt_seg.exists()
-        n_points = None
-        # is_z_up: PLYs sampled from a glTF mesh inherit the GLB's Y-up
-        # frame, while PLYs sampled from a LAZ inherit the Z-up surveying
-        # frame. Default: assume Z-up unless the meta.json explicitly says
-        # otherwise (covers the unmaintained-meta case).
-        is_z_up = True
+        has_labels = lay.sessions_root.is_dir()
+        n_points = int(meta.get("n_points") or 0) or None
+        # is_z_up: PLYs sampled from a glTF mesh inherit the GLB's Y-up frame,
+        # while PLYs sampled from a LAZ inherit the Z-up surveying frame.
+        is_z_up = is_z_up_from_meta(meta)
+        # Resolve source LAZ (the cloud the PLY was subsampled from) so the
+        # viewer can pop full-density points back from the original file when a
+        # cuboid is selected. Path stored in meta is canonical archive-relative
+        # (`lidar/laz/<file>.laz`); fall back to basename lookup under
+        # `<lidar_root>/laz/` so we're robust to small path format drift.
         source_laz_path: Optional[str] = None
-        if meta_path.exists():
-            try:
-                with meta_path.open() as f:
-                    meta = json.load(f)
-                n_points = int(meta.get("n_points") or 0) or None
-                if meta.get("source_mesh") and not meta.get("source_laz"):
-                    is_z_up = False
-                # Resolve source LAZ (the cloud the PLY was subsampled from)
-                # so the viewer can pop full-density points back from the
-                # original file when a cuboid is selected. Path stored in
-                # meta is canonical archive-relative (`lidar/laz/<file>.laz`);
-                # fall back to basename lookup under `<lidar_root>/laz/` so
-                # we're robust to small path format drift.
-                src_laz_str = meta.get("source_laz")
-                if src_laz_str:
-                    cand1 = lidar_root / "laz" / Path(src_laz_str).name
-                    cand2 = lidar_root.parent / src_laz_str
-                    for cand in (cand1, cand2):
-                        if cand.exists():
-                            source_laz_path = str(cand)
-                            break
-            except (OSError, ValueError, json.JSONDecodeError):
-                n_points = None
+        src_laz_str = meta.get("source_laz")
+        if src_laz_str:
+            cand1 = lidar_root / "laz" / Path(src_laz_str).name
+            cand2 = lidar_root.parent / src_laz_str
+            for cand in (cand1, cand2):
+                if cand.exists():
+                    source_laz_path = str(cand)
+                    break
         out.append(SceneSource(
             tier="annotated", name=sd.name,
             source_path=scan, source_format="ply",
             has_labels=has_labels, has_intensity=False,
-            session_dir=_session_dir_for("annotated", sd.name, sd, None),
             n_points=n_points,
             extras={
-                "labels_dir": str(labels_dir),
-                "gt_class_path": str(gt_class) if gt_class.exists() else None,
-                "gt_segment_path": str(gt_seg) if gt_seg.exists() else None,
-                "segment_metadata_path": str(seg_meta) if seg_meta.exists() else None,
-                "meta_path": str(meta_path) if meta_path.exists() else None,
+                "meta_path": str(meta_path),
                 "scan_dir": str(sd),
                 "mesh_path": str(mesh_path) if mesh_path.exists() else None,
                 "is_z_up": is_z_up,
@@ -171,7 +146,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
     return out
 
 
-def _discover_decimated(lidar_root: Path, data_dir: Path) -> list[SceneSource]:
+def _discover_decimated(lidar_root: Path) -> list[SceneSource]:
     root = lidar_root / "ply_viewer"
     if not root.is_dir():
         return []
@@ -181,12 +156,11 @@ def _discover_decimated(lidar_root: Path, data_dir: Path) -> list[SceneSource]:
             tier="decimated", name=p.stem,
             source_path=p, source_format="ply",
             has_labels=False, has_intensity=False,
-            session_dir=_session_dir_for("decimated", p.stem, None, data_dir),
         ))
     return out
 
 
-def _discover_raw(lidar_root: Path, data_dir: Path) -> list[SceneSource]:
+def _discover_raw(lidar_root: Path) -> list[SceneSource]:
     root = lidar_root / "laz"
     if not root.is_dir():
         return []
@@ -197,7 +171,6 @@ def _discover_raw(lidar_root: Path, data_dir: Path) -> list[SceneSource]:
             tier="raw", name=p.stem,
             source_path=p, source_format="laz",
             has_labels=False, has_intensity=True,
-            session_dir=_session_dir_for("raw", p.stem, None, data_dir),
         ))
     return out
 
@@ -208,8 +181,8 @@ def discover(data_dir: Path, lidar_root: Optional[Path]) -> list[SceneSource]:
     scenes.extend(_discover_legacy(data_dir))
     if lidar_root and lidar_root.is_dir():
         scenes.extend(_discover_annotated(lidar_root))
-        scenes.extend(_discover_decimated(lidar_root, data_dir))
-        scenes.extend(_discover_raw(lidar_root, data_dir))
+        scenes.extend(_discover_decimated(lidar_root))
+        scenes.extend(_discover_raw(lidar_root))
     scenes.sort(key=lambda s: (TIER_ORDER.get(s.tier, 99), s.name.lower()))
     return scenes
 

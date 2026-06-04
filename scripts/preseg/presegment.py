@@ -1,31 +1,23 @@
-"""CLI: run RANSAC presegmentation and write `prelabel/ransac_*` for a scene.
+"""CLI: run RANSAC presegmentation and publish to prelabel/<preseg_id>/ (scan-schema v2).
 
-Voxa's ``segment_io.load_prelabel`` reads two files from
-``<scan>/prelabel/``:
-
-  - ``ransac_instance_ids.npy``      int32 (N,)
-  - ``ransac_segment_summary.json``  ``{"segments": [{id, class_id, label}]}``
-
-This script generates both from a source PLY using
-``presegment_ransac.presegment`` so any annotated scene gets a usable
-prelabel without depending on the external segmentation repo or trained
-merge model.
+Writes via ``preseg_store.register_preseg`` into
+``<scan>/prelabel/<preseg_id>/{instance_ids.npy, segment_summary.json, meta.json}``.
 
 Usage
 -----
 
-    python scripts/presegment.py <scene-id-or-scan-dir> [--output <dir>] [--force]
+    python scripts/preseg/presegment.py <scene-id-or-scan-dir> [--preseg-id ID] [--force]
 
 Examples:
 
-    # SCHEMA scan directory (writes prelabel/ next to source/scan.ply)
-    python scripts/presegment.py /lidar/annotated/munich_water_pump
+    # SCHEMA scan directory (writes to prelabel/ransac/)
+    python scripts/preseg/presegment.py /lidar/annotated/munich_water_pump
+
+    # Custom preseg id
+    python scripts/preseg/presegment.py /lidar/annotated/munich_water_pump --preseg-id ransac_v2
 
     # Voxa-registered scene id (resolved via VOXA_LIDAR_ROOT / data/scenes)
-    python scripts/presegment.py annotated/munich_water_pump
-
-    # Bare PLY → write to the same dir
-    python scripts/presegment.py /tmp/foo.ply --output /tmp/foo_prelabel
+    python scripts/preseg/presegment.py annotated/munich_water_pump
 """
 from __future__ import annotations
 
@@ -42,7 +34,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from preseg.presegment_ransac import presegment  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import classes_from_yaml, prelabel_paths, write_prelabel  # noqa: E402
+from _common import classes_from_yaml, publish_preseg  # noqa: E402
 
 
 def _resolve_scene(arg: str) -> tuple[Path, Path]:
@@ -86,21 +78,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scene", help="Scene id, scan dir, or .ply path")
-    ap.add_argument("--output", type=Path, default=None,
-                    help="Override output dir (default: <scan>/prelabel)")
     ap.add_argument("--config", type=Path, default=ROOT / "config" / "classes.yaml",
                     help="Voxa classes.yaml (used to assign class_id per segment)")
     ap.add_argument("--force", action="store_true",
                     help="Overwrite existing prelabel files")
     ap.add_argument("--quiet", action="store_true", help="Suppress progress logging")
+    ap.add_argument("--preseg-id", default="ransac",
+                    help="Preseg identifier written to prelabel/<id>/ (default: ransac)")
     args = ap.parse_args()
 
     scan_dir, ply_path = _resolve_scene(args.scene)
-    out_dir = args.output or (scan_dir / "prelabel")
 
-    inst_path, summary_path = prelabel_paths(out_dir)
-    if (inst_path.exists() or summary_path.exists()) and not args.force:
-        print(f"Refusing to overwrite existing prelabel in {out_dir} (use --force).",
+    from scenes.scan_layout import ScanLayout
+    preseg_dir = ScanLayout(scan_dir).preseg_dir(args.preseg_id)
+    if preseg_dir.is_dir() and any(preseg_dir.iterdir()) and not args.force:
+        print(f"Refusing to overwrite existing prelabel in {preseg_dir} (use --force).",
               file=sys.stderr)
         return 1
 
@@ -114,12 +106,13 @@ def main() -> int:
     log = (lambda *_: None) if args.quiet else print
     instance_ids, summary = presegment(xyz, class_map=class_map, log=log)
 
-    write_prelabel(out_dir, instance_ids, summary)
+    publish_preseg(scan_dir, args.preseg_id, instance_ids, summary,
+                   generator="ransac", params={})
 
     n_assigned = int((instance_ids >= 0).sum())
-    print(f"\nWrote {inst_path.name} ({len(instance_ids)} pts, "
-          f"{n_assigned} assigned, {len(summary)} segments)")
-    print(f"Wrote {summary_path.name}")
+    print(f"\nWrote prelabel/{args.preseg_id}/instance_ids.npy "
+          f"({len(instance_ids)} pts, {n_assigned} assigned, {len(summary)} segments)")
+    print(f"Wrote prelabel/{args.preseg_id}/segment_summary.json")
     return 0
 
 

@@ -9,6 +9,13 @@ import numpy as np
 from scenes.frame import Frame, frame_from_dict
 
 
+def is_z_up_from_meta(meta: dict) -> bool:
+    """Frame rule shared by scene discovery and the migration script: a scan
+    is Y-up only when sampled from a mesh and not from a LAZ; default Z-up."""
+    return not (meta.get("source_mesh") and not meta.get("source_laz"))
+
+
+
 def _legacy_frame(meta: dict) -> Frame:
     """Synthesize a frame for a pre-v1.3 meta.json.
 

@@ -1,3 +1,4 @@
+# NOTE: reads scan-schema v1.3 paths; scans migrated to v2 need this updated (see docs/scan-schema.md)
 """Derive cuboid GT + predictions from per-point label arrays for one scene.
 
 Compare mode wants cuboid annotations on disk under

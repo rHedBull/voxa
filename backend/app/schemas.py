@@ -25,7 +25,7 @@ class LoadRequest(BaseModel):
     name: str                              # tier-prefixed id or bare legacy name
     max_points: int = MAX_POINTS_DEFAULT
     want_full_labels: bool = False
-    prefer_prelabel: bool = False          # if True, skip GT and surface model recommendation
+    session_id: Optional[str] = None       # explicit session to resume; default = last-worked
 
 class LoadResponse(BaseModel):
     scene: str                             # tier-prefixed canonical id
@@ -65,6 +65,8 @@ class LoadResponse(BaseModel):
     seg_ids: Optional[str] = None            # b64 Int32 — segment ids (full-res, for voxel box overlay)
     seg_centers: Optional[str] = None        # b64 Float32 (N×3) — bbox centres
     seg_sizes: Optional[str] = None          # b64 Float32 (N×3) — bbox extents
+    session_id: Optional[str] = None         # active session resolved on load (annotated tier)
+    sessions: list[dict] = []                # SessionInfo dicts for the session picker
 
 class LoadRegionRequest(BaseModel):
     aabb_min: list[float]    # in loaded frame (post recenter)
@@ -166,11 +168,10 @@ class SegmentStateResponse(BaseModel):
     n_assigned: int = 0
     n_segments: int = 0
     n_points: Optional[int] = None
-    preseg_run_id: Optional[str] = None
+    preseg_id: Optional[str] = None
     preseg_fingerprint: Optional[str] = None
     source_fingerprint: Optional[str] = None
     is_from_prelabel: bool = False
-    stale_prelabel: bool = False
     full_class_ids: str = ""
     full_instance_ids: str = ""
     seg_ids: str = ""
@@ -179,6 +180,7 @@ class SegmentStateResponse(BaseModel):
     hull_vertices: str = ""
     hull_faces: str = ""
     hull_face_seg: str = ""
+    session_id: Optional[str] = None
 
 class _ObbBox(BaseModel):
     center: list[float]    # [cx, cy, cz] in recentered scene units
@@ -194,5 +196,12 @@ class ExportPlyRequest(BaseModel):
     # field; `boxes` is accepted as a legacy alias treated as all-keep.
     ops: list[_ObbOp] | None = None
     boxes: list[_ObbBox] | None = None
+
+class CreateSessionRequest(BaseModel):
+    name: str
+    preseg_id: Optional[str] = None
+
+class RenameSessionRequest(BaseModel):
+    name: str
 
 __all__ = [n for n in list(globals()) if not n.startswith("__")]
