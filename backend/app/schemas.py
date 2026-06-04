@@ -114,34 +114,13 @@ class ClassDef(BaseModel):
 class ConfigResponse(BaseModel):
     classes: list[ClassDef]
 
-class CompareRequest(BaseModel):
-    scene: str
-    iou_threshold: float = 0.3
+class SourceRef(BaseModel):
+    kind: str                 # "session" | "preseg"
+    id: str
 
-class DiffRow(BaseModel):
-    gt_id: Optional[str]
-    pred_id: Optional[str]
-    cls: str
-    status: str   # 'TP' | 'FP' | 'FN'
-    iou: Optional[float]
-    dpos: Optional[float]
-    dsize: Optional[float]
-    conf: Optional[float]
-
-class CompareResponse(BaseModel):
-    precision: float
-    recall: float
-    f1: float
-    iou_mean: float                 # mean IoU over the 1:1 TPs (conditional on match)
-    coverage_loose: float           # fraction of GT with best-pred IoU ≥ 0.1 (any pred)
-    coverage_strict: float          # fraction of GT with best-pred IoU ≥ 0.3 (any pred)
-    best_iou_mean: float            # mean of best-pred IoU per GT (overall recommendation tightness)
-    tp: int
-    fp: int
-    fn: int
-    rows: list[DiffRow]
-    gt: list[Cuboid]
-    pred: list[Cuboid]
+class ComparePointsRequest(BaseModel):
+    a: SourceRef
+    b: SourceRef
 
 LoadResponse.model_rebuild()
 

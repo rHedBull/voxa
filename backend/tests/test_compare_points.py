@@ -60,3 +60,91 @@ def test_confusion_pairs_sorted_and_truncated():
 def test_length_mismatch_raises():
     with pytest.raises(ValueError, match="length"):
         compare_class_arrays(np.zeros(3, dtype=np.int8), np.zeros(4, dtype=np.int8))
+
+
+# ---- route tests ----
+
+def _save_fixture_session(client):
+    """Give the fixture session a saved output via the real save route."""
+    r = client.put("/api/segment/save")
+    assert r.status_code == 200
+
+
+def test_compare_session_vs_preseg(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    _save_fixture_session(client)
+    # discover the session id from the sessions endpoint
+    sid = client.get("/api/scenes/annotated/demo/sessions").json()["sessions"][0]["session_id"]
+    r = client.post("/api/compare-points/annotated/demo", json={
+        "a": {"kind": "session", "id": sid},
+        "b": {"kind": "preseg", "id": "ransac"},
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["metrics"]["n_points"] == 8
+    assert 0.0 <= body["metrics"]["agreement_all"] <= 1.0
+    import base64, numpy as np
+    a = np.frombuffer(base64.b64decode(body["a_class_ids"]), dtype=np.int8)
+    assert a.shape == (8,)
+    assert isinstance(body["palette"], list)
+
+
+def test_compare_session_vs_session(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    _save_fixture_session(client)
+    sid = client.get("/api/scenes/annotated/demo/sessions").json()["sessions"][0]["session_id"]
+    import time; time.sleep(1.1)  # session ids are second-resolution
+    r = client.post("/api/scenes/annotated/demo/sessions",
+                    json={"name": "b side", "preseg_id": "ransac"})
+    assert r.status_code == 200
+    sid_b = r.json()["session_id"]
+    # activate + save the new session so it has output
+    assert client.post("/api/load", json={"name": "annotated/demo",
+                                          "session_id": sid_b}).status_code == 200
+    assert client.put("/api/segment/save").status_code == 200
+    r = client.post("/api/compare-points/annotated/demo", json={
+        "a": {"kind": "session", "id": sid},
+        "b": {"kind": "session", "id": sid_b},
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["metrics"]["agreement"] is not None
+
+
+def test_compare_no_output_409(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    sid = client.get("/api/scenes/annotated/demo/sessions").json()["sessions"][0]["session_id"]
+    r = client.post("/api/compare-points/annotated/demo", json={
+        "a": {"kind": "session", "id": sid},
+        "b": {"kind": "preseg", "id": "ransac"},
+    })
+    assert r.status_code == 409
+    assert "no saved output" in r.json()["detail"]
+
+
+def test_compare_unknown_ids_404(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    _save_fixture_session(client)
+    sid = client.get("/api/scenes/annotated/demo/sessions").json()["sessions"][0]["session_id"]
+    for body in ({"a": {"kind": "session", "id": "nope"}, "b": {"kind": "preseg", "id": "ransac"}},
+                 {"a": {"kind": "session", "id": sid}, "b": {"kind": "preseg", "id": "nope"}}):
+        assert client.post("/api/compare-points/annotated/demo", json=body).status_code == 404
+
+
+def test_compare_length_mismatch_409(client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
+    client = client_with_loaded_annotated_scene
+    _save_fixture_session(client)
+    sid = client.get("/api/scenes/annotated/demo/sessions").json()["sessions"][0]["session_id"]
+    # truncate the saved output to force a length mismatch vs the preseg
+    import numpy as np
+    p = scan_dir_for_loaded_scene / "sessions" / sid / "output" / "gt_class_ids.npy"
+    np.save(p, np.load(p)[:5])
+    r = client.post("/api/compare-points/annotated/demo", json={
+        "a": {"kind": "session", "id": sid},
+        "b": {"kind": "preseg", "id": "ransac"},
+    })
+    assert r.status_code == 409
+    assert "different clouds" in r.json()["detail"]
+
+
+def test_cuboid_compare_endpoint_is_gone(client):
+    assert client.post("/api/compare/legacy/foo").status_code in (404, 405)

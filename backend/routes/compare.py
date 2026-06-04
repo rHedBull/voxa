@@ -38,91 +38,58 @@ def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest):
         json.dump(body, f, indent=2)
     return {"saved": str(p), "count": len(doc.instances)}
 
-@router.post("/api/compare/{scene:path}", response_model=CompareResponse)
-def compare(scene: str, req: CompareRequest | None = None):
-    iou_thr = (req.iou_threshold if req else 0.3)
-    gt_doc = get_annotation(scene, "gt")
-    pr_doc = get_annotation(scene, "pred")
-    gt = gt_doc.instances
-    pr = pr_doc.instances
+@router.post("/api/compare-points/{tier}/{name}")
+def compare_points(tier: str, name: str, req: ComparePointsRequest):
+    """Compare two finished per-point labelings of one scan. Reads both
+    sources from disk — no dependency on the in-memory loaded scene."""
+    from labeling.compare_points import compare_class_arrays
+    from scenes.scan_layout import ScanLayout
 
-    matched_pred: set[str] = set()
-    matched_gt: set[str] = set()
-    rows: list[DiffRow] = []
-    ious: list[float] = []
+    src = _resolve(f"{tier}/{name}")
+    if src.tier != "annotated":
+        raise HTTPException(409, "compare-points needs an annotated/<scene> scan")
+    lay = ScanLayout(Path(src.extras["scan_dir"]))
 
-    # Greedy match by best IoU within same class.
-    for g in gt:
-        best, best_iou = None, 0.0
-        for p in pr:
-            if p.cls != g.cls or p.id in matched_pred:
-                continue
-            iou = _iou_aabb(g, p)
-            if iou > best_iou:
-                best, best_iou = p, iou
-        if best is not None and best_iou >= iou_thr:
-            matched_pred.add(best.id)
-            matched_gt.add(g.id)
-            ious.append(best_iou)
-            dpos = float(np.linalg.norm(np.array(g.center) - np.array(best.center)))
-            ds = (np.array(best.size) - np.array(g.size)).sum() / max(np.array(g.size).sum(), 1e-6)
-            rows.append(DiffRow(
-                gt_id=g.id, pred_id=best.id, cls=g.cls, status="TP",
-                iou=round(best_iou, 3), dpos=round(dpos, 3),
-                dsize=round(float(ds), 3), conf=best.conf,
-            ))
-        else:
-            rows.append(DiffRow(
-                gt_id=g.id, pred_id=None, cls=g.cls, status="FN",
-                iou=None, dpos=None, dsize=None, conf=None,
-            ))
+    def load_source(ref: SourceRef, expected_n):
+        if ref.kind == "session":
+            sp = lay.session(ref.id)
+            if not sp.dir.is_dir():
+                raise HTTPException(404, f"session {ref.id!r} not found")
+            if not sp.output_gt_class_ids.exists():
+                raise HTTPException(409, (
+                    f"session {ref.id!r} has no saved output — save it "
+                    f"(Ctrl+S) before comparing"))
+            return np.load(sp.output_gt_class_ids).astype(np.int32)
+        if ref.kind == "preseg":
+            from preseg.preseg_store import load_preseg
+            try:
+                # Always load preseg against the cloud's declared n_points so a
+                # corrupt/truncated session A doesn't cause a shape mismatch here
+                # instead of in the cross-source check below.
+                class_ids, _ = load_preseg(lay, ref.id, n_points=int(src.n_points or 0))
+            except FileNotFoundError as e:
+                raise HTTPException(404, str(e))
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            return class_ids.astype(np.int32)
+        raise HTTPException(400, f"unknown source kind {ref.kind!r}")
 
-    for p in pr:
-        if p.id not in matched_pred:
-            rows.append(DiffRow(
-                gt_id=None, pred_id=p.id, cls=p.cls, status="FP",
-                iou=None, dpos=None, dsize=None, conf=p.conf,
-            ))
+    a = load_source(req.a, src.n_points)
+    b = load_source(req.b, len(a))
+    if a.shape != b.shape:
+        raise HTTPException(409, (
+            f"sources cover different clouds: a has {a.shape[0]} points, "
+            f"b has {b.shape[0]}"))
 
-    tp = sum(1 for r in rows if r.status == "TP")
-    fp = sum(1 for r in rows if r.status == "FP")
-    fn = sum(1 for r in rows if r.status == "FN")
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
-    iou_mean = float(np.mean(ious)) if ious else 0.0
-
-    # Coverage / best-IoU: for each GT, best IoU against any pred regardless
-    # of greedy 1:1 matching. Better fits the aided-labeling question of
-    # "did the model find a usable starting point for this object?"
-    best_per_gt: list[float] = []
-    for g in gt:
-        best = 0.0
-        for p in pr:
-            if p.cls != g.cls:
-                continue
-            iou = _iou_aabb(g, p)
-            if iou > best:
-                best = iou
-        best_per_gt.append(best)
-    if best_per_gt:
-        coverage_loose = sum(1 for v in best_per_gt if v >= 0.1) / len(best_per_gt)
-        coverage_strict = sum(1 for v in best_per_gt if v >= 0.3) / len(best_per_gt)
-        best_iou_mean = float(np.mean(best_per_gt))
-    else:
-        coverage_loose = coverage_strict = best_iou_mean = 0.0
-
-    return CompareResponse(
-        precision=round(precision, 3),
-        recall=round(recall, 3),
-        f1=round(f1, 3),
-        iou_mean=round(iou_mean, 3),
-        coverage_loose=round(coverage_loose, 3),
-        coverage_strict=round(coverage_strict, 3),
-        best_iou_mean=round(best_iou_mean, 3),
-        tp=tp, fp=fp, fn=fn,
-        rows=rows, gt=gt, pred=pr,
-    )
+    from scenes.lidar_io import build_class_palette
+    metrics = compare_class_arrays(a, b)
+    palette = build_class_palette(constants.LIDAR_ROOT)
+    return {
+        "metrics": metrics,
+        "a_class_ids": _b64(a.astype(np.int8)),
+        "b_class_ids": _b64(b.astype(np.int8)),
+        "palette": [p.__dict__ for p in palette],
+    }
 
 @router.post("/api/auto-fit", response_model=Cuboid)
 def auto_fit(req: AutoFitRequest):
