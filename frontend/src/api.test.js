@@ -246,6 +246,48 @@ describe('decodeCompareResponse', () => {
   });
 });
 
+describe('centerline API', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('centerlineApply posts snake_case payload and decodes the delta', async () => {
+    let capturedUrl, capturedOpts;
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      capturedUrl = url;
+      capturedOpts = opts;
+      return { ok: true, json: async () => ({ op: 'reassign', n_affected: 0, dirty: true }) };
+    }));
+    await VoxaAPI.centerlineApply({
+      paths: [{ points: [[0, 0, 0], [1, 0, 0]], radius: 0.15, smooth: false }],
+      targetClass: 'pipe', targetInst: -1, mergedFrom: [4],
+    });
+    expect(capturedUrl).toBe('/api/segment/centerline-apply');
+    const body = JSON.parse(capturedOpts.body);
+    expect(body.target_class).toBe('pipe');
+    expect(body.target_inst).toBe(-1);
+    expect(body.merged_from).toEqual([4]);
+    expect(body.paths[0].radius).toBe(0.15);
+  });
+
+  it('centerlineApply surfaces instance_id on the decoded response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ op: 'reassign', n_affected: 3, dirty: true,
+                           new_instance_id: 9, instance_id: 9 }),
+    })));
+    const r = await VoxaAPI.centerlineApply({ paths: [], targetClass: 0 });
+    expect(r.instanceId).toBe(9);
+    expect(r.nAffected).toBe(3);
+  });
+
+  it('getCenterlines returns the stored paths', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, json: async () => ({ paths: [{ instance_id: 7 }] }),
+    })));
+    const j = await VoxaAPI.getCenterlines();
+    expect(j.paths).toHaveLength(1);
+  });
+});
+
 describe('VoxaAPI.segApply wire shape', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
