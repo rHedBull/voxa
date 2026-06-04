@@ -99,7 +99,10 @@ leave holes at full resolution).
   target_inst, target_class)` — undo stack, delta serialization, dirty state,
   and Ctrl+S save work unchanged.
 - Response: same shape as the existing `segment_apply` response (delta with
-  `n_affected`, `after_class`, `after_instance`, `new_instance_id`).
+  `n_affected`, `after_class`, `after_instance`, `new_instance_id`). Note:
+  like `_serialize_apply` today, `after_class`/`after_instance` are absent
+  when `n_affected` is 0 — the frontend empty-tube handler must not assume
+  those keys exist.
 
 ### Persistence
 
@@ -119,7 +122,11 @@ Confirmed paths are stored in `sessions/<id>/centerlines.json`:
 }
 ```
 
-- Written by the backend on confirm (append) and saved with the session.
+- Written by the backend on confirm and saved with the session. Stored paths
+  are keyed by `instance_id`: a confirm that targets an existing instance ID
+  (re-confirm after editing a path) **replaces** that instance's stored
+  paths; a confirm that allocates a new instance ID appends. This keeps
+  re-editing a pipe from duplicating its stored paths.
 - Loaded when the Draw sub-mode opens, so previously confirmed paths render
   and a pipe's path/radius can be re-edited and re-applied (re-confirm =
   another apply with the same instance ID).
