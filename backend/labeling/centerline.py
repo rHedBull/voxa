@@ -43,7 +43,28 @@ def tube_indices(positions: np.ndarray, paths: list[dict]) -> np.ndarray:
 
 
 def sample_path(path: dict) -> np.ndarray:
-    return np.asarray(path["points"], dtype=np.float32)
+    """Control points → polyline chords. Straight paths pass through
+    unchanged; smooth paths get Catmull-Rom sampling with target step
+    ≈ radius/2 (worst-case chord stays < radius near apexes), so the tube
+    test on chords can't visibly cut corners."""
+    pts = np.asarray(path["points"], dtype=np.float32)
+    if not path.get("smooth") or len(pts) < 3:
+        return pts
+    step = max(float(path["radius"]) / 2.0, 1e-4)
+    # Endpoint-duplicated control polygon so the curve spans all controls.
+    ctrl = np.vstack([pts[0], pts, pts[-1]])
+    out = [pts[0]]
+    for i in range(1, len(ctrl) - 2):
+        p0, p1, p2, p3 = ctrl[i - 1], ctrl[i], ctrl[i + 1], ctrl[i + 2]
+        seg_len = float(np.linalg.norm(p2 - p1))
+        n = max(int(np.ceil(seg_len / step)), 1)
+        for t in np.linspace(0, 1, n + 1)[1:]:
+            t2, t3 = t * t, t * t * t
+            v = (0.5 * ((2 * p1) + (-p0 + p2) * t
+                 + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+                 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3))
+            out.append(v.astype(np.float32))
+    return np.asarray(out, dtype=np.float32)
 
 
 def load_centerlines(session_dir: Path) -> dict:
