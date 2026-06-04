@@ -97,6 +97,30 @@ The prelabel is only a **seed** (refined at full resolution in Label mode), so t
 coarser propagated boundaries are acceptable when you take the cheaper path. See
 [point-cloud-sizing](point-cloud-sizing.md) for how this fits the other caps.
 
+## Variant: text-query preseg (one image mask = one segment)
+
+`scripts/preseg/presegment_sam3_query.py` is a single-stage alternative that skips
+RANSAC entirely: it queries SAM3 with a text prompt (default `pipe`) on every
+render frame and projects each per-image **instance** mask onto the cloud. There
+is **no cross-view fusion** — every 2D mask becomes its own 3D segment, and when a
+point is hit from several frames the **latest frame wins** (runs oldest → newest,
+frames in manifest order; within a frame, overlapping masks resolve by score).
+`--conflict first` inverts this: the first mask keeps the point, later masks only
+claim still-unassigned points (less fragmentation, earlier views dominate).
+Points never hit stay unassigned (-1), so coverage is bounded by render coverage.
+
+No Open3D involved, so the whole thing runs under **anaconda** (torch + sam3):
+
+```bash
+/home/hendrik/anaconda3/bin/python scripts/preseg/presegment_sam3_query.py "$SCAN" \
+  --runs <substring>        # optional: restrict to matching render runs
+# → prelabel/sam3_query_<query>/ (scan-schema v2, pickable as a session preseg)
+```
+
+All segments get the queried class from `classes.yaml`; `--min-points` (default
+20) drops speck masks; `--query "pipe|tube"` unions synonym prompts. The same
+registration health-check as stage 1 gates the run (`verify_scan_registration`).
+
 ## In-app alternative (and why we don't use it here)
 
 `POST /api/segment/presegment` (`mode="ransac"` + `sam3` params) runs the same
