@@ -1597,9 +1597,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
      * + cloud.subsampleIdx — the viewer just blits matching positions
      * into the yellow overlay buffer.
      */
-    setSelectedSegmentMask(mask) {
+    setSelectedSegmentMask(mask, color = 0xfacc15) {
       const s = stateRef.current;
       if (!s.segSelectionGeom || !s.pointsGeom) return;
+      s.segSelectionPoints.material.color.setHex(color);
       const posAttr = s.pointsGeom.getAttribute('position');
       const outAttr = s.segSelectionGeom.getAttribute('position');
       if (!posAttr || !outAttr) return;
