@@ -78,7 +78,6 @@ function MainApp() {
   const [loadError, setLoadError] = useStateApp(null);
   const [classes, setClasses] = useStateApp([]);
   const [gtInstances, setGtInstances] = useStateApp([]);
-  const [predInstances, setPredInstances] = useStateApp([]);
   const [savedAt, setSavedAt] = useStateApp(null);
   const [cuboidDirty, setCuboidDirty] = useStateApp(false);
   const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
@@ -321,8 +320,6 @@ function MainApp() {
       }
       setLoading(false);
     });
-    VoxaAPI.getAnnotation(activeScene, 'pred')
-      .then((d) => !cancel && setPredInstances(d.instances || []));
     return () => { cancel = true; };
     // activeSessionId is in the deps so an explicit session pick (which sets
     // the ref and bumps activeSessionId) re-runs this effect and reloads.
