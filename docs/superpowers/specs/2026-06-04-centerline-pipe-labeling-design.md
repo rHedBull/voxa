@@ -46,7 +46,18 @@ Ctrl+click) → **staged** (ended with Esc; editable, not yet labeled) →
 6. **Merge:** click path A, **Shift+click** path B (and C…) to build a
    multi-selection, then press **M** to merge them into one group — on apply
    they share one instance ID (each path keeps its own radius). This handles
-   pipes drawn in several runs (occlusion, junctions).
+   pipes drawn in several runs (occlusion, junctions). An instance is
+   permanently allowed to consist of multiple paths:
+   - Merging a staged path into a group containing an **applied** path
+     adopts that instance's existing ID on the next apply.
+   - Selecting any path of a multi-path instance and pressing Enter
+     re-applies **all** paths of that instance (required for consistency
+     with replace-by-`instance_id` persistence — applying a subset would
+     silently drop the sibling paths from `centerlines.json`).
+   - Merging two already-applied instances re-applies the union under one
+     instance ID; the other instance's stored entry is removed. Its points
+     are re-captured by the union apply (tubes unchanged), so no orphaned
+     labels are left behind.
 7. **Enter** applies the selected path(s) / merged group: backend extracts
    all full-resolution points within the tube(s) and assigns class +
    instance through the existing reassign flow. As a shortcut, Enter while
