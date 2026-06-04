@@ -41,7 +41,7 @@ def tube_indices(positions: np.ndarray, paths: list[dict]) -> np.ndarray:
     positions = np.asarray(positions, dtype=np.float32)
     mask = np.zeros(positions.shape[0], dtype=bool)
     for p in paths:
-        pts = np.asarray(sample_path(p), dtype=np.float32)
+        pts = sample_path(p)            # float32 ndarray by contract
         radius = float(p["radius"])
         r2 = radius ** 2
         # AABB of sampled path points expanded by radius.
@@ -116,6 +116,6 @@ def update_centerlines(session_dir: Path, instance_id: int, class_id: int,
             "instance_id": int(instance_id),
         })
     doc = {"paths": kept}
-    f = Path(session_dir) / CENTERLINES_FILENAME
-    f.write_text(json.dumps(doc, indent=1))
+    from labeling.segment_io import atomic_write_json
+    atomic_write_json(Path(session_dir) / CENTERLINES_FILENAME, doc)
     return doc
