@@ -934,6 +934,11 @@ kbd {
   font-size: 11px; color: var(--text-dim, #8a8f99); text-align: center;
 }
 
+/* Presegments panel: last child of .side-l — grow to the bottom and scroll
+   the list internally instead of capping it at a fixed height. */
+.preseg-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.preseg-panel .inst-list { flex: 1; min-height: 0; overflow-y: auto; }
+
 /* Spinner shown in the presegment popover while a request is in flight. */
 .preseg-spinner {
   display: inline-block;
