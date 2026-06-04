@@ -49,6 +49,8 @@ export function addPoint(state, xyz, classId) {
   return { ...s, paths: [...s.paths, path], active: key, selection: new Set() };
 }
 
+// No-op if pathKey is unknown — pointer drags can race a delete, and a
+// missed move is harmless (unlike the structural ops below, which throw).
 export function movePoint(state, pathKey, pointIdx, xyz) {
   const paths = state.paths.map((p) => {
     if (p.key !== pathKey) return p;
@@ -59,9 +61,18 @@ export function movePoint(state, pathKey, pointIdx, xyz) {
   return { ...state, paths };
 }
 
+// Looks up a path by key, failing loudly on inconsistent state — a missing
+// key here means a wiring bug upstream, and a clear throw beats a cryptic
+// TypeError deep in a render.
+function mustFind(state, key) {
+  const p = state.paths.find((x) => x.key === key);
+  if (!p) throw new Error(`draw-paths: no path with key ${key}`);
+  return p;
+}
+
 export function removeLastPoint(state) {
   if (!state.active) return state;
-  const p = state.paths.find((x) => x.key === state.active);
+  const p = mustFind(state, state.active);
   if (p.points.length <= 1) {
     return {
       ...state,
@@ -81,7 +92,7 @@ function popLastPoint(state, p) {
 
 export function endActive(state) {
   if (!state.active) return state;
-  const p = state.paths.find((x) => x.key === state.active);
+  const p = mustFind(state, state.active);
   if (p.points.length < 2) {
     // Can't confirm < 2 points (spec: Error handling) — discard.
     return { ...state, paths: state.paths.filter((x) => x.key !== p.key), active: null };
@@ -186,13 +197,13 @@ export function buildApplyCalls(state) {
     if (state.selection.has(p.key) && !groups.includes(p.instKey)) groups.push(p.instKey);
   }
   return groups.map((g) => {
-    const paths = state.paths
-      .filter((p) => p.instKey === g)
-      .map((p) => ({ points: p.points, radius: p.radius, smooth: p.smooth }));
+    const members = state.paths.filter((p) => p.instKey === g);
     return {
       instKey: g,
-      paths,
-      classId: state.paths.find((p) => p.instKey === g).classId,
+      paths: members.map((p) => ({ points: p.points, radius: p.radius, smooth: p.smooth })),
+      // One class per instance — mergeSelection harmonizes classIds, so any
+      // member's classId is the group's.
+      classId: members[0].classId,
       targetInst: state.instanceIds[g] ?? -1,
       mergedFrom: state.pendingMergedFrom[g] ?? [],
     };
