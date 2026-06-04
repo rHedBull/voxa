@@ -8,12 +8,17 @@ export function formatSavedAt(s) {
   return s ? s.slice(0, 16).replace('T', ' ') : '';
 }
 
-export default function SessionPicker({ sessions, activeSessionId, presegs, onSelect, onCreate, onRename, onDelete }) {
-  const [creating, setCreating] = useStateSP(sessions.length === 0);
+export default function SessionPicker({ sessions, activeSessionId, presegs, loading, onSelect, onCreate, onRename, onDelete }) {
+  const [creating, setCreating] = useStateSP(false);
   const [newName, setNewName] = useStateSP('');
   const [newPreseg, setNewPreseg] = useStateSP('');
   const [renamingId, setRenamingId] = useStateSP(null);
   const [renameText, setRenameText] = useStateSP('');
+  // Derived, not mount-seeded: the create form auto-shows only while the scan
+  // truly has no sessions, and collapses to "+ New session" otherwise (the
+  // old mount-time seed left it permanently open when sessions arrived a
+  // moment after mount).
+  const showForm = creating || sessions.length === 0;
 
   const submitCreate = () => {
     const name = newName.trim();
@@ -37,7 +42,7 @@ export default function SessionPicker({ sessions, activeSessionId, presegs, onSe
         <span className="badge-soft">{sessions.length}</span>
       </div>
 
-      {sessions.length === 0 && !creating && (
+      {sessions.length === 0 && (
         <div className="sugg-empty">No sessions yet — create one to start labeling</div>
       )}
 
@@ -70,6 +75,12 @@ export default function SessionPicker({ sessions, activeSessionId, presegs, onSe
                   </em>
                 </div>
               )}
+              {isActive && !isRenaming && (
+                <span className={'session-open-tag' + (loading ? ' loading' : '')}
+                  title={loading ? 'Loading session…' : 'This session is open'}>
+                  {loading ? 'loading…' : 'open'}
+                </span>
+              )}
               {s.dirty && !s.corrupt && (
                 <span title="Unsaved changes" style={{ color: 'oklch(0.75 0.18 60)' }}>●</span>
               )}
@@ -97,7 +108,7 @@ export default function SessionPicker({ sessions, activeSessionId, presegs, onSe
         })}
       </div>
 
-      {creating ? (
+      {showForm ? (
         <div className="inst-edit-panel">
           <div className="ins-row">
             <label>Name</label>

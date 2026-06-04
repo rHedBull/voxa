@@ -808,6 +808,14 @@ kbd {
   font-family: 'JetBrains Mono', monospace;
 }
 .pin-error-banner .ghost-btn { width: auto; flex: 0 0 auto; }
+.session-picker .session-open-tag {
+  font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent); border: 1px solid var(--accent);
+  border-radius: 999px; padding: 1px 7px; flex: 0 0 auto;
+}
+.session-picker .session-open-tag.loading { animation: session-open-pulse 1s ease-in-out infinite; }
+@keyframes session-open-pulse { 50% { opacity: 0.35; } }
+
 .pin-error-banner .dot {
   width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
 }
