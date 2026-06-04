@@ -77,17 +77,23 @@ Pure numpy, no FastAPI, no `_state`:
 `POST /api/compare-points/{tier}/{name}` with body
 `{"a": {"kind", "id"}, "b": {"kind", "id"}}`:
 
-1. Resolve the scene (`_resolve`); 409 unless tier == `annotated`.
+1. Resolve the scene (`_resolve(f"{tier}/{name}")` — the existing
+   `load.py` pattern); 409 unless tier == `annotated`.
 2. Load each source's class array from disk (helper `_load_source(layout,
-   kind, id)`): session output (404 unknown session, 409 no output) or
-   preseg via `preseg_store.load_preseg` (404/400 per its errors). No
-   dependency on the in-memory loaded scene.
+   kind, id, expected_n)`): session output (404 unknown session, 409 no
+   output) or preseg via `preseg_store.load_preseg` (404/400 per its
+   errors). No dependency on the in-memory loaded scene, and the cloud is
+   never loaded. `expected_n` (which `load_preseg` requires for its shape
+   check) is `meta.json::n_points` when present, else the length of the
+   first-loaded source's array — the invariant that actually matters is
+   the cross-source one below.
 3. Length mismatch between a and b → 409 with both lengths in the message.
 4. Respond: `{metrics: <compare_class_arrays result>, a_class_ids: <b64
    int8>, b_class_ids: <b64 int8>, palette: [...]}` — class arrays cast to
-   int8 for the wire (same convention as `LoadResponse.class_ids`; class
-   ids are validated < 127 at save/registration already), palette built the
-   same way the load route builds it (classes.json + fallback colors).
+   int8 for the wire (same convention as `LoadResponse.class_ids`; labeled
+   class ids are validated against `classes.json` at save, and
+   registration enforces the int8 range), palette built the same way the
+   load route builds it (classes.json + fallback colors).
 
 ### Deletions
 
