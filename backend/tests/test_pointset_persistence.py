@@ -40,30 +40,3 @@ def test_pointset_round_trip_preserves_kind_and_segid(client):
     assert cb["center"] == [1.0, 2.0, 3.0]
 
 
-def test_compare_skips_pointset_instances(client):
-    """Pointsets in GT shouldn't crash compare (no center/size)."""
-    scene = "ps-compare"
-    pointset_gt = {
-        "id": "g1", "cls": "pipe", "label": "P", "color": "#22c55e",
-        "kind": "pointset", "segId": 7, "source": "preseg",
-    }
-    cuboid_pred = {
-        "id": "p1", "cls": "pipe", "label": "P", "color": "#22c55e",
-        "center": [0.0, 0.0, 0.0], "size": [1.0, 1.0, 1.0],
-        "rotation": [0.0, 0.0, 0.0], "conf": 1.0, "source": "manual",
-    }
-    client.put(
-        "/api/annotations/gt/" + scene,
-        json={"scene": scene, "kind": "gt", "instances": [pointset_gt], "meta": {}},
-    )
-    client.put(
-        "/api/annotations/pred/" + scene,
-        json={"scene": scene, "kind": "pred", "instances": [cuboid_pred], "meta": {}},
-    )
-    r = client.post(f"/api/compare/{scene}", json={"scene": scene, "iou_threshold": 0.3})
-    assert r.status_code == 200
-    body = r.json()
-    # Pointset GT can't IoU-match a cuboid pred → 1 FN, 1 FP, 0 TP.
-    assert body["tp"] == 0
-    assert body["fn"] == 1
-    assert body["fp"] == 1

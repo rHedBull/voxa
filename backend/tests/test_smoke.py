@@ -91,51 +91,6 @@ def test_annotations_round_trip_tier_prefixed_scene(client):
     assert body["scene"] == scene
 
 
-def test_compare_perfect_match(client):
-    scene = "cmp-perfect"
-    inst = _cuboid("inst-gt-1")
-    pred = _cuboid("inst-pr-1")  # same center/size/cls → IoU = 1.0
-
-    client.put(
-        f"/api/annotations/gt/{scene}",
-        json={"scene": scene, "kind": "gt", "instances": [inst], "meta": {}},
-    )
-    client.put(
-        f"/api/annotations/pred/{scene}",
-        json={"scene": scene, "kind": "pred", "instances": [pred], "meta": {}},
-    )
-
-    r = client.post(f"/api/compare/{scene}", json={"scene": scene, "iou_threshold": 0.3})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["tp"] == 1
-    assert body["fp"] == 0
-    assert body["fn"] == 0
-    assert body["precision"] == 1.0
-    assert body["recall"] == 1.0
-
-
-def test_compare_disjoint_is_fp_fn(client):
-    scene = "cmp-disjoint"
-    gt = _cuboid("inst-gt-1", center=(0, 0, 0))
-    pr = _cuboid("inst-pr-1", center=(10, 10, 10))  # no overlap
-
-    client.put(
-        f"/api/annotations/gt/{scene}",
-        json={"scene": scene, "kind": "gt", "instances": [gt], "meta": {}},
-    )
-    client.put(
-        f"/api/annotations/pred/{scene}",
-        json={"scene": scene, "kind": "pred", "instances": [pr], "meta": {}},
-    )
-
-    r = client.post(f"/api/compare/{scene}", json={"scene": scene, "iou_threshold": 0.3})
-    body = r.json()
-    assert body["tp"] == 0
-    assert body["fp"] == 1
-    assert body["fn"] == 1
-
-
 def test_auto_fit_without_loaded_cloud(client):
     """With no PC loaded, auto-fit should echo the request box back as a cuboid."""
     r = client.post(

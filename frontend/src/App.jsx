@@ -78,7 +78,6 @@ function MainApp() {
   const [loadError, setLoadError] = useStateApp(null);
   const [classes, setClasses] = useStateApp([]);
   const [gtInstances, setGtInstances] = useStateApp([]);
-  const [predInstances, setPredInstances] = useStateApp([]);
   const [savedAt, setSavedAt] = useStateApp(null);
   const [cuboidDirty, setCuboidDirty] = useStateApp(false);
   const [scenePickerOpen, setScenePickerOpen] = useStateApp(false);
@@ -134,6 +133,12 @@ function MainApp() {
     setActiveSessionId(null);
     setSessions([]);
     setPresegs([]);
+  }, [activeScene]);
+
+  // Separate from the reset above: this one also depends on `scenes` — on a
+  // hard reload the scene list arrives async, and gating the fetch on tier
+  // before the list exists silently skipped presegs (empty dropdown race).
+  useEffectApp(() => {
     if (!activeScene) return;
     const sceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
     if (sceneObj?.tier !== 'annotated') return;
@@ -143,7 +148,7 @@ function MainApp() {
       .catch((e) => { if (!cancel) console.error('listPresegs failed:', e); });
     return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScene]);
+  }, [activeScene, scenes]);
 
   // Persist active mode across refreshes (paired with INITIAL_TWEAKS lazy-init).
   useEffectApp(() => {
@@ -321,8 +326,6 @@ function MainApp() {
       }
       setLoading(false);
     });
-    VoxaAPI.getAnnotation(activeScene, 'pred')
-      .then((d) => !cancel && setPredInstances(d.instances || []));
     return () => { cancel = true; };
     // activeSessionId is in the deps so an explicit session pick (which sets
     // the ref and bumps activeSessionId) re-runs this effect and reloads.
@@ -694,7 +697,8 @@ function MainApp() {
           <CompareMode key="c" cloud={cloud} theme={theme}
             sceneName={activeScene}
             navMode={navMode} onNavModeChange={setNavMode}
-            gtInstances={gtInstances} predInstances={predInstances} />
+            isAnnotated={scenes.find((s) => (s.id || s.name) === activeScene)?.tier === 'annotated'}
+            sessions={sessions} presegs={presegs} activeSessionId={activeSessionId} />
         )}
         {t.mode === 'edit' && (
           <EditMode key="e" cloud={cloud} theme={theme} viewerRef={viewerRef}

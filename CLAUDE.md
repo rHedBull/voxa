@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Voxa is a unified 3D scan studio (viewer + cuboid labeler) for industrial LiDAR / point clouds. It replaces the older `3d-labeler` and `industrial-point-labeler` tools. The UI is organized around three modes: **Inspect** (fast review), **Label** (cuboid annotation, optional auto-fit), and **Compare** (GT vs prediction with server-computed precision/recall/F1/IoU + per-instance TP/FP/FN).
+Voxa is a unified 3D scan studio (viewer + cuboid labeler) for industrial LiDAR / point clouds. It replaces the older `3d-labeler` and `industrial-point-labeler` tools. The UI is organized around three modes: **Inspect** (fast review), **Label** (cuboid annotation, optional auto-fit), and **Compare** (two finished labelings — session outputs or presegs — diffed per-point: agreement coloring, per-class IoU/precision/recall, confusion matrix).
 
 ## Commands
 
@@ -39,7 +39,7 @@ npx vitest run src/api.test.js      # single frontend test (run from ./frontend 
 ## Architecture
 
 **Backend** (`backend/`, FastAPI, served by `uvicorn main:app`):
-- `main.py` — assembles the FastAPI app and registers routers from `backend/routes/*.py`. HTTP endpoints live in `routes/{load,segment,sessions,compare,export,meta}.py`; Pydantic schemas in `app/schemas.py`; in-memory `_state` + helpers (`_recenter`, `_resume_session`, …) in `app/core.py`. The IoU diff is axis-aligned (rotation ignored) and matched greedily within class.
+- `main.py` — assembles the FastAPI app and registers routers from `backend/routes/*.py`. HTTP endpoints live in `routes/{load,segment,sessions,compare,export,meta}.py`; Pydantic schemas in `app/schemas.py`; in-memory `_state` + helpers (`_recenter`, `_resume_session`, …) in `app/core.py`. Compare scoring is per-point (class agreement, per-class IoU/P/R, confusion matrix); there is no longer any cuboid-based IoU diff.
 - `scene_registry.py` — multi-root scene discovery. Returns `SceneSource` for each tier (`legacy` / `annotated` / `decimated` / `raw`). Scene IDs are tier-prefixed (`annotated/munich_water_pump`); bare legacy names still resolve.
 - `lidar_io.py` — `load_annotated` (SCHEMA-conformant v2 scans; reads working arrays from `sessions/<id>/`) and `load_laz` (chunked, stride-sampled via `laspy[lazrs]`). Auto-recenter for float32 stability lives in `app/core.py::_recenter`.
 - `point_cloud.py`, `supervoxels.py`, `clustering.py`, `fitting.py` — carried over from the old `3d-labeler`. Only the PLY/GLB loader and a small `auto-fit` (snap a cuboid to points inside an AABB) are wired into the current frontend; the supervoxel / cluster / RANSAC modules are present for future use but not exposed via routes.
@@ -84,7 +84,7 @@ See `docs/scan-schema.md` for the full layout + per-file contracts + required vs
 - **Per-point labels are read-only in Inspect** — annotated scans load working arrays from the active session (`sessions/<id>/working_*.npy`), surfaced through `LoadResponse.class_ids` / `instance_ids` / `class_palette`. Inspect's "Color by Class / Instance" pills consume them. Editing per-point segments is Label mode only.
 - **Scan directory schema** is what voxa expects on disk for an annotated scan (source.ply, prelabel/<preseg_id>/, sessions/<session_id>/, renders/, sam3/, ...). See `docs/scan-schema.md` for the full layout + per-file contracts + required vs optional behavior. v1.3 scans (with `labels/`, `session/`, `annotation_history/`) are not discovered — run `scripts/migrate_scan_v2.py` first.
 - **Auto-recenter on load** — `_recenter` in `app/core.py` subtracts the mean centroid (`points.mean(axis=0)`) when any coord exceeds 1e3 (LAS UTM scenes). The offset is in `LoadResponse.recenter_offset`. Cuboid endpoints operate in the recentered frame.
-- **IoU is axis-aligned** in `_iou_aabb`; cuboid `rotation` is stored but ignored when scoring. Adequate for industrial poses where rotation is small; revisit if you start labeling rotated boxes.
+- **Cuboid `rotation` is stored but unused by any scoring** — `_iou_aabb` was removed when Compare moved to per-point class agreement. `rotation` remains in the `Cuboid` schema for Label mode but has no effect in Compare.
 - **Coordinate system**: Three.js Y-up. Cuboid `center`/`size` are in scene units; `rotation` is `[rx, ry, rz]` Euler XYZ in radians.
 
 ## Tests

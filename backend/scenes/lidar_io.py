@@ -110,6 +110,12 @@ def _build_palette(class_id_to_name: dict[int, str],
     return palette
 
 
+def build_class_palette(lidar_root, segment_meta: dict | None = None) -> list[ClassPaletteEntry]:
+    """Public palette entry point for routes that don't go through
+    load_annotated (e.g. /api/compare-points)."""
+    return _build_palette(_read_classes_json(lidar_root), segment_meta or {})
+
+
 def load_annotated(src: SceneSource, lidar_root: Optional[Path]) -> AnnotatedScene:
     """Load an annotated/<scan>/ scene's cloud + class palette + scene meta.
 

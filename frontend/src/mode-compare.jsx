@@ -1,12 +1,53 @@
-// mode-compare.jsx — synced split view: GT (solid) vs prediction (dashed),
-// with a server-computed diff table.
+// mode-compare.jsx — per-point comparison of two finished labelings (session
+// outputs / presegs): synced split view colored by class per side, agreement %,
+// and a per-class IoU/precision/recall table with confusion pairs.
 
 import { useState as useStateCmp, useRef as useRefCmp,
-         useEffect as useEffectCmp } from 'react';
-import * as THREE from 'three';
+         useEffect as useEffectCmp, useMemo as useMemoCmp } from 'react';
 import { Viewer } from './viewer.jsx';
 import { CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI } from './api.js';
+
+const COLOR_A = '#10b981';
+const COLOR_B = '#5b8def';
+
+// Build the selectable source list from App's session/preseg state.
+// Sessions sort saved_at desc and disable when they have no saved output;
+// presegs are always comparable.
+function buildSources(sessions, presegs) {
+  const ses = [...(sessions || [])]
+    .sort((x, y) => String(y.saved_at || '').localeCompare(String(x.saved_at || '')))
+    .map((s) => ({
+      kind: 'session', id: s.session_id, label: s.name || s.session_id,
+      disabled: !s.has_output, hint: s.has_output ? null : 'no output',
+    }));
+  const pre = (presegs || []).map((p) => ({
+    kind: 'preseg', id: p.preseg_id, label: `${p.preseg_id} · ${p.generator || '?'}`,
+    disabled: false, hint: null,
+  }));
+  return [...ses, ...pre];
+}
+
+const srcKey = (s) => (s ? `${s.kind}:${s.id}` : '');
+
+function SourceSelect({ side, color, sources, value, onChange }) {
+  return (
+    <select
+      className="cmp-source-select"
+      style={{ borderLeftColor: color }}
+      value={srcKey(value)}
+      onChange={(e) => {
+        const s = sources.find((x) => srcKey(x) === e.target.value);
+        if (s) onChange(s);
+      }}>
+      {sources.map((s) => (
+        <option key={srcKey(s)} value={srcKey(s)} disabled={s.disabled}>
+          {side} · {s.label}{s.hint ? ` (${s.hint})` : ''}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 function ComparePanel({ title, color, viewerProps, viewerRef }) {
   return (
@@ -24,21 +65,46 @@ function ComparePanel({ title, color, viewerProps, viewerRef }) {
   );
 }
 
-export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstances, navMode, onNavModeChange }) {
+export function CompareMode({ cloud, theme, sceneName, isAnnotated,
+                             sessions, presegs, activeSessionId,
+                             navMode, onNavModeChange }) {
   const leftRef = useRefCmp();
   const rightRef = useRefCmp();
   const [syncCameras, setSyncCameras] = useStateCmp(true);
-  const [diff, setDiff] = useStateCmp(null);
-  const [selectedRowKey, setSelectedRowKey] = useStateCmp(null);
+  const [srcA, setSrcA] = useStateCmp(null);
+  const [srcB, setSrcB] = useStateCmp(null);
+  const [cmp, setCmp] = useStateCmp(null);
+  const [error, setError] = useStateCmp(null);
 
+  const sources = useMemoCmp(() => buildSources(sessions, presegs), [sessions, presegs]);
+  const enabled = useMemoCmp(() => sources.filter((s) => !s.disabled), [sources]);
+
+  // Defaults: A = active session if it has output, else first enabled source;
+  // B = the next distinct enabled source. Applied only while the CURRENT
+  // selection is invalid (missing, disabled, or identical) — a source-list
+  // refresh (e.g. a save stamping has_output) must not clobber a manual pick.
   useEffectCmp(() => {
-    if (!sceneName) return;
-    VoxaAPI.compare(sceneName).then(setDiff);
-  }, [sceneName, gtInstances, predInstances]);
+    if (enabled.length < 2) { setSrcA(null); setSrcB(null); return; }
+    const valid = (s) => s && enabled.some((e) => srcKey(e) === srcKey(s));
+    if (valid(srcA) && valid(srcB) && srcKey(srcA) !== srcKey(srcB)) return;
+    const active = enabled.find((s) => s.kind === 'session' && s.id === activeSessionId);
+    const a = (valid(srcA) && srcA) || active || enabled[0];
+    const b = enabled.find((s) => srcKey(s) !== srcKey(a));
+    setSrcA(a);
+    setSrcB(b || null);
+  }, [sceneName, sources, activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Clear selection when the underlying diff changes (scene swap, new prediction
-  // load) — the old row key may not exist in the new rows.
-  useEffectCmp(() => { setSelectedRowKey(null); }, [sceneName]);
+  // Fetch metrics + both class arrays whenever the scene or either source changes.
+  useEffectCmp(() => {
+    if (!isAnnotated || !sceneName || !srcA || !srcB) { setCmp(null); return; }
+    let cancel = false;
+    setError(null);
+    VoxaAPI.comparePoints(sceneName,
+      { kind: srcA.kind, id: srcA.id }, { kind: srcB.kind, id: srcB.id })
+      .then((r) => { if (!cancel) { setCmp(r); setError(null); } })
+      .catch((e) => { if (!cancel) { setCmp(null); setError(e.message || String(e)); } });
+    return () => { cancel = true; };
+  }, [sceneName, isAnnotated, srcKey(srcA), srcKey(srcB)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onLeftMove = () => {
     if (!syncCameras) return;
@@ -51,37 +117,43 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
     if (s) leftRef.current?.setCameraState(s);
   };
 
-  // Selected-row → which instance ids are visible per side. Empty list means
-  // hide all cuboids on that side. By design, no row selected → no boxes
-  // anywhere; users opt-in via double-click.
-  const rowKey = (r, i) => (r.gt_id || r.pred_id || `row-${i}`) + '-' + i;
-  const selectedRow = selectedRowKey && diff?.rows
-    ? diff.rows.find((r, i) => rowKey(r, i) === selectedRowKey)
-    : null;
-  const gtVisible = selectedRow?.gt_id ? [selectedRow.gt_id] : [];
-  const predVisible = selectedRow?.pred_id ? [selectedRow.pred_id] : [];
-
-  // Frame the cameras on a row's box(es). Selects the row first so the box is
-  // visible even if the user clicked Focus without double-clicking the row.
-  const focusRow = (r, i) => {
-    setSelectedRowKey(rowKey(r, i));
-    const frame = (ref, inst) => {
-      if (!inst) return;
-      ref.current?.frame(
-        new THREE.Vector3(...inst.center),
-        Math.sqrt(inst.size.reduce((a, v) => a + v * v, 0)) / 2,
-      );
-    };
-    frame(leftRef,  r.gt_id   ? gtInstances.find((x) => x.id === r.gt_id)   : null);
-    frame(rightRef, r.pred_id ? predInstances.find((x) => x.id === r.pred_id) : null);
+  // Project a full-res class array onto the subsampled cloud (same loop as
+  // App.jsx) so the viewer's colorMode='class' path can color each side.
+  const projectClassIds = (full) => {
+    if (!cloud || !full) return null;
+    const subIdx = cloud.subsampleIdx;
+    const subN = (cloud.positions?.length || 0) / 3;
+    const out = new Int8Array(subN);
+    for (let p = 0; p < subN; p++) out[p] = full[subIdx ? subIdx[p] : p];
+    return out;
   };
+  const classA = useMemoCmp(() => projectClassIds(cmp?.aClassIds), [cmp, cloud]);
+  const classB = useMemoCmp(() => projectClassIds(cmp?.bClassIds), [cmp, cloud]);
+
+  const m = cmp?.metrics;
+  const palette = cmp?.palette || [];
+  const nameFor = (id) => palette.find((p) => p.id === id)?.label || `cls ${id}`;
+  const colorFor = (id) => palette.find((p) => p.id === id)?.color || '#7c8088';
+
+  const rows = useMemoCmp(() => {
+    if (!m?.per_class) return [];
+    return [...m.per_class].sort((x, y) => {
+      const ax = x.iou == null ? Infinity : x.iou;
+      const ay = y.iou == null ? Infinity : y.iou;
+      return ax - ay; // ascending; nulls last
+    });
+  }, [m]);
+
+  const agr = m?.agreement;
+  const agrTip = m?.agreement_all != null
+    ? `over points labeled in at least one source; all-points: ${(m.agreement_all * 100).toFixed(1)}%`
+    : undefined;
 
   const helpSections = [
     {
       title: 'Compare',
       items: [
-        { keys: ['Dbl-click row'], desc: 'Select row → show its box(es); again to deselect' },
-        { keys: ['◎'], desc: 'Per-row button: select + frame camera on that box' },
+        { keys: ['A / B'], desc: 'Pick two finished labelings (session output or preseg)' },
         { keys: ['Sync'], desc: 'Both viewports share camera while on' },
         { keys: ['Drag'], desc: 'Either side; the other follows when synced' },
       ],
@@ -102,11 +174,11 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
           ],
     },
     {
-      title: 'Diff metrics',
+      title: 'Metrics',
       items: [
-        { keys: ['IoU'], desc: 'Axis-aligned overlap (rotation ignored)' },
-        { keys: ['F1'], desc: 'Harmonic mean of precision & recall' },
-        { keys: ['TP/FP/FN'], desc: 'Matched / spurious / missed instances' },
+        { keys: ['Agree'], desc: 'Fraction of points where A and B agree (labeled in either side)' },
+        { keys: ['IoU'], desc: 'Per-class point overlap: tp / (A∪B)' },
+        { keys: ['P / R'], desc: 'Precision (of B’s claims) / recall (of A’s points)' },
       ],
     },
     {
@@ -118,28 +190,47 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
     },
   ];
 
+  const emptyState = (text) => (
+    <div className="mode-root compare">
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', color: 'var(--text-faint)',
+                    fontSize: 13, textAlign: 'center', padding: 24 }}>
+        {text}
+      </div>
+    </div>
+  );
+
+  if (!isAnnotated) return emptyState('Compare needs an annotated scan');
+  if (enabled.length < 2) {
+    return emptyState('Need two finished labelings — save a second session or register a model preseg.');
+  }
+
   return (
     <div className="mode-root compare">
       <div className="cmp-bar">
         <div className="cmp-bar-metrics">
-          <span className="cmp-metric"><label>P</label>
-            <b className="mono">{diff?.precision != null ? diff.precision.toFixed(3) : '—'}</b></span>
-          <span className="cmp-metric"><label>R</label>
-            <b className="mono">{diff?.recall != null ? diff.recall.toFixed(3) : '—'}</b></span>
-          <span className="cmp-metric"><label>F1</label>
-            <b className="mono accent">{diff?.f1 != null ? diff.f1.toFixed(3) : '—'}</b></span>
-          <span className="cmp-metric"><label>IoU<sub>μ</sub></label>
-            <b className="mono">{diff?.iou_mean != null ? diff.iou_mean.toFixed(3) : '—'}</b></span>
-          <span className="cmp-metric"><label>TP/FP/FN</label>
-            <span className="diff-pills">
-              <i style={{ background: 'oklch(0.65 0.15 150 / 0.2)', color: 'oklch(0.78 0.15 150)' }}>
-                {diff?.tp ?? '—'}</i>
-              <i style={{ background: 'oklch(0.65 0.18 30 / 0.2)',  color: 'oklch(0.78 0.16 30)' }}>
-                {diff?.fp ?? '—'}</i>
-              <i style={{ background: 'oklch(0.65 0.18 60 / 0.2)',  color: 'oklch(0.82 0.14 70)' }}>
-                {diff?.fn ?? '—'}</i>
-            </span>
-          </span>
+          <SourceSelect side="A" color={COLOR_A} sources={sources}
+            value={srcA} onChange={setSrcA} />
+          <SourceSelect side="B" color={COLOR_B} sources={sources}
+            value={srcB} onChange={setSrcB} />
+          {error
+            ? <span className="cmp-metric" style={{ color: 'oklch(0.72 0.17 30)' }}>{error}</span>
+            : (
+              <>
+                <span className="cmp-metric" title={agrTip}><label>Agree</label>
+                  <b className="mono accent">{agr != null ? `${(agr * 100).toFixed(1)}%` : '—'}</b></span>
+                <span className="cmp-metric"><label>Pts</label>
+                  <b className="mono">{m
+                    ? `A: ${m.n_labeled_a.toLocaleString()} · B: ${m.n_labeled_b.toLocaleString()}`
+                    : '—'}</b></span>
+                <span className="cmp-metric"
+                  title="Total coverage gaps: labeled in one source, completely unlabeled in the other (per-class breakdown in the miss columns)">
+                  <label>Miss</label>
+                  <b className="mono cmp-miss">{m
+                    ? `A: ${m.n_missed_a.toLocaleString()} · B: ${m.n_missed_b.toLocaleString()}`
+                    : '—'}</b></span>
+              </>
+            )}
         </div>
         <div className="cmp-bar-controls">
           <span className="cmp-toggle">
@@ -158,23 +249,23 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
 
       <div className="cmp-grid">
         <ComparePanel
-          title="Ground truth"
-          color="#10b981"
+          title={srcA?.label || 'Source A'}
+          color={COLOR_A}
           viewerRef={leftRef}
           viewerProps={{
-            cloud, instances: gtInstances, visibleInstanceIds: gtVisible,
-            showCuboids: true, cuboidStyle: 'solid',
+            cloud: { ...cloud, classIds: classA, classPalette: palette },
+            colorMode: 'class', showCuboids: false,
             background: theme.bg, floorColor: theme.floor, navMode,
             onCameraChange: onLeftMove,
           }}
         />
         <ComparePanel
-          title="Prediction"
-          color="#5b8def"
+          title={srcB?.label || 'Source B'}
+          color={COLOR_B}
           viewerRef={rightRef}
           viewerProps={{
-            cloud, instances: predInstances, visibleInstanceIds: predVisible,
-            showCuboids: true, cuboidStyle: 'dashed',
+            cloud: { ...cloud, classIds: classB, classPalette: palette },
+            colorMode: 'class', showCuboids: false,
             background: theme.bg, floorColor: theme.floor, navMode,
             onCameraChange: onRightMove,
           }}
@@ -183,49 +274,52 @@ export function CompareMode({ cloud, theme, sceneName, gtInstances, predInstance
 
       <div className="cmp-table">
         <div className="cmp-table-hd">
-          <div>GT id</div>
-          <div>Pred id</div>
           <div>Class</div>
-          <div>Status</div>
           <div>IoU</div>
-          <div>Δ position</div>
-          <div>Δ size</div>
-          <div>Conf</div>
-          <div />
+          <div>P</div>
+          <div>R</div>
+          <div>pts A</div>
+          <div>pts B</div>
+          <div title="Points B calls this class that A left unlabeled">miss A</div>
+          <div title="Points A calls this class that B left unlabeled">miss B</div>
         </div>
-        {diff?.rows?.map((r, i) => {
-          const key = rowKey(r, i);
-          const sel = key === selectedRowKey;
-          return (
-            <div
-              key={key}
-              className={'cmp-table-row' + (sel ? ' selected' : '')}
-              onDoubleClick={() => setSelectedRowKey(sel ? null : key)}
-              title={sel ? 'Double-click to deselect' : 'Double-click to show this row\'s box'}>
-              <div className="mono">{r.gt_id ?? '—'}</div>
-              <div className="mono">{r.pred_id ?? '—'}</div>
-              <div>{r.cls}</div>
-              <div><span className={'status-pill ' + r.status.toLowerCase()}>{r.status}</span></div>
-              <div className="mono">{r.iou != null ? r.iou.toFixed(3) : '—'}</div>
-              <div className="mono">{r.dpos != null ? r.dpos.toFixed(3) : '—'}</div>
-              <div className="mono">{r.dsize != null ? `${(r.dsize * 100).toFixed(1)}%` : '—'}</div>
-              <div className="mono">{r.conf != null ? r.conf.toFixed(2) : '—'}</div>
-              <button
-                className="inst-edit-btn"
-                onClick={(e) => { e.stopPropagation(); focusRow(r, i); }}
-                title="Select & frame camera on this box">◎</button>
+        {rows.map((r) => (
+          <div key={r.class_id} className="cmp-table-row">
+            <div className="cmp-class-name">
+              <i className="cmp-dot" style={{ background: colorFor(r.class_id) }} />
+              {nameFor(r.class_id)}
             </div>
-          );
-        })}
-        {(!diff?.rows || diff.rows.length === 0) && (
+            <div className="mono">{r.iou != null ? r.iou.toFixed(3) : '—'}</div>
+            <div className="mono">{r.precision != null ? r.precision.toFixed(3) : '—'}</div>
+            <div className="mono">{r.recall != null ? r.recall.toFixed(3) : '—'}</div>
+            <div className="mono">{r.n_a.toLocaleString()}</div>
+            <div className="mono">{r.n_b.toLocaleString()}</div>
+            <div className="mono cmp-miss" title="Points B calls this class that A left unlabeled">
+              {r.missed_a > 0 ? r.missed_a.toLocaleString() : '—'}</div>
+            <div className="mono cmp-miss" title="Points A calls this class that B left unlabeled">
+              {r.missed_b > 0 ? r.missed_b.toLocaleString() : '—'}</div>
+          </div>
+        ))}
+        {rows.length === 0 && (
           <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-faint)', fontSize: 12 }}>
-            {sceneName
-              ? 'No GT or prediction annotations for this scene yet.'
-              : 'Pick a scene to compute the diff.'}
+            {error ? error : 'No overlapping classes to compare yet.'}
+          </div>
+        )}
+        {m?.confusion?.length > 0 && (
+          <div className="cmp-confusion">
+            <div className="cmp-confusion-hd">Top confusions</div>
+            {m.confusion.map((c, i) => (
+              <div key={i} className="cmp-confusion-row">
+                <span style={{ color: colorFor(c.a_class) }}>{nameFor(c.a_class)}</span>
+                {' → '}
+                <span style={{ color: colorFor(c.b_class) }}>{nameFor(c.b_class)}</span>
+                {' · '}
+                <span className="mono">{c.n.toLocaleString()} pts</span>
+              </div>
+            ))}
           </div>
         )}
       </div>
     </div>
   );
 }
-

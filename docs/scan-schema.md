@@ -73,7 +73,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 
 - **`source/scan.ply`** — binary little-endian PLY, properties `x y z` (float32) and `red green blue` (uchar). `N_pts = len(vertices)`; every per-point array in `prelabel/*/` and `sessions/*/` MUST have shape `(N_pts,)`.
 - **`source/mesh.glb`** — single canonical filename. Build pipelines that emit variants MUST rename or hardlink one to `mesh.glb`. The viewer registers `MeshoptDecoder` so `EXT_meshopt_compression` GLBs load.
-- **`prelabel/<id>/instance_ids.npy`** — `int32`, shape `(N_pts,)`. Read alongside `segment_summary.json` which maps each `id` to a `class_id` (use `-1` for class-agnostic preseg). Written by `register_preseg()` only.
+- **`prelabel/<id>/instance_ids.npy`** — `int32`, shape `(N_pts,)`. Read alongside `segment_summary.json` which maps each `id` to a `class_id` (use `-1` for class-agnostic preseg). Written by `register_preseg()` only. Model predictions should be registered the same way — `register_preseg(generator="model-…")` — which makes them selectable both as session seeds in Label mode and as Compare sources.
 - **`prelabel/<id>/meta.json`** — the preseg's identity. Keys: `preseg_id`, `generator`, `params`, `fingerprint` (sha256 over dtype+shape+bytes of `instance_ids.npy`), `n_segments`, `created_at`. The fingerprint is computed once at register time; pin checks string-compare against it without re-hashing the array.
 - **`sessions/<id>/session.json`** — see schema below.
 - **`sessions/<id>/working_class_ids.npy`** — `int8`, shape `(N_pts,)`. Autosave; in-progress class state.

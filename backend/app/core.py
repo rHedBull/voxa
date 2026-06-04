@@ -134,24 +134,6 @@ def _recenter(pc: PointCloud) -> tuple[PointCloud, list[float]]:
         face_indices=pc.face_indices,
     ), center.astype(np.float32).tolist()
 
-def _iou_aabb(a: Cuboid, b: Cuboid) -> float:
-    """Axis-aligned IoU. Cuboid rotation is ignored — adequate for scoring
-    industrial-pose annotations where rotation is usually small. Returns 0
-    if either instance lacks a box (e.g. pointset)."""
-    if a.center is None or a.size is None or b.center is None or b.size is None:
-        return 0.0
-    a_min = np.array(a.center) - np.array(a.size) / 2
-    a_max = np.array(a.center) + np.array(a.size) / 2
-    b_min = np.array(b.center) - np.array(b.size) / 2
-    b_max = np.array(b.center) + np.array(b.size) / 2
-    inter_min = np.maximum(a_min, b_min)
-    inter_max = np.minimum(a_max, b_max)
-    inter = np.maximum(0.0, inter_max - inter_min).prod()
-    vol_a = np.array(a.size).prod()
-    vol_b = np.array(b.size).prod()
-    union = vol_a + vol_b - inter
-    return float(inter / union) if union > 0 else 0.0
-
 def _z_up_to_y_up(pc: PointCloud) -> PointCloud:
     """Rotate a Z-up point cloud (LAS / surveying convention) into the
     Three.js Y-up frame so the floor sits below the cloud as expected.
