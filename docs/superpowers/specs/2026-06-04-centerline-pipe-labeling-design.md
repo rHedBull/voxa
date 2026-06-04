@@ -51,9 +51,9 @@ Ctrl+click) → **staged** (ended with Esc; editable, not yet labeled) →
    - Merging a staged path into a group containing an **applied** path
      adopts that instance's existing ID on the next apply.
    - Selecting any path of a multi-path instance and pressing Enter
-     re-applies **all** paths of that instance (required for consistency
-     with replace-by-`instance_id` persistence — applying a subset would
-     silently drop the sibling paths from `centerlines.json`).
+     re-applies **all** paths of that instance (a partial re-apply would
+     replace the instance's stored paths with only the applied subset —
+     hence the expand-to-whole-instance rule in item 7).
    - Merging two already-applied instances re-applies the union under one
      instance ID; the other instance's stored entry is removed. Its points
      are re-captured by the union apply (tubes unchanged), so no orphaned
@@ -65,9 +65,12 @@ Ctrl+click) → **staged** (ended with Esc; editable, not yet labeled) →
    instance. Re-selecting an applied path, editing it, and pressing Enter
    re-applies it (same instance ID; stored paths replaced, see Persistence).
    Enter always expands the selection to whole instances: if the selection
-   spans paths of several unmerged instances, each instance is re-applied
-   separately (one backend call per instance) — a subset of an instance's
-   paths is never applied on its own.
+   spans paths of several instances that were **not** merged with M, each
+   instance is re-applied independently (one backend call per instance, no
+   `merged_from`) — a subset of an instance's paths is never applied on its
+   own. M is the only way to combine instances: an applied-applied merge is
+   always M first, and the next Enter then sends one call with the union of
+   paths and the absorbed instance IDs in `merged_from`.
 8. Undo (existing `segUndo`) reverts an apply.
 
 ### Key & mouse map (Draw sub-mode active)
