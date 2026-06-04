@@ -50,7 +50,7 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
         raise HTTPException(409, "compare-points needs an annotated/<scene> scan")
     lay = ScanLayout(Path(src.extras["scan_dir"]))
 
-    def load_source(ref: SourceRef, expected_n):
+    def load_source(ref: SourceRef):
         if ref.kind == "session":
             sp = lay.session(ref.id)
             if not sp.dir.is_dir():
@@ -61,12 +61,20 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
                     f"(Ctrl+S) before comparing"))
             return np.load(sp.output_gt_class_ids).astype(np.int32)
         if ref.kind == "preseg":
-            from preseg.preseg_store import load_preseg
+            from preseg.preseg_store import load_preseg, read_preseg_meta
             try:
-                # Always load preseg against the cloud's declared n_points so a
-                # corrupt/truncated session A doesn't cause a shape mismatch here
-                # instead of in the cross-source check below.
-                class_ids, _ = load_preseg(lay, ref.id, n_points=int(src.n_points or 0))
+                # Validates the id (no path traversal) and 404s a missing
+                # preseg before any path join below.
+                read_preseg_meta(lay, ref.id)
+                # n_points for load_preseg's shape check: the cloud's
+                # declared count when meta carries it, else the preseg's own
+                # length — a truncated OTHER source must hit the cross-source
+                # 409 below, not a shape 400 in here, and meta-less scans
+                # must still work.
+                inst_path = lay.preseg_dir(ref.id) / "instance_ids.npy"
+                n = int(src.n_points
+                        or np.load(inst_path, mmap_mode="r").shape[0])
+                class_ids, _ = load_preseg(lay, ref.id, n_points=n)
             except FileNotFoundError as e:
                 raise HTTPException(404, str(e))
             except ValueError as e:
@@ -74,8 +82,8 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
             return class_ids.astype(np.int32)
         raise HTTPException(400, f"unknown source kind {ref.kind!r}")
 
-    a = load_source(req.a, src.n_points)
-    b = load_source(req.b, len(a))
+    a = load_source(req.a)
+    b = load_source(req.b)
     if a.shape != b.shape:
         raise HTTPException(409, (
             f"sources cover different clouds: a has {a.shape[0]} points, "
