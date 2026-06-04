@@ -1591,6 +1591,32 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
         mesh.visible = true;
       }
     },
+    // Draw sub-mode hooks. setOrbitEnabled is the explicit seam the spec
+    // calls out: pointer-drag of a control point and wheel-resize of a tube
+    // must win over camera orbit/zoom, and both controllers already expose
+    // an enabled flag for exactly this (the gizmo uses it too).
+    setOrbitEnabled(on) {
+      stateRef.current.controller?.setEnabled?.(!!on);
+    },
+    getCamera() {
+      return stateRef.current.camera ?? null;
+    },
+    attachOverlayGroup() {
+      const s = stateRef.current;
+      if (!s.scene) return { group: null, remove: () => {} };
+      const group = new THREE.Group();
+      s.scene.add(group);
+      return {
+        group,
+        remove() {
+          s.scene.remove(group);
+          group.traverse((n) => {
+            n.geometry?.dispose?.();
+            n.material?.dispose?.();
+          });
+        },
+      };
+    },
     /**
      * Highlight the subsampled points whose subRow has mask[subRow] !== 0.
      * Caller computes the mask from segState.selection + instanceFull

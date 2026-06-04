@@ -10,6 +10,7 @@ import { VoxaAPI, newId } from './api.js';
 import { PresegmentList, focusSegment } from './segment-tools.jsx';
 import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
+import DrawMode from './draw-mode.jsx';
 import SessionPicker from './session-picker.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 
@@ -77,11 +78,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // viewport (NaN'd in the position buffer). Default on so the labeling
   // workflow naturally reveals what's left to label.
   const [hideConfirmed, setHideConfirmed] = useStateLabel(true);
-  // Fast labeling sub-mode: step through unpromoted presegments largest-first
-  // and confirm a class per segment. Queue/handlers live further down (they
-  // need promotedSegIds + confirmSegmentSelection); the flag is declared here
-  // because the selection-overlay effect needs it for the orange highlight.
-  const [fastMode, setFastMode] = useStateLabel(false);
+  // At most one Label sub-mode is active. Fast labeling steps through
+  // unpromoted presegments largest-first and confirms a class per segment;
+  // Draw labels pipes/tanks via centerline tubes. Declared here because the
+  // selection-overlay effect needs fastMode for the orange highlight. Queue/
+  // handlers live further down (they need promotedSegIds + confirmSegmentSelection).
+  const [subMode, setSubMode] = useStateLabel(null); // null | 'fast' | 'draw' — at most one Label sub-mode active
+  const fastMode = subMode === 'fast';
+  const drawMode = subMode === 'draw';
   const [fastPos, setFastPos] = useStateLabel(0);
   const [fastPendingCls, setFastPendingCls] = useStateLabel(null);
   // 3D box-select: a transformable OBB the user drags via the existing
@@ -143,8 +147,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
   // under the cursor. Active in any tool mode whenever segment data exists.
+  // Draw mode owns all pointer events; skip registration while it's on.
   useEffectLabel(() => {
     if (!segState) return;
+    if (drawMode) return;
     const viewer = viewerRef?.current;
     if (!viewer?.onPointerPick) return;
     return viewer.onPointerPick((fullIndex, evt) => {
@@ -158,12 +164,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         return { ...s, selection: next };
       });
     });
-  }, [segState, viewerRef, setSegState]);
+  }, [segState, viewerRef, setSegState, drawMode]);
 
   // Hull-click selection: clicking directly on a hull face (Ctrl or plain click)
   // selects the segment. Works in all tool modes.
   useEffectLabel(() => {
     if (!segState) return;
+    if (drawMode) return;
     const viewer = viewerRef?.current;
     if (!viewer?.onHullPick) return;
     return viewer.onHullPick((segId, evt) => {
@@ -176,7 +183,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       });
       return true;
     });
-  }, [segState, viewerRef, setSegState]);
+  }, [segState, viewerRef, setSegState, drawMode]);
 
   // Drop the selection box whenever the scene changes.
   useEffectLabel(() => { setSelBox(null); }, [cloud]);
@@ -853,11 +860,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     setSegState((s) => (s && s.selection.size ? { ...s, selection: new Set() } : s));
   }, [fastMode, setSegState]);
 
-  // WASD steps the queue — force orbit nav so the walk controller can't
-  // swallow those keys.
+  // WASD steps the fast queue / draw paths — force orbit nav so the walk
+  // controller can't swallow those keys.
   useEffectLabel(() => {
-    if (fastMode && navMode === 'walk') onNavModeChange?.('orbit');
-  }, [fastMode, navMode, onNavModeChange]);
+    if ((fastMode || drawMode) && navMode === 'walk') onNavModeChange?.('orbit');
+  }, [fastMode, drawMode, navMode, onNavModeChange]);
 
   const fastStep = useCallbackLabel((delta) => {
     setFastPos((p) => stepIndex(fastQueue.length, p, delta));
@@ -904,10 +911,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-      // Fast labeling owns the keyboard while active (FastLabelKeys /
-      // FastConfirmModal run in capture phase); keep the regular Label
-      // hotkeys (add cuboid, densify, frame, …) out of the way.
-      if (fastMode) return;
+      // Fast labeling / Draw sub-modes own the keyboard while active; keep
+      // the regular Label hotkeys (add cuboid, densify, frame, …) out of the
+      // way. DrawMode's DrawKeys runs in capture phase like FastLabelKeys.
+      if (fastMode || drawMode) return;
       // Ctrl/Cmd+Enter is tool-agnostic: with a presegment selection it
       // collapses the selection into a new instance; otherwise it toggles
       // the confirmed flag on the active cuboid (the legacy behaviour).
@@ -957,7 +964,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, confirmSegmentSelection, fastMode]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, confirmSegmentSelection, fastMode, drawMode]);
 
   return (
     <div className="mode-root label">
@@ -966,7 +973,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         classes={classes}
         onStep={fastStep}
         onPickClass={setFastPendingCls}
-        onExit={() => setFastMode(false)}
+        onExit={() => setSubMode(null)}
       />
       {fastMode && (
         <FastLabelHUD queue={fastQueue} pos={fastIdx} classes={classes} />
@@ -1032,10 +1039,28 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             className={'tool-btn' + (fastMode ? ' active' : '')}
             style={{ margin: '10px 0 0', width: '100%', justifyContent: 'center',
                      borderColor: fastMode ? '#ffa500' : undefined }}
-            onClick={() => { setFastPos(0); setFastMode((f) => !f); }}
+            onClick={() => { setFastPos(0); setSubMode((m) => m === 'fast' ? null : 'fast'); }}
             title="Step through presegments largest-first; number key + Enter labels and confirms each">
             ⚡ {fastMode ? 'Exit fast labeling' : 'Fast labeling'}
           </button>
+        )}
+        {segState && isAnnotated && (
+          <button
+            className={'tool-btn' + (drawMode ? ' active' : '')}
+            style={{ margin: '6px 0 0', width: '100%', justifyContent: 'center',
+                     borderColor: drawMode ? '#4fc3f7' : undefined }}
+            onClick={() => setSubMode((m) => m === 'draw' ? null : 'draw')}
+            title="Draw centerline paths to label pipes and tanks within a tube radius">
+            ✏ {drawMode ? 'Exit Draw mode' : 'Draw mode'}
+          </button>
+        )}
+        {drawMode && (
+          <DrawMode
+            viewerRef={viewerRef}
+            classes={classes}
+            setSegState={setSegState}
+            onExit={() => setSubMode(null)}
+          />
         )}
         <PresegmentList
           segState={segState}
@@ -1161,7 +1186,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               active={showDiff}
             />
           )}
-          {segState && (
+          {segState && !drawMode && (
             <>
               <ToolButton mini
                 icon="◫"

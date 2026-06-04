@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.constants import MAX_POINTS_DEFAULT
 
@@ -135,6 +135,24 @@ class ApplyRequest(BaseModel):
     op: str
     indices: Optional[str] = None     # b64 Int32; required for set_class & reassign
     payload: dict
+
+class CenterlinePath(BaseModel):
+    points: list[list[float]] = Field(min_length=2)
+    radius: float = Field(gt=0)
+    smooth: bool = False
+
+    @field_validator("points")
+    @classmethod
+    def _points_are_3d(cls, v):
+        if any(len(p) != 3 for p in v):
+            raise ValueError("each point must be [x, y, z]")
+        return v
+
+class CenterlineApplyRequest(BaseModel):
+    paths: list[CenterlinePath] = Field(min_length=1)
+    target_class: int | str
+    target_inst: int = -1
+    merged_from: list[int] = []
 
 class SegmentStateResponse(BaseModel):
     """Snapshot of the in-memory segment session, returned to the frontend

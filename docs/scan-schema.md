@@ -35,6 +35,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 │       ├── working_class_ids.npy      int8,  shape (N_pts,)  — autosave
 │       ├── working_segment_ids.npy    int32, shape (N_pts,)  — autosave
 │       ├── instances_gt.json          cuboid/pointset instance doc (right panel) — session-scoped, autosave
+│       ├── centerlines.json           Draw sub-mode paths (optional; absent until first centerline apply)
 │       ├── output/                    written by Save (Ctrl+S); absent until first explicit save
 │       │   ├── gt_class_ids.npy       int32, shape (N_pts,)
 │       │   ├── gt_segment_ids.npy     int32, shape (N_pts,)
@@ -79,6 +80,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 - **`sessions/<id>/session.json`** — see schema below.
 - **`sessions/<id>/working_class_ids.npy`** — `int8`, shape `(N_pts,)`. Autosave; in-progress class state.
 - **`sessions/<id>/working_segment_ids.npy`** — `int32`, shape `(N_pts,)`. Autosave; in-progress segment state. The `int8`/`int32` dtype asymmetry is intentional and carries over from v1.3 (autosave compactness vs export precision); do not unify.
+- **`sessions/<id>/centerlines.json`** — Draw sub-mode persistence. Optional; absent until the first centerline apply. Flat shape `{ "paths": [{ "points": [[x,y,z],…], "radius", "smooth", "class_id", "instance_id" }] }` with coordinates in the recentered viewer frame. Write semantics are replace-by-`instance_id`: an apply targeting an existing instance replaces that instance's stored paths; a new instance appends; instance ids absorbed by a merge (`merged_from` in the apply request) have their entries deleted in the same write. Written by `labeling/centerline.py::update_centerlines` only; the per-point labels it produced live in the working arrays like any other edit (undo reverts labels, not this file).
 - **`sessions/<id>/output/gt_class_ids.npy`** — `int32`, shape `(N_pts,)`. `-1` = unlabeled. Written by explicit Save (Ctrl+S).
 - **`sessions/<id>/output/gt_segment_ids.npy`** — `int32`, shape `(N_pts,)`. `-1` = unlabeled.
 - **`sessions/<id>/output/gt_segment_metadata.json`** — `{ "n_points", "n_gt_segments", "n_labeled_points", "class_map_version", "segments": [...] }`. The `class_map_version` value here is an output mirror — it records which `classes.json::version` was active at save time. Invariant 6 is enforced by `segment_io._validate_invariants` comparing `meta.json::class_map_version` (read via `_read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped.

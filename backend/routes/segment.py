@@ -86,6 +86,46 @@ def segment_state():
         session_id=_state.get("session_id"),
     )
 
+@router.post("/api/segment/centerline-apply")
+def centerline_apply(req: CenterlineApplyRequest):
+    """Label all full-res points within the tube(s) around the given
+    centerline paths. Multiple paths in one call = one (merged) instance.
+    See docs/superpowers/specs/2026-06-04-centerline-pipe-labeling-design.md."""
+    from labeling.centerline import tube_indices, update_centerlines
+    seg = _require_seg()
+    if seg.session_dir is None:
+        raise HTTPException(409, "centerline labeling requires an active session")
+    try:
+        target_class = _coerce_class_id(req.target_class)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    paths = [p.model_dump() for p in req.paths]
+    idx = tube_indices(np.asarray(seg.positions), paths)
+    if idx.size == 0:
+        # Same key-absence contract as _serialize_apply on an empty delta.
+        return {"op": "centerline", "n_affected": 0, "dirty": bool(seg.dirty)}
+    out = seg.apply_reassign(idx, target_inst=req.target_inst, target_class=target_class)
+    # new_instance_id is only present on fresh allocation (target_inst < 0);
+    # on re-apply the requested id is reused.
+    instance_id = out.get("new_instance_id", req.target_inst)
+    # merged_from re-capture correctness is the caller's contract: the spec
+    # requires the request to carry the union of the absorbed instances'
+    # paths, so their points land in idx above before we drop their entries.
+    update_centerlines(seg.session_dir, instance_id, target_class, paths,
+                       req.merged_from)
+    body = _serialize_apply(out)
+    body["instance_id"] = int(instance_id)
+    return body
+
+@router.get("/api/segment/centerlines")
+def get_centerlines():
+    """Stored centerline paths for the active session (Draw sub-mode resume)."""
+    from labeling.centerline import load_centerlines
+    seg = _require_seg()
+    if seg.session_dir is None:
+        raise HTTPException(409, "no active session")
+    return load_centerlines(seg.session_dir)
+
 @router.put("/api/segment/save")
 def segment_save():
     seg = _require_seg()

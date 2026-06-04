@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Voxa is a unified 3D scan studio (viewer + cuboid labeler) for industrial LiDAR / point clouds. It replaces the older `3d-labeler` and `industrial-point-labeler` tools. The UI is organized around three modes: **Inspect** (fast review), **Label** (cuboid annotation, optional auto-fit, plus a Fast-labeling sub-mode that steps through preseg segments largest-first for one-keypress classification — see `frontend/src/fast-label.jsx`), and **Compare** (two finished labelings — session outputs or presegs — diffed per-point: agreement coloring, per-class IoU/precision/recall, confusion matrix).
+Voxa is a unified 3D scan studio (viewer + cuboid labeler) for industrial LiDAR / point clouds. It replaces the older `3d-labeler` and `industrial-point-labeler` tools. The UI is organized around three modes: **Inspect** (fast review), **Label** (cuboid annotation, optional auto-fit, plus two sub-modes: Fast-labeling, which steps through preseg segments largest-first for one-keypress classification — see `frontend/src/fast-label.jsx` — and Draw, which labels cylindrical objects (pipes/tanks) by drawing centerline paths: the backend extracts all full-res points within a per-path tube radius and paths persist per-session in `sessions/<id>/centerlines.json` — see `frontend/src/draw-mode.jsx` + `backend/labeling/centerline.py`), and **Compare** (two finished labelings — session outputs or presegs — diffed per-point: agreement coloring, per-class IoU/precision/recall, confusion matrix).
 
 ## Commands
 
