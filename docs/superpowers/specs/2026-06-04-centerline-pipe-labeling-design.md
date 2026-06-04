@@ -54,10 +54,11 @@ Ctrl+click) → **staged** (ended with Esc; editable, not yet labeled) →
      re-applies **all** paths of that instance (a partial re-apply would
      replace the instance's stored paths with only the applied subset —
      hence the expand-to-whole-instance rule in item 7).
-   - Merging two already-applied instances re-applies the union under one
-     instance ID; the other instance's stored entry is removed. Its points
-     are re-captured by the union apply (tubes unchanged), so no orphaned
-     labels are left behind.
+   - Merging two already-applied instances (via M then Enter, per item 7)
+     re-applies the union under one instance ID; the lowest involved
+     instance ID survives as `target_inst`, the others' stored entries are
+     removed via `merged_from`. Their points are re-captured by the union
+     apply (tubes unchanged), so no orphaned labels are left behind.
 7. **Enter** applies the selected path(s) / merged group: backend extracts
    all full-resolution points within the tube(s) and assigns class +
    instance through the existing reassign flow. As a shortcut, Enter while
