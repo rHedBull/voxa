@@ -694,7 +694,8 @@ function MainApp() {
           <CompareMode key="c" cloud={cloud} theme={theme}
             sceneName={activeScene}
             navMode={navMode} onNavModeChange={setNavMode}
-            gtInstances={gtInstances} predInstances={predInstances} />
+            isAnnotated={scenes.find((s) => (s.id || s.name) === activeScene)?.tier === 'annotated'}
+            sessions={sessions} presegs={presegs} activeSessionId={activeSessionId} />
         )}
         {t.mode === 'edit' && (
           <EditMode key="e" cloud={cloud} theme={theme} viewerRef={viewerRef}
