@@ -72,6 +72,8 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
   const dragRef = useRef(null);         // { pathKey, pointIdx, plane }
   const drawRef = useRef(draw);
   drawRef.current = draw;
+  const defaultClsIdxRef = useRef(defaultClsIdx);
+  defaultClsIdxRef.current = defaultClsIdx;
 
   // One overlay group for the lifetime of the sub-mode.
   useEffect(() => {
@@ -98,16 +100,18 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
       const isSel = draw.selection.has(p.key) || draw.active === p.key;
       const applied = draw.instanceIds[p.instKey] != null;
       const baseOpacity = applied ? 0.10 : 0.25;
-      const tubeMat = new THREE.MeshBasicMaterial({
+      const tubeMatCfg = {
         color, transparent: true, depthWrite: false,
         opacity: isSel ? baseOpacity + 0.15 : baseOpacity,
-      });
+      };
       // Tube: smooth → one TubeGeometry; straight → cylinder per segment.
+      // Each mesh gets its own material (no orphan to leak on rebuild).
       const pts3 = p.points.map(([x, y, z]) => new THREE.Vector3(x, y, z));
       if (p.smooth && pts3.length >= 3) {
         const curve = new THREE.CatmullRomCurve3(pts3);
         const tube = new THREE.Mesh(
-          new THREE.TubeGeometry(curve, pts3.length * 8, p.radius, 12, false), tubeMat);
+          new THREE.TubeGeometry(curve, pts3.length * 8, p.radius, 12, false),
+          new THREE.MeshBasicMaterial(tubeMatCfg));
         tube.userData.drawPath = p.key;
         group.add(tube);
       } else {
@@ -117,7 +121,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
           if (len < 1e-6) continue;
           const cyl = new THREE.Mesh(
             new THREE.CylinderGeometry(p.radius, p.radius, len, 12, 1, true),
-            tubeMat.clone());
+            new THREE.MeshBasicMaterial(tubeMatCfg));
           cyl.position.copy(a).lerp(b, 0.5);
           cyl.quaternion.setFromUnitVectors(
             new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
@@ -177,9 +181,11 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
         // Place a control point at the picked cloud point.
         const hit = v.firstHitUnderCursor(evt);
         if (hit) {
-          setDraw((s) => addPoint(
-            s, [hit.world.x, hit.world.y, hit.world.z],
-            s.active ? s.paths.find((p) => p.key === s.active).classId : defaultClsIdx));
+          setDraw((s) => {
+            const activePath = s.active && s.paths.find((p) => p.key === s.active);
+            const classId = activePath ? activePath.classId : defaultClsIdxRef.current;
+            return addPoint(s, [hit.world.x, hit.world.y, hit.world.z], classId);
+          });
         }
         evt.stopPropagation();
         return;
@@ -240,7 +246,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
       wheelHost.removeEventListener('wheel', onWheel, { capture: true });
       v.setOrbitEnabled(true);
     };
-  }, [viewerRef, setDraw, defaultClsIdx]);
+  }, [viewerRef, setDraw]);
 
   return null;
 }
@@ -268,15 +274,24 @@ export default function DrawMode({
   }, [showToast]);
 
   const applySelection = useCallback(async () => {
-    // Enter while drawing = end + apply that path (spec shortcut).
-    let s = draw;
-    if (s.active) {
-      const key = s.active;
-      s = endActive(s);
-      if (s.paths.some((p) => p.key === key)) s = selectPath(s, key);
-    }
-    const calls = buildApplyCalls(s);
-    if (calls.length === 0) { setDraw(s); return; }
+    // Synchronous pre-step (end active path + select it) goes through a
+    // functional updater so concurrent edits aren't clobbered. We capture the
+    // post-step state into a local to decide which calls to send — that
+    // snapshot is intentional (Enter applies what was selected at press time).
+    // All subsequent state writes route through functional updaters so user
+    // edits during the network round-trips survive.
+    let snapshot;
+    setDraw((s) => {
+      if (s.active) {
+        const key = s.active;
+        s = endActive(s);
+        if (s.paths.some((p) => p.key === key)) s = selectPath(s, key);
+      }
+      snapshot = s;
+      return s;
+    });
+    const calls = buildApplyCalls(snapshot);
+    if (calls.length === 0) return;
     for (const call of calls) {
       let r;
       try {
@@ -294,15 +309,17 @@ export default function DrawMode({
         showToast('no points in tube');
         continue;
       }
-      s = markApplied(s, call.instKey, r.instanceId);
+      setDraw((cur) => markApplied(cur, call.instKey, r.instanceId));
       setSegState((st) => st ? applyDelta(st, {
         indices: r.indices,
         after_class: r.afterClass,
         after_instance: r.afterInstance,
       }) : st);
     }
-    setDraw(clearSelection(s));
-  }, [draw, setSegState, showToast]);
+    // Clear selection after Enter (spec) — even if some calls failed. Route
+    // through a functional updater so concurrent edits in cur survive.
+    setDraw((cur) => clearSelection(cur));
+  }, [setSegState, showToast]);
 
   const onKey = useCallback((action) => {
     switch (action.type) {
