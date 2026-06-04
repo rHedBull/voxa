@@ -6,6 +6,7 @@ import pytest
 
 from labeling.centerline import tube_indices
 from labeling.centerline import sample_path
+from labeling.centerline import load_centerlines, update_centerlines
 
 
 def _cylinder_cloud(axis_len=2.0, radius=0.1, n=500, seed=0):
@@ -113,3 +114,43 @@ def test_smooth_tube_captures_curve_apex():
     cloud = np.array([[1.0, 1.05, 0.0]], dtype=np.float32)
     smooth = [{"points": [[0, 0, 0], [1, 1, 0], [2, 0, 0]], "radius": 0.15, "smooth": True}]
     assert tube_indices(cloud, smooth).size == 1
+
+
+def _path(x=0.0, radius=0.15):
+    return {"points": [[x, 0, 0], [x + 1, 0, 0]], "radius": radius, "smooth": False}
+
+
+def test_store_roundtrip_append_and_load(tmp_path):
+    assert load_centerlines(tmp_path) == {"paths": []}
+    update_centerlines(tmp_path, instance_id=7, class_id=0, paths=[_path()], merged_from=[])
+    doc = load_centerlines(tmp_path)
+    assert len(doc["paths"]) == 1
+    assert doc["paths"][0]["instance_id"] == 7
+    assert doc["paths"][0]["class_id"] == 0
+    assert doc["paths"][0]["radius"] == 0.15
+
+
+def test_store_reapply_replaces_by_instance_id(tmp_path):
+    update_centerlines(tmp_path, 7, 0, [_path(0.0), _path(5.0)], [])
+    # Re-apply instance 7 with ONE edited path → both old entries replaced.
+    update_centerlines(tmp_path, 7, 2, [_path(0.0, radius=0.3)], [])
+    doc = load_centerlines(tmp_path)
+    assert len(doc["paths"]) == 1
+    assert doc["paths"][0]["radius"] == 0.3
+    assert doc["paths"][0]["class_id"] == 2
+
+
+def test_store_merged_from_deletes_absorbed_entries(tmp_path):
+    update_centerlines(tmp_path, 7, 0, [_path(0.0)], [])
+    update_centerlines(tmp_path, 9, 0, [_path(5.0)], [])
+    # Merge 9 into 7: union of paths applied under 7, 9 absorbed.
+    update_centerlines(tmp_path, 7, 0, [_path(0.0), _path(5.0)], merged_from=[9])
+    doc = load_centerlines(tmp_path)
+    assert sorted(p["instance_id"] for p in doc["paths"]) == [7, 7]
+
+
+def test_store_distinct_instances_append(tmp_path):
+    update_centerlines(tmp_path, 7, 0, [_path(0.0)], [])
+    update_centerlines(tmp_path, 9, 1, [_path(5.0)], [])
+    doc = load_centerlines(tmp_path)
+    assert sorted(p["instance_id"] for p in doc["paths"]) == [7, 9]
