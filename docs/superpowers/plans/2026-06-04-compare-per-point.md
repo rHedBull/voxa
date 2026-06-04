@@ -240,11 +240,11 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
         raise HTTPException(409, "compare-points needs an annotated/<scene> scan")
     lay = ScanLayout(Path(src.extras["scan_dir"]))
 
-    # expected_n for load_preseg's shape check: meta n_points when present,
-    # else the first-loaded source's length (the cross-source check below is
-    # the invariant that matters). The cloud is never loaded.
-    meta_n = src.n_points
-
+    # expected_n for load_preseg's shape check: meta n_points for source A,
+    # then len(a) for source B — the cross-source check below is the
+    # invariant that matters. The cloud is never loaded; if A is a preseg
+    # and meta lacks n_points, load_preseg's own shape/usage error surfaces
+    # as the usual 400.
     def load_source(ref: SourceRef, expected_n):
         if ref.kind == "session":
             sp = lay.session(ref.id)
@@ -258,13 +258,7 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
         if ref.kind == "preseg":
             from preseg.preseg_store import load_preseg
             try:
-                n = expected_n if expected_n else None
-                if n is None:
-                    raise HTTPException(409, (
-                        "cannot size-check a preseg source without meta "
-                        "n_points or a session source — compare a session "
-                        "first or fix meta.json"))
-                class_ids, _ = load_preseg(lay, ref.id, n_points=int(n))
+                class_ids, _ = load_preseg(lay, ref.id, n_points=int(expected_n or 0))
             except FileNotFoundError as e:
                 raise HTTPException(404, str(e))
             except ValueError as e:
@@ -272,8 +266,8 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
             return class_ids.astype(np.int32)
         raise HTTPException(400, f"unknown source kind {ref.kind!r}")
 
-    a = load_source(req.a, meta_n)
-    b = load_source(req.b, meta_n or len(a))
+    a = load_source(req.a, src.n_points)
+    b = load_source(req.b, len(a))
     if a.shape != b.shape:
         raise HTTPException(409, (
             f"sources cover different clouds: a has {a.shape[0]} points, "
@@ -290,7 +284,7 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
     }
 ```
 
-Implementation notes: `_resolve`, `_b64`, `Path`, `np`, `constants` come via the file's existing star imports — check what's already in scope (`constants` is imported in routes/load.py as `from app import constants`; mirror it). `src.n_points` is `Optional[int]` from discovery. Ordering subtlety: when BOTH sources are presegs and meta has no n_points, the route 409s with the fix-meta message (acceptable per spec — `expected_n` rule).
+Implementation notes: `_resolve`, `_b64`, `Path`, `np`, `constants` come via the file's existing star imports — check what's already in scope (`constants` is imported in routes/load.py as `from app import constants`; mirror it). `src.n_points` is `Optional[int]` from discovery. Ordering: A loads with `src.n_points` as the expected length, B with `len(a)` — no special-case branch; a preseg-A on a meta without n_points fails load_preseg's shape check as a plain 400 (edge case, not a design target).
 
 Route tests to append to `test_compare_points.py` (use existing conftest fixtures — `client_with_annotated_scene` → `(client, "annotated/demo", session_id)`; the fixture session has NO output yet; `client_with_loaded_annotated_scene` loads it; `scan_dir_for_loaded_scene` is the scan dir):
 

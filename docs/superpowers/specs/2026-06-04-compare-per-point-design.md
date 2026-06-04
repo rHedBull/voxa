@@ -84,10 +84,16 @@ Pure numpy, no FastAPI, no `_state`:
    output) or preseg via `preseg_store.load_preseg` (404/400 per its
    errors). No dependency on the in-memory loaded scene, and the cloud is
    never loaded. `expected_n` (which `load_preseg` requires for its shape
-   check) is `meta.json::n_points` when present, else the length of the
-   first-loaded source's array — the invariant that actually matters is
-   the cross-source one below.
+   check) is `meta.json::n_points` for source A, then `len(a)` for source
+   B — no special-case branch; if A is a preseg and meta lacks
+   `n_points`, `load_preseg`'s own shape error surfaces as the usual 400.
+   The invariant that actually matters is the cross-source check below.
 3. Length mismatch between a and b → 409 with both lengths in the message.
+   Note the response intentionally ships full-resolution arrays even though
+   the client renders a subsample: the server has no `subsample_idx`
+   (compare never loads the cloud — a deliberate decoupling), so the
+   client's existing projection owns the downsampling. ~10MB worst case on
+   5M-point scans, accepted.
 4. Respond: `{metrics: <compare_class_arrays result>, a_class_ids: <b64
    int8>, b_class_ids: <b64 int8>, palette: [...]}` — class arrays cast to
    int8 for the wire (same convention as `LoadResponse.class_ids`; labeled
