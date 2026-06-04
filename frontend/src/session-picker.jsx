@@ -60,6 +60,22 @@ export default function SessionPicker({ sessions, activeSessionId, presegs, load
         <span className="session-chev">{expanded ? '▴' : '▾'}</span>
       </button>
 
+      {active && !expanded && !loading && (
+        <div className="session-meta">
+          <span className="badge-soft">{active.preseg_id ?? 'blank'}</span>
+          <span title="Last persisted edit">saved {formatSavedAt(active.saved_at) || '—'}</span>
+          <span title="Session created">since {formatSavedAt(active.created_at)?.slice(0, 10) || '—'}</span>
+          <span title={active.has_output
+            ? 'This session has exported ground-truth output'
+            : 'Not exported yet — Ctrl+S writes this session\'s output'}>
+            {active.has_output ? 'output ✓' : 'no output'}
+          </span>
+          {active.dirty && (
+            <span style={{ color: 'oklch(0.75 0.18 60)' }} title="Unsaved changes">● unsaved</span>
+          )}
+        </div>
+      )}
+
       {expanded && (
         <div className="session-dropdown">
           {empty && (
