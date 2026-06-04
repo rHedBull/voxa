@@ -133,6 +133,12 @@ function MainApp() {
     setActiveSessionId(null);
     setSessions([]);
     setPresegs([]);
+  }, [activeScene]);
+
+  // Separate from the reset above: this one also depends on `scenes` — on a
+  // hard reload the scene list arrives async, and gating the fetch on tier
+  // before the list exists silently skipped presegs (empty dropdown race).
+  useEffectApp(() => {
     if (!activeScene) return;
     const sceneObj = scenes.find((s) => (s.id || s.name) === activeScene);
     if (sceneObj?.tier !== 'annotated') return;
@@ -142,7 +148,7 @@ function MainApp() {
       .catch((e) => { if (!cancel) console.error('listPresegs failed:', e); });
     return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScene]);
+  }, [activeScene, scenes]);
 
   // Persist active mode across refreshes (paired with INITIAL_TWEAKS lazy-init).
   useEffectApp(() => {
