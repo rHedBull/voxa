@@ -64,6 +64,10 @@ Ctrl+click) → **staged** (ended with Esc; editable, not yet labeled) →
    still drawing ends the active path and applies it immediately as its own
    instance. Re-selecting an applied path, editing it, and pressing Enter
    re-applies it (same instance ID; stored paths replaced, see Persistence).
+   Enter always expands the selection to whole instances: if the selection
+   spans paths of several unmerged instances, each instance is re-applied
+   separately (one backend call per instance) — a subset of an instance's
+   paths is never applied on its own.
 8. Undo (existing `segUndo`) reverts an apply.
 
 ### Key & mouse map (Draw sub-mode active)
@@ -134,13 +138,19 @@ leave holes at full resolution).
       {"points": [[x, y, z], ...], "radius": 0.15, "smooth": false}
     ],
     "target_class": 3,
-    "target_inst": -1
+    "target_inst": -1,
+    "merged_from": []
   }
   ```
 
   - Multiple paths in one call = the merge case → one shared instance ID.
   - `target_inst: -1` allocates a new instance ID (same convention as
     `reassign`).
+  - `merged_from` (optional, default empty): instance IDs absorbed by this
+    apply — used when merging already-applied instances. The backend deletes
+    those instances' stored entries from `centerlines.json` in the same
+    apply (their paths are included in `paths`, so their points are
+    re-captured under `target_inst`).
   - Coordinates are in the recentered frame (the frame the viewer and the
     cuboid endpoints already use).
 
@@ -181,8 +191,14 @@ Confirmed paths are stored in `sessions/<id>/centerlines.json`:
 - Written by the backend on confirm and saved with the session. Stored paths
   are keyed by `instance_id`: a confirm that targets an existing instance ID
   (re-confirm after editing a path) **replaces** that instance's stored
-  paths; a confirm that allocates a new instance ID appends. This keeps
-  re-editing a pipe from duplicating its stored paths.
+  paths; a confirm that allocates a new instance ID appends; instance IDs
+  listed in `merged_from` have their stored entries deleted in the same
+  apply. This keeps re-editing a pipe from duplicating its stored paths and
+  keeps `centerlines.json` free of stale entries after applied-applied
+  merges.
+- Undo scope: `segUndo` reverts only the per-point labels of an apply.
+  `centerlines.json` always reflects the latest applies and is not covered
+  by undo — fix a wrong path by re-editing and re-applying it.
 - Loaded when the Draw sub-mode opens, so previously confirmed paths render
   and a pipe's path/radius can be re-edited and re-applied (re-confirm =
   another apply with the same instance ID).
