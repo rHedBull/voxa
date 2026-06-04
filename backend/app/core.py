@@ -49,14 +49,29 @@ _state: dict[str, Any] = {
     "source_fp": None,      # fingerprint of the loaded cloud (session creation reads it)
 }
 
-def _annotation_path(scene: str, kind: str) -> Path:
+def _annotation_path(scene: str, kind: str, session_id: str | None = None) -> Path:
     if kind not in ("gt", "pred"):
         raise HTTPException(400, f"Invalid kind: {kind}")
+    if session_id:
+        # Session-scoped (annotated tier): the instance doc belongs to ONE
+        # labeling session — a scene-global file would leak instances across
+        # sessions (every session showing the last-saved session's panel).
+        from labeling.session_store import _validate_session_id
+        from scenes.scan_layout import ScanLayout
+        try:
+            _validate_session_id(session_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        src = _resolve(scene)
+        if src.tier != "annotated":
+            raise HTTPException(409, "session_id is only valid for annotated scenes")
+        sdir = ScanLayout(Path(src.extras["scan_dir"])).session(session_id).dir
+        if not sdir.is_dir():
+            raise HTTPException(404, f"session '{session_id}' not found")
+        return sdir / f"instances_{kind}.json"
     fname = "ground_truth.json" if kind == "gt" else "predictions.json"
-    # Annotation files key off the scene name (without tier) so that legacy
-    # bare-name lookups continue to work. Tier collisions in this dir are
-    # acceptable for now — Compare mode is cuboid-only and only legacy scenes
-    # produce cuboid GT/pred today.
+    # Scene-global file: legacy data-dir scenes only. Annotated scans must
+    # pass session_id — their callers (App.jsx) thread the active session.
     safe = scene.replace("/", "__")
     return ANNOT_DIR / safe / fname
 

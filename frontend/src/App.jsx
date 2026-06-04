@@ -231,18 +231,20 @@ function MainApp() {
     // ref immediately so a subsequent scene/mode change defaults to last-worked.
     const explicitSessionId = explicitSessionRef.current;
     explicitSessionRef.current = null;
-    // Run /api/load first, then fetch /api/segment/state. They MUST be
-    // sequential: /api/load is what swaps the backend's in-memory seg
-    // session over to the new scene; if segState() races ahead it can
-    // come back with the previous scene's data (e.g. 482k smart_ais
-    // segments hydrated onto a 16k industrial_scan cloud).
-    Promise.all([
-      VoxaAPI.load(activeScene, { wantFullLabels, sessionId: explicitSessionId }),
-      VoxaAPI.getAnnotation(activeScene, 'gt'),
-    ]).then(async ([c, gtDoc]) => {
-      const segLive = await VoxaAPI.segState().catch(() => null);
-      return [c, gtDoc, segLive];
-    }).then(([c, gtDoc, segLive]) => {
+    // Run /api/load first, then fetch /api/segment/state and the instance
+    // doc. They MUST be sequential: /api/load is what swaps the backend's
+    // in-memory seg session over to the new scene (segState() racing ahead
+    // can return the previous scene's data), and the annotation fetch needs
+    // the resolved session id (c.sessionId) so each session gets its OWN
+    // instance doc instead of a scene-global one.
+    VoxaAPI.load(activeScene, { wantFullLabels, sessionId: explicitSessionId })
+      .then(async (c) => {
+        const [gtDoc, segLive] = await Promise.all([
+          VoxaAPI.getAnnotation(activeScene, 'gt', c.sessionId),
+          VoxaAPI.segState().catch(() => null),
+        ]);
+        return [c, gtDoc, segLive];
+      }).then(([c, gtDoc, segLive]) => {
       if (cancel) return;
       setCloud(c);
       setSessions(c.sessions);
@@ -338,30 +340,35 @@ function MainApp() {
 
   useEffectApp(() => { document.body.className = themeClass; }, [themeClass]);
 
+  // Refs mirror the active scene AND session so the debounced autosave and
+  // the beforeunload flush write to the session that owned the edit, even
+  // after a switch interleaves with the timer.
+  const activeSceneRef = useRefApp(activeScene);
+  useEffectApp(() => { activeSceneRef.current = activeScene; }, [activeScene]);
+  const activeSessionRef = useRefApp(activeSessionId);
+  useEffectApp(() => { activeSessionRef.current = activeSessionId; }, [activeSessionId]);
+
   const saveGt = useCallbackApp(async (instances) => {
     if (!activeScene) return;
     setGtInstances(instances);
-    await VoxaAPI.putAnnotation(activeScene, 'gt', { instances });
+    await VoxaAPI.putAnnotation(activeScene, 'gt', { instances }, activeSessionRef.current);
     setSavedAt(new Date().toLocaleTimeString());
     setCuboidDirty(false);
   }, [activeScene]);
 
   // Auto-save: debounce cuboid edits to the backend so a refresh never loses
-  // unconfirmed work. Refs let the debounced save read the LATEST scene id
-  // even after a scene switch interleaves with the timer, and let the
-  // beforeunload flush below send whatever's pending without rebuilding the
-  // closure chain.
-  const activeSceneRef = useRefApp(activeScene);
-  useEffectApp(() => { activeSceneRef.current = activeScene; }, [activeScene]);
+  // unconfirmed work.
   const autosaveTimerRef = useRefApp(null);
-  const pendingSaveRef = useRefApp(null);  // { scene, instances } | null
+  const pendingSaveRef = useRefApp(null);  // { scene, sessionId, instances } | null
 
   const onCuboidChange = useCallbackApp((instances) => {
     setGtInstances(instances);
     setCuboidDirty(true);
     const sceneAtChange = activeSceneRef.current;
     if (!sceneAtChange) return;
-    pendingSaveRef.current = { scene: sceneAtChange, instances };
+    pendingSaveRef.current = {
+      scene: sceneAtChange, sessionId: activeSessionRef.current, instances,
+    };
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = setTimeout(async () => {
       autosaveTimerRef.current = null;
@@ -369,7 +376,8 @@ function MainApp() {
       pendingSaveRef.current = null;
       if (!pending || pending.scene !== activeSceneRef.current) return;
       try {
-        await VoxaAPI.putAnnotation(pending.scene, 'gt', { instances: pending.instances });
+        await VoxaAPI.putAnnotation(pending.scene, 'gt',
+          { instances: pending.instances }, pending.sessionId);
         setSavedAt(new Date().toLocaleTimeString());
         setCuboidDirty(false);
       } catch (err) {
@@ -402,7 +410,9 @@ function MainApp() {
       }
       pendingSaveRef.current = null;
       try {
-        fetch(`/api/annotations/gt/${pending.scene}`, {
+        const q = pending.sessionId
+          ? `?session_id=${encodeURIComponent(pending.sessionId)}` : '';
+        fetch(`/api/annotations/gt/${pending.scene}${q}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

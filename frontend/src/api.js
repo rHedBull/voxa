@@ -102,16 +102,20 @@ export const VoxaAPI = {
       colors: j.colors ? b64ToFloat32(j.colors) : null,
     };
   },
-  async getAnnotation(scene, kind) {
+  async getAnnotation(scene, kind, sessionId = null) {
     // Tier-prefixed ids contain `/` which Starlette decodes during routing,
     // so the route puts `kind` first and matches `scene` greedily as a path.
-    const r = await fetch(`/api/annotations/${kind}/${scene}`);
+    // sessionId scopes the doc to one labeling session (annotated tier) —
+    // without it, every session of a scan would share one instance list.
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const r = await fetch(`/api/annotations/${kind}/${scene}${q}`);
     if (!r.ok) return { scene, kind, instances: [], meta: {} };
     return r.json();
   },
-  async putAnnotation(scene, kind, doc) {
+  async putAnnotation(scene, kind, doc, sessionId = null) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
     const body = { scene, kind, instances: doc.instances || [], meta: doc.meta || {} };
-    const r = await fetch(`/api/annotations/${kind}/${scene}`, {
+    const r = await fetch(`/api/annotations/${kind}/${scene}${q}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
