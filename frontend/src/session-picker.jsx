@@ -71,7 +71,8 @@ export default function SessionPicker({ sessions, activeSessionId, presegs, load
             {active.has_output ? 'output ✓' : 'no output'}
           </span>
           {active.dirty && (
-            <span style={{ color: 'oklch(0.75 0.18 60)' }} title="Unsaved changes">● unsaved</span>
+            <span style={{ color: 'oklch(0.75 0.18 60)' }}
+              title="Working copy is autosaved — Ctrl+S exports this session's ground-truth output">● unsaved</span>
           )}
         </div>
       )}

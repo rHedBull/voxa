@@ -427,6 +427,19 @@ function MainApp() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 
+  // The session picker's "● unsaved" / "output ✓" badges read the `sessions`
+  // list, which is otherwise only fetched at load time — patch the active
+  // row in place after every successful segSave so the badges track reality.
+  const markSessionSaved = useCallbackApp(() => {
+    setSegState((s) => (s ? { ...s, dirty: false } : s));
+    setSavedAt(new Date().toLocaleTimeString());
+    const sid = activeSessionRef.current;
+    if (!sid) return;
+    setSessions((prev) => prev.map((s) => s.session_id === sid
+      ? { ...s, dirty: false, has_output: true, saved_at: new Date().toISOString() }
+      : s));
+  }, []);
+
   // Auto-save segment (per-point) edits ~600 ms after a change so closing
   // the tab without Ctrl+S no longer drops the work. The endpoint reads the
   // server-side seg session, so the request body is empty; we just need to
@@ -439,8 +452,7 @@ function MainApp() {
       segAutosaveTimerRef.current = null;
       try {
         await VoxaAPI.segSave();
-        setSegState((s) => (s ? { ...s, dirty: false } : s));
-        setSavedAt(new Date().toLocaleTimeString());
+        markSessionSaved();
       } catch (err) {
         console.error('seg autosave failed:', err);
       }
@@ -451,7 +463,7 @@ function MainApp() {
         segAutosaveTimerRef.current = null;
       }
     };
-  }, [segState?.dirty]);
+  }, [segState?.dirty, markSessionSaved]);
 
   // beforeunload: best-effort flush of pending segment edits. The save is
   // server-resident, so a keepalive PUT is enough — no payload to ferry.
@@ -508,17 +520,21 @@ function MainApp() {
   // cuboids. Both the Ctrl/Cmd+S shortcut and the header Save button call this
   // so they do identical work.
   const handleSave = useCallbackApp(async () => {
-    if (segState?.dirty) {
+    // Explicit save always exports — the client dirty flag resets on reload,
+    // so gating on it left a persisted-dirty session (badge "● unsaved")
+    // impossible to clear without making a new edit first. segSave is
+    // idempotent, so the no-op-edit case just rewrites the same output.
+    if (segState) {
       try {
         await VoxaAPI.segSave();
-        setSegState((s) => s ? { ...s, dirty: false } : s);
+        markSessionSaved();
       } catch (err) {
         console.error('segSave failed, skipping cuboid save:', err);
         return;
       }
     }
     saveGt(gtInstances);
-  }, [gtInstances, saveGt, segState]);
+  }, [gtInstances, saveGt, segState, markSessionSaved]);
 
   // Cmd/Ctrl+S → same work as the Save button.
   useEffectApp(() => {
