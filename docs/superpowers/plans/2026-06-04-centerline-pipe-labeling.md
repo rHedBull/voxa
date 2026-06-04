@@ -262,8 +262,9 @@ Expected: smooth tests FAIL (stub ignores `smooth`); straight-passthrough passes
 ```python
 def sample_path(path: dict) -> np.ndarray:
     """Control points → polyline chords. Straight paths pass through
-    unchanged; smooth paths get centripetal Catmull-Rom sampling with chord
-    step ≈ radius/2 so the tube test on chords can't visibly cut corners."""
+    unchanged; smooth paths get Catmull-Rom sampling with target step
+    ≈ radius/2 (worst-case chord stays < radius near apexes), so the tube
+    test on chords can't visibly cut corners."""
     pts = np.asarray(path["points"], dtype=np.float32)
     if not path.get("smooth") or len(pts) < 3:
         return pts
