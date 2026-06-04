@@ -755,12 +755,6 @@ kbd {
   cursor: pointer; user-select: none;
 }
 .cmp-table-row:hover { background: var(--bg-elev); }
-.cmp-table-row.selected {
-  background: oklch(0.65 0.15 250 / 0.18);
-  box-shadow: inset 2px 0 0 var(--accent, #5b8def);
-}
-.cmp-table-row.selected:hover { background: oklch(0.65 0.15 250 / 0.24); }
-.cmp-table-row .inst-edit-btn { justify-self: end; }
 
 .cmp-class-name { display: inline-flex; align-items: center; gap: 7px;
                   min-width: 0; overflow: hidden; text-overflow: ellipsis;

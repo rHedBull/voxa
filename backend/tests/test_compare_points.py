@@ -146,5 +146,26 @@ def test_compare_length_mismatch_409(client_with_loaded_annotated_scene, scan_di
     assert "different clouds" in r.json()["detail"]
 
 
+def test_compare_non_annotated_tier_409(client_with_annotated_scene):
+    """compare-points only exists for annotated scans; other tiers 409."""
+    client, _scene_id, _sid = client_with_annotated_scene
+    # The legacy tier is served from VOXA_DATA_DIR/scenes — create a stub.
+    import os
+    from pathlib import Path
+    legacy = Path(os.environ["VOXA_DATA_DIR"]) / "scenes" / "stub409"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "source.ply").write_bytes(b"")  # discovery only checks existence
+    try:
+        r = client.post("/api/compare-points/legacy/stub409", json={
+            "a": {"kind": "session", "id": "x"},
+            "b": {"kind": "preseg", "id": "y"},
+        })
+        assert r.status_code == 409
+        assert "annotated" in r.json()["detail"]
+    finally:
+        (legacy / "source.ply").unlink()
+        legacy.rmdir()
+
+
 def test_cuboid_compare_endpoint_is_gone(client):
     assert client.post("/api/compare/legacy/foo").status_code in (404, 405)
