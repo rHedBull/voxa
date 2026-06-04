@@ -27,7 +27,12 @@ def _v13_scans():
         if not meta.exists():
             continue
         try:
-            if str(json.loads(meta.read_text()).get("schema_version", "")) >= "1.3":
+            v = str(json.loads(meta.read_text()).get("schema_version", ""))
+            # validate_scan_dir implements the v1.3 §7 invariants — apply it
+            # only to v1.x scans. The old `>= "1.3"` string compare scooped
+            # up migrated "2.0" scans and failed them against v1.3 rules.
+            # A v2 conformance gate is a separate follow-up.
+            if v.startswith("1.") and v >= "1.3":
                 out.append(sd)
         except (json.JSONDecodeError, OSError):
             continue
