@@ -55,7 +55,7 @@ function pointsInsideOBBLabel(positions, box) {
   return out;
 }
 
-export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession }) {
+export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession, sessionLoading }) {
   const meshPopupRef = useRefLabel(null);
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
@@ -915,6 +915,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             sessions={sessions}
             activeSessionId={activeSessionId}
             presegs={presegs}
+            loading={sessionLoading}
             onSelect={onSelectSession}
             onCreate={onCreateSession}
             onRename={onRenameSession}

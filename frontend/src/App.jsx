@@ -685,6 +685,7 @@ function MainApp() {
             onCameraChange={onMainCameraChange}
             isAnnotated={scenes.find((s) => (s.id || s.name) === activeScene)?.tier === 'annotated'}
             sessions={sessions} activeSessionId={activeSessionId} presegs={presegs}
+            sessionLoading={loading}
             onSelectSession={onSelectSession} onCreateSession={onCreateSession}
             onRenameSession={onRenameSession} onDeleteSession={onDeleteSession}
             hasMesh={!!cloud?.meshUrl} />

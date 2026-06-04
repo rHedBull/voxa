@@ -82,7 +82,7 @@ export function PresegmentList({
         <span>Presegments</span>
         <span className="badge-soft">{total}</span>
       </div>
-      <div className="inst-list" style={{ maxHeight: '40vh', overflowY: 'auto' }}>
+      <div className="inst-list">
         {total === 0 && (
           <div className="sugg-empty" style={{ fontSize: '11px', padding: '6px 4px' }}>
             No presegments. Click ⚙ to choose a mode and run.
