@@ -274,22 +274,26 @@ export default function DrawMode({
   }, [showToast]);
 
   const applySelection = useCallback(async () => {
-    // Synchronous pre-step (end active path + select it) goes through a
-    // functional updater so concurrent edits aren't clobbered. We capture the
-    // post-step state into a local to decide which calls to send — that
-    // snapshot is intentional (Enter applies what was selected at press time).
-    // All subsequent state writes route through functional updaters so user
-    // edits during the network round-trips survive.
-    let snapshot;
-    setDraw((s) => {
-      if (s.active) {
-        const key = s.active;
-        s = endActive(s);
-        if (s.paths.some((p) => p.key === key)) s = selectPath(s, key);
-      }
-      snapshot = s;
-      return s;
-    });
+    // The press-time `draw` decides which calls to send — intentional
+    // snapshot semantics (Enter applies what was selected at press time).
+    // All state WRITES go through functional updaters so user edits during
+    // the network round-trips survive. Don't read state back out of a
+    // setDraw updater: React only invokes updaters eagerly as an
+    // optimization, not as a contract.
+    let snapshot = draw;
+    if (snapshot.active) {
+      const key = snapshot.active;
+      snapshot = endActive(snapshot);
+      if (snapshot.paths.some((p) => p.key === key)) snapshot = selectPath(snapshot, key);
+      // Commit the same end+select pre-step to the live state — guarded so a
+      // raced edit (e.g. Esc already ended the path) wins over the replay.
+      setDraw((cur) => {
+        if (cur.active !== key) return cur;
+        let s2 = endActive(cur);
+        if (s2.paths.some((p) => p.key === key)) s2 = selectPath(s2, key);
+        return s2;
+      });
+    }
     const calls = buildApplyCalls(snapshot);
     if (calls.length === 0) return;
     for (const call of calls) {
@@ -319,7 +323,7 @@ export default function DrawMode({
     // Clear selection after Enter (spec) — even if some calls failed. Route
     // through a functional updater so concurrent edits in cur survive.
     setDraw((cur) => clearSelection(cur));
-  }, [setSegState, showToast]);
+  }, [draw, setSegState, showToast]);
 
   const onKey = useCallback((action) => {
     switch (action.type) {
