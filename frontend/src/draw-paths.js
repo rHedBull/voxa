@@ -7,6 +7,7 @@
 //   paths: [{ key, points: [[x,y,z],...], radius, smooth, classId, instKey }],
 //   active: string|null,          // key of the path being drawn
 //   selection: Set<string>,       // selected path keys
+//   selectedPoint: { pathKey, pointIdx } | null,  // single control point (extend anchor)
 //   instanceIds: { [instKey]: number },        // backend ids, applied groups only
 //   pendingMergedFrom: { [instKey]: number[] },// absorbed backend ids awaiting next apply
 //   lastRadius: number,
@@ -20,6 +21,7 @@ export function initDrawState({ defaultRadius = 0.15 } = {}) {
     paths: [],
     active: null,
     selection: new Set(),
+    selectedPoint: null,
     instanceIds: {},
     pendingMergedFrom: {},
     lastRadius: defaultRadius,
@@ -46,7 +48,10 @@ export function addPoint(state, xyz, classId) {
     classId,
     instKey: key,        // unique until merged
   };
-  return { ...s, paths: [...s.paths, path], active: key, selection: new Set() };
+  return {
+    ...s, paths: [...s.paths, path], active: key,
+    selection: new Set(), selectedPoint: null,
+  };
 }
 
 // No-op if pathKey is unknown — pointer drags can race a delete, and a
@@ -104,11 +109,60 @@ export function selectPath(state, pathKey, { additive = false } = {}) {
   const selection = additive ? new Set(state.selection) : new Set();
   if (additive && selection.has(pathKey)) selection.delete(pathKey);
   else selection.add(pathKey);
-  return { ...state, selection };
+  return { ...state, selection, selectedPoint: null };
 }
 
 export function clearSelection(state) {
-  return { ...state, selection: new Set() };
+  return { ...state, selection: new Set(), selectedPoint: null };
+}
+
+// Single-point selection: the anchor for extending a path. Also selects the
+// owning path so radius/class/smooth ops target it. Ends any active draw
+// first — otherwise a later Ctrl+click appends to the active path's tail
+// instead of extending from the anchor. endActive discards 1-point paths,
+// which can orphan the clicked point; that's a user action, not a wiring
+// bug, so degrade to "nothing selected" rather than throwing.
+export function selectPoint(state, pathKey, pointIdx) {
+  const s = state.active ? endActive(state) : state;
+  if (!s.paths.some((p) => p.key === pathKey)) {
+    return { ...s, selection: new Set(), selectedPoint: null };
+  }
+  return {
+    ...s,
+    selection: new Set([pathKey]),
+    selectedPoint: { pathKey, pointIdx },
+  };
+}
+
+// Grow the selected point's path. Endpoints extend the run (before the head,
+// after the tail) and the new point becomes the anchor so repeated extends
+// keep walking outward. A middle point already has 2 connections — inserting
+// there would reroute the run out and back through the new point, so branch
+// a fresh path off the junction instead; it starts active so further
+// Ctrl+clicks chain like normal drawing.
+export function extendFromPoint(state, xyz) {
+  const sel = state.selectedPoint;
+  if (!sel) return state;
+  const p = mustFind(state, sel.pathKey);
+  if (sel.pointIdx > 0 && sel.pointIdx < p.points.length - 1) {
+    const [key, s] = freshKey(state);
+    const branch = {
+      key,
+      points: [[...p.points[sel.pointIdx]], xyz],
+      radius: p.radius,
+      smooth: false,
+      classId: p.classId,
+      instKey: key,        // own instance until merged, like any new path
+    };
+    return {
+      ...s, paths: [...s.paths, branch], active: key,
+      selection: new Set(), selectedPoint: null,
+    };
+  }
+  const insertAt = sel.pointIdx === 0 ? 0 : sel.pointIdx + 1;
+  const points = [...p.points.slice(0, insertAt), xyz, ...p.points.slice(insertAt)];
+  const paths = state.paths.map((x) => x.key === p.key ? { ...x, points } : x);
+  return { ...state, paths, selectedPoint: { pathKey: p.key, pointIdx: insertAt } };
 }
 
 // Radius/class/smooth target the active path while drawing, else the selection.
@@ -152,7 +206,28 @@ export function toggleSmooth(state) {
 
 export function deleteSelected(state) {
   const paths = state.paths.filter((p) => !state.selection.has(p.key));
-  return { ...state, paths, selection: new Set() };
+  return { ...state, paths, selection: new Set(), selectedPoint: null };
+}
+
+// Remove just the anchor point. A path can't survive on one point, so
+// deleting from a 2-point path drops the whole path (same rule as
+// removeLastPoint / endActive). The path stays selected so a follow-up
+// click-⌫ sequence keeps working on it.
+export function deleteSelectedPoint(state) {
+  const sel = state.selectedPoint;
+  if (!sel) return state;
+  const p = mustFind(state, sel.pathKey);
+  if (p.points.length <= 2) {
+    return {
+      ...state,
+      paths: state.paths.filter((x) => x.key !== p.key),
+      selection: new Set(),
+      selectedPoint: null,
+    };
+  }
+  const points = p.points.filter((_, i) => i !== sel.pointIdx);
+  const paths = state.paths.map((x) => x.key === p.key ? { ...x, points } : x);
+  return { ...state, paths, selectedPoint: null };
 }
 
 export function mergeSelection(state) {

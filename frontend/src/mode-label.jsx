@@ -67,6 +67,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
   // run — wildly different hues per segment make the grouping legible.
   const [colorMode] = useStateLabel('class');
+  // Draw works on the raw RGB cloud, where bumping the point size makes the
+  // sparse subsample read denser (same slider as Inspect).
+  const [pointSize, setPointSize] = useStateLabel(0.012);
   const [showDiff, setShowDiff] = useStateLabel(false);
   // Gizmo mode for the selected cuboid. null = no gizmo (edges only).
   const [transformMode, setTransformMode] = useStateLabel('translate');
@@ -815,6 +818,36 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     });
   }, [segState, activeClassDef, instances, counts, onChange, setSegState]);
 
+  // Surface each applied centerline instance in the right Instances panel as
+  // a pointset row (parity with fast-label promotion). Re-applies refresh the
+  // class; instances absorbed by a merge drop their row. Reads the latest
+  // instances through a ref — one Enter can apply several groups back to
+  // back, faster than the prop re-renders.
+  const instancesRef = useRefLabel(instances);
+  instancesRef.current = instances;
+  const onDrawApplied = useCallbackLabel(({ instanceId, classIdx, mergedFrom }) => {
+    const cls = classes[classIdx];
+    if (!cls) return;
+    const absorbed = new Set(mergedFrom);
+    const kept = instancesRef.current.filter(
+      (i) => !(i.kind === 'pointset' && absorbed.has(i.segId)));
+    const existing = kept.find((i) => i.kind === 'pointset' && i.segId === instanceId);
+    const next = existing
+      ? kept.map((i) => i === existing ? { ...i, cls: cls.id, color: cls.color } : i)
+      : [...kept, {
+        id: newId(),
+        segId: instanceId,
+        kind: 'pointset',
+        cls: cls.id,
+        label: `${cls.label} #${instanceId}`,
+        color: cls.color,
+        source: 'draw',
+        confirmed: true,
+      }];
+    instancesRef.current = next;
+    onChange(next);
+  }, [classes, onChange]);
+
   const toggleConfirmSelected = useCallbackLabel(() => {
     if (!selectedId) return;
     const target = instances.find((i) => i.id === selectedId);
@@ -860,11 +893,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     setSegState((s) => (s && s.selection.size ? { ...s, selection: new Set() } : s));
   }, [fastMode, setSegState]);
 
-  // WASD steps the fast queue / draw paths — force orbit nav so the walk
-  // controller can't swallow those keys.
+  // WASD steps the fast queue — force orbit nav so the walk controller
+  // can't swallow those keys. Draw binds no WASD keys, so walking while
+  // drawing is allowed.
   useEffectLabel(() => {
-    if ((fastMode || drawMode) && navMode === 'walk') onNavModeChange?.('orbit');
-  }, [fastMode, drawMode, navMode, onNavModeChange]);
+    if (fastMode && navMode === 'walk') onNavModeChange?.('orbit');
+  }, [fastMode, navMode, onNavModeChange]);
 
   const fastStep = useCallbackLabel((delta) => {
     setFastPos((p) => stepIndex(fastQueue.length, p, delta));
@@ -1060,6 +1094,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             classes={classes}
             setSegState={setSegState}
             onExit={() => setSubMode(null)}
+            pointSize={pointSize}
+            setPointSize={setPointSize}
+            defaultClsIdx={Math.max(0, classes.findIndex((c) => c.id === activeClass))}
+            onClassChange={(idx) => classes[idx] && setActiveClass(classes[idx].id)}
+            onApplied={onDrawApplied}
           />
         )}
         <PresegmentList
@@ -1084,8 +1123,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           background={theme.bg}
           floorColor={theme.floor}
           navMode={navMode}
-          colorMode={colorMode}
-          pointSize={0.012}
+          colorMode={drawMode ? 'rgb' : colorMode}
+          pointSize={pointSize}
           diffMask={diffMask}
           showDiff={showDiff}
           transformMode={selBox ? (transformMode || 'translate') : (activeTool === 'cuboid' && !isLocked ? transformMode : null)}
@@ -1098,10 +1137,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           hideConfirmedPoints={hideConfirmed}
           onLabelStats={setLabelStats}
           onCameraChange={onCameraChange}
-          segBoxes={segBoxesFiltered
+          segBoxes={!drawMode && segBoxesFiltered
             ? { ...segBoxesFiltered, selection: segState.selection }
             : null}
-          segHulls={segHullsFiltered
+          segHulls={!drawMode && segHullsFiltered
             ? { ...segHullsFiltered, selection: segState.selection }
             : null}
           showSegHulls={showSegHulls}
