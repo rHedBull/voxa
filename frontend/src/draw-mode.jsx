@@ -74,7 +74,7 @@ function DrawHUD({ state, toast }) {
   );
 }
 
-function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
+function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx, hideApplied }) {
   const layerRef = useRef(null);        // { group, remove }
   const dragRef = useRef(null);         // { pathKey, pointIdx, plane, mesh, last }
   const drawRef = useRef(draw);
@@ -106,6 +106,10 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
       const color = new THREE.Color(cls?.color || '#60a5fa');
       const isSel = draw.selection.has(p.key) || draw.active === p.key;
       const applied = draw.instanceIds[p.instKey] != null;
+      // Applied paths auto-hide (decluttering + unpickable, like the
+      // Instances "hide confirmed" toggle); a selected one still renders so
+      // panel-row clicks can reveal it for editing.
+      if (applied && hideApplied && !isSel) continue;
       const baseOpacity = applied ? 0.10 : 0.25;
       const tubeMatCfg = {
         color, transparent: true, depthWrite: false,
@@ -180,7 +184,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
         }
       });
     }
-  }, [draw, classes]);
+  }, [draw, classes, hideApplied]);
 
   // Pointer interactions.
   useEffect(() => {
@@ -319,6 +323,8 @@ export default function DrawMode({
   const [draw, setDraw] = useState(() => initDrawState());
   const drawLiveRef = useRef(draw);
   drawLiveRef.current = draw;
+  // Applied paths auto-hide by default — same default as "hide confirmed".
+  const [hideApplied, setHideApplied] = useState(true);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const showToast = useCallback((msg) => {
@@ -456,6 +462,7 @@ export default function DrawMode({
         setDraw={setDraw}
         classes={classes}
         defaultClsIdx={defaultClsIdx}
+        hideApplied={hideApplied}
       />
       <DrawPanel
         draw={draw}
@@ -464,6 +471,8 @@ export default function DrawMode({
         onApply={applySelection}
         pointSize={pointSize}
         setPointSize={setPointSize}
+        hideApplied={hideApplied}
+        setHideApplied={setHideApplied}
       />
     </>
   );
@@ -472,15 +481,30 @@ export default function DrawMode({
 // Side-panel section: path list + radius field + actions. Rendered by
 // LabelMode inside the left sidebar (portal-free: this component returns
 // plain divs; LabelMode places it).
-function DrawPanel({ draw, setDraw, classes, onApply, pointSize, setPointSize }) {
+function DrawPanel({
+  draw, setDraw, classes, onApply, pointSize, setPointSize,
+  hideApplied, setHideApplied,
+}) {
   const selected = draw.paths.filter((p) => draw.selection.has(p.key));
   const radiusValue = selected[0]?.radius
     ?? draw.paths.find((p) => p.key === draw.active)?.radius
     ?? draw.lastRadius;
+  const appliedCount = draw.paths.filter((p) => draw.instanceIds[p.instKey] != null).length;
   return (
     <div className="draw-panel" style={{ marginTop: 10 }}>
       <div className="side-hd"><span>Centerline paths</span>
-        <span className="badge-soft">{draw.paths.length}</span></div>
+        <div className="side-hd-actions">
+          {appliedCount > 0 && (
+            <button className="hide-labeled-btn"
+              onClick={() => setHideApplied((v) => !v)}
+              title={hideApplied
+                ? `Show ${appliedCount} applied path${appliedCount === 1 ? '' : 's'}`
+                : `Hide ${appliedCount} applied path${appliedCount === 1 ? '' : 's'}`}>
+              {hideApplied ? '◌' : '●'} {appliedCount} applied
+            </button>
+          )}
+          <span className="badge-soft">{draw.paths.length}</span>
+        </div></div>
       <div className="ins-row">
         <label>Radius</label>
         <input className="ins-input" type="number" step="0.01" min="0.005"
@@ -504,6 +528,9 @@ function DrawPanel({ draw, setDraw, classes, onApply, pointSize, setPointSize })
           return (
             <div key={p.key}
               className={'inst-row' + (isSel ? ' selected' : '')}
+              // Hidden-in-viewport rows stay clickable but read as inactive;
+              // selecting one reveals the path again.
+              style={applied && hideApplied && !isSel ? { opacity: 0.55 } : undefined}
               onClick={(e) => setDraw((s) =>
                 // Ctrl/Cmd/Shift toggles — same multi-select gesture as the
                 // Presegments list. Plain click replaces.
