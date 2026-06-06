@@ -10,7 +10,8 @@ import { VoxaAPI } from './api.js';
 import { applyDelta } from './segment-state.js';
 import {
   initDrawState, addPoint, movePoint, removeLastPoint, endActive,
-  selectPath, clearSelection, setRadius, nudgeRadius, setClass, toggleSmooth,
+  selectPath, clearSelection, selectPoint, extendFromPoint, deleteSelectedPoint,
+  setRadius, nudgeRadius, setClass, toggleSmooth,
   deleteSelected, mergeSelection, buildApplyCalls, markApplied, seedFromServer,
 } from './draw-paths.js';
 
@@ -43,6 +44,7 @@ export function DrawKeys({ active, classes, onKey }) {
 
 function DrawHUD({ state, toast }) {
   const drawing = !!state.active;
+  const anchored = !drawing && !!state.selectedPoint;
   const nSel = state.selection.size;
   return (
     <div style={{
@@ -54,13 +56,17 @@ function DrawHUD({ state, toast }) {
     }}>
       {toast ? <b style={{ color: '#fbbf24' }}>{toast}</b> : (
         <>
-          <b style={{ color: '#60a5fa' }}>
-            {drawing ? 'Drawing path…' : nSel ? `${nSel} path${nSel > 1 ? 's' : ''} selected` : 'Draw centerlines'}
+          <b style={{ color: anchored ? '#fb923c' : '#60a5fa' }}>
+            {drawing ? 'Drawing path…'
+              : anchored ? 'Point selected'
+              : nSel ? `${nSel} path${nSel > 1 ? 's' : ''} selected` : 'Draw centerlines'}
           </b>
           <span style={{ opacity: 0.65 }}>
             {drawing
               ? 'Ctrl+click add · ⌫ undo pt · Esc end · Enter end+apply'
-              : 'Ctrl+click start · click tube select · scroll/± radius · C smooth · M merge · Enter apply · Esc exit'}
+              : anchored
+              ? 'Ctrl+click extend pipe from here · drag move · ⌫ delete point · Esc deselect'
+              : 'Ctrl+click start · click select · Ctrl+click path multi-select · click point to extend · scroll/± radius · C smooth · M merge · Enter apply · Esc exit'}
           </span>
         </>
       )}
@@ -68,7 +74,7 @@ function DrawHUD({ state, toast }) {
   );
 }
 
-function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
+function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx, hideApplied }) {
   const layerRef = useRef(null);        // { group, remove }
   const dragRef = useRef(null);         // { pathKey, pointIdx, plane, mesh, last }
   const drawRef = useRef(draw);
@@ -100,10 +106,27 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
       const color = new THREE.Color(cls?.color || '#60a5fa');
       const isSel = draw.selection.has(p.key) || draw.active === p.key;
       const applied = draw.instanceIds[p.instKey] != null;
+      // Applied paths auto-hide (decluttering + unpickable, like the
+      // Instances "hide confirmed" toggle); a selected one still renders so
+      // panel-row clicks can reveal it for editing.
+      if (applied && hideApplied && !isSel) continue;
       const baseOpacity = applied ? 0.10 : 0.25;
       const tubeMatCfg = {
         color, transparent: true, depthWrite: false,
         opacity: isSel ? baseOpacity + 0.15 : baseOpacity,
+      };
+      // Selected paths get a white back-side shell slightly larger than the
+      // tube — reads as a border/rim around the selection. The shell must
+      // never swallow picks: raycast is a no-op.
+      const outlineR = p.radius + Math.max(0.01, p.radius * 0.12);
+      const addOutline = (geom, opacity = 0.55) => {
+        const shell = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({
+          color: 0xffffff, side: THREE.BackSide,
+          transparent: true, opacity, depthWrite: false,
+        }));
+        shell.raycast = () => {};
+        group.add(shell);
+        return shell;
       };
       // Tube: smooth → one TubeGeometry; straight → cylinder per segment.
       // Each mesh gets its own material (no orphan to leak on rebuild).
@@ -115,6 +138,8 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
           new THREE.MeshBasicMaterial(tubeMatCfg));
         tube.userData.drawPath = p.key;
         group.add(tube);
+        if (isSel) addOutline(
+          new THREE.TubeGeometry(curve, pts3.length * 8, outlineR, 12, false));
       } else {
         for (let i = 0; i < pts3.length - 1; i++) {
           const a = pts3[i], b = pts3[i + 1];
@@ -128,20 +153,38 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
             new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
           cyl.userData.drawPath = p.key;
           group.add(cyl);
+          if (isSel) {
+            const shell = addOutline(
+              new THREE.CylinderGeometry(outlineR, outlineR, len, 12, 1, true));
+            shell.position.copy(cyl.position);
+            shell.quaternion.copy(cyl.quaternion);
+          }
         }
       }
       // Control points — pick priority targets (spec: point > tube > cloud).
+      // Class-colored always; selection adds a border shell instead of
+      // flipping the fill: white for the path, orange for the anchor point
+      // (the Ctrl+click extend target).
       const sphereR = Math.max(0.02, p.radius * 0.3);
+      const anchor = draw.selectedPoint;
       p.points.forEach((pt, i) => {
+        const isAnchor = anchor && anchor.pathKey === p.key && anchor.pointIdx === i;
         const sph = new THREE.Mesh(
           new THREE.SphereGeometry(sphereR, 12, 8),
-          new THREE.MeshBasicMaterial({ color: isSel ? 0xffffff : color }));
+          new THREE.MeshBasicMaterial({ color }));
         sph.position.set(pt[0], pt[1], pt[2]);
         sph.userData.drawPoint = { pathKey: p.key, pointIdx: i };
         group.add(sph);
+        if (isSel || isAnchor) {
+          // Opaque ring — a translucent rim on a marker this small is invisible.
+          const shell = addOutline(
+            new THREE.SphereGeometry(sphereR * (isAnchor ? 1.5 : 1.35), 12, 8), 1);
+          if (isAnchor) shell.material.color.set(0xfb923c);
+          shell.position.copy(sph.position);
+        }
       });
     }
-  }, [draw, classes]);
+  }, [draw, classes, hideApplied]);
 
   // Pointer interactions.
   useEffect(() => {
@@ -179,13 +222,28 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
         return;
       }
       if (evt.ctrlKey || evt.metaKey) {
-        // Place a control point at the picked cloud point.
+        // Ctrl+click on an existing path (tube or control point) toggles it
+        // in the selection — same gesture as presegments. Suppressed while
+        // drawing, where every Ctrl+click must keep adding points.
+        const pathHit = sphereHit ?? hits.find((h) => h.object.userData.drawPath);
+        if (pathHit && !drawRef.current.active) {
+          const key = pathHit.object.userData.drawPoint?.pathKey
+            ?? pathHit.object.userData.drawPath;
+          setDraw((s) => selectPath(s, key, { additive: true }));
+          evt.stopPropagation();
+          return;
+        }
+        // Place a control point at the picked cloud point. With a selected
+        // anchor point (and nothing being drawn) this grows that path
+        // instead of starting a new one.
         const hit = v.firstHitUnderCursor(evt);
         if (hit) {
+          const xyz = [hit.world.x, hit.world.y, hit.world.z];
           setDraw((s) => {
+            if (!s.active && s.selectedPoint) return extendFromPoint(s, xyz);
             const activePath = s.active && s.paths.find((p) => p.key === s.active);
             const classId = activePath ? activePath.classId : defaultClsIdxRef.current;
-            return addPoint(s, [hit.world.x, hit.world.y, hit.world.z], classId);
+            return addPoint(s, xyz, classId);
           });
         }
         evt.stopPropagation();
@@ -221,6 +279,10 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
       const drag = dragRef.current;
       if (!drag) return;
       if (drag.last) setDraw((cur) => movePoint(cur, drag.pathKey, drag.pointIdx, drag.last));
+      // No movement → it was a click: select the point as the extend anchor.
+      // Same race-tolerance as movePoint: the path may have been deleted.
+      else setDraw((cur) => cur.paths.some((p) => p.key === drag.pathKey)
+        ? selectPoint(cur, drag.pathKey, drag.pointIdx) : cur);
       dragRef.current = null;
       v.setOrbitEnabled(true);
     };
@@ -255,12 +317,14 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx }) {
 }
 
 export default function DrawMode({
-  viewerRef, classes, setSegState, onExit,
+  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  defaultClsIdx, onClassChange, onApplied,
 }) {
   const [draw, setDraw] = useState(() => initDrawState());
   const drawLiveRef = useRef(draw);
   drawLiveRef.current = draw;
-  const [defaultClsIdx, setDefaultClsIdx] = useState(0);
+  // Applied paths auto-hide by default — same default as "hide confirmed".
+  const [hideApplied, setHideApplied] = useState(true);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const showToast = useCallback((msg) => {
@@ -324,16 +388,21 @@ export default function DrawMode({
         after_class: r.afterClass,
         after_instance: r.afterInstance,
       }) : st);
+      onApplied?.({
+        instanceId: r.instanceId,
+        classIdx: call.classId,
+        mergedFrom: call.mergedFrom,
+      });
     }
     // Clear selection after Enter (spec) — even if some calls failed. Route
     // through a functional updater so concurrent edits in cur survive.
     setDraw((cur) => clearSelection(cur));
-  }, [setSegState, showToast]);
+  }, [setSegState, showToast, onApplied]);
 
   const onKey = useCallback((action) => {
     switch (action.type) {
       case 'class':
-        setDefaultClsIdx(action.clsIdx);
+        onClassChange(action.clsIdx);
         setDraw((s) => setClass(s, action.clsIdx));
         break;
       case 'apply':
@@ -349,9 +418,20 @@ export default function DrawMode({
         else onExit();
         break;
       }
-      case 'backspace':
-        setDraw((s) => s.active ? removeLastPoint(s) : deleteSelected(s));
+      case 'backspace': {
+        // Decide on the live state outside the updater — window.confirm
+        // must never run inside a React updater (same rule as 'escape').
+        const s = drawLiveRef.current;
+        if (s.active) setDraw((cur) => removeLastPoint(cur));
+        else if (s.selectedPoint) setDraw((cur) => deleteSelectedPoint(cur));
+        else if (s.selection.size) {
+          const n = s.selection.size;
+          if (window.confirm(`Delete ${n} selected path${n > 1 ? 's' : ''}?`)) {
+            setDraw((cur) => deleteSelected(cur));
+          }
+        }
         break;
+      }
       case 'merge':
         setDraw((s) => mergeSelection(s));
         break;
@@ -363,7 +443,14 @@ export default function DrawMode({
         break;
       default:
     }
-  }, [applySelection, onExit]);
+  }, [applySelection, onExit, onClassChange]);
+
+  // The sidebar class list is the single source of the draw class — clicking
+  // a class row (or pressing its hotkey) re-targets the selected/active
+  // paths, mirroring the hotkey semantics.
+  useEffect(() => {
+    setDraw((s) => (s.active || s.selection.size) ? setClass(s, defaultClsIdx) : s);
+  }, [defaultClsIdx]);
 
   return (
     <>
@@ -375,12 +462,17 @@ export default function DrawMode({
         setDraw={setDraw}
         classes={classes}
         defaultClsIdx={defaultClsIdx}
+        hideApplied={hideApplied}
       />
       <DrawPanel
         draw={draw}
         setDraw={setDraw}
         classes={classes}
         onApply={applySelection}
+        pointSize={pointSize}
+        setPointSize={setPointSize}
+        hideApplied={hideApplied}
+        setHideApplied={setHideApplied}
       />
     </>
   );
@@ -389,15 +481,30 @@ export default function DrawMode({
 // Side-panel section: path list + radius field + actions. Rendered by
 // LabelMode inside the left sidebar (portal-free: this component returns
 // plain divs; LabelMode places it).
-function DrawPanel({ draw, setDraw, classes, onApply }) {
+function DrawPanel({
+  draw, setDraw, classes, onApply, pointSize, setPointSize,
+  hideApplied, setHideApplied,
+}) {
   const selected = draw.paths.filter((p) => draw.selection.has(p.key));
   const radiusValue = selected[0]?.radius
     ?? draw.paths.find((p) => p.key === draw.active)?.radius
     ?? draw.lastRadius;
+  const appliedCount = draw.paths.filter((p) => draw.instanceIds[p.instKey] != null).length;
   return (
     <div className="draw-panel" style={{ marginTop: 10 }}>
       <div className="side-hd"><span>Centerline paths</span>
-        <span className="badge-soft">{draw.paths.length}</span></div>
+        <div className="side-hd-actions">
+          {appliedCount > 0 && (
+            <button className="hide-labeled-btn"
+              onClick={() => setHideApplied((v) => !v)}
+              title={hideApplied
+                ? `Show ${appliedCount} applied path${appliedCount === 1 ? '' : 's'}`
+                : `Hide ${appliedCount} applied path${appliedCount === 1 ? '' : 's'}`}>
+              {hideApplied ? '◌' : '●'} {appliedCount} applied
+            </button>
+          )}
+          <span className="badge-soft">{draw.paths.length}</span>
+        </div></div>
       <div className="ins-row">
         <label>Radius</label>
         <input className="ins-input" type="number" step="0.01" min="0.005"
@@ -407,6 +514,12 @@ function DrawPanel({ draw, setDraw, classes, onApply }) {
             if (Number.isFinite(v) && v > 0) setDraw((s) => setRadius(s, v));
           }} />
       </div>
+      <div className="ctrl" style={{ margin: '6px 0' }}>
+        <label>Point size <span className="mono">{pointSize.toFixed(3)}</span></label>
+        <input type="range" min={0.002} max={1.5} step={0.005}
+          value={pointSize} className="slider"
+          onChange={(e) => setPointSize(Number(e.target.value))} />
+      </div>
       <div style={{ maxHeight: 180, overflowY: 'auto' }}>
         {draw.paths.map((p) => {
           const cls = classes[p.classId];
@@ -415,8 +528,13 @@ function DrawPanel({ draw, setDraw, classes, onApply }) {
           return (
             <div key={p.key}
               className={'inst-row' + (isSel ? ' selected' : '')}
+              // Hidden-in-viewport rows stay clickable but read as inactive;
+              // selecting one reveals the path again.
+              style={applied && hideApplied && !isSel ? { opacity: 0.55 } : undefined}
               onClick={(e) => setDraw((s) =>
-                selectPath(s, p.key, { additive: e.shiftKey }))}>
+                // Ctrl/Cmd/Shift toggles — same multi-select gesture as the
+                // Presegments list. Plain click replaces.
+                selectPath(s, p.key, { additive: e.shiftKey || e.ctrlKey || e.metaKey }))}>
               <span className="inst-dot" style={{ background: cls?.color }} />
               <div className="inst-text">
                 <b>{cls?.label || '?'} {applied ? `#${draw.instanceIds[p.instKey]}` : '(staged)'}</b>

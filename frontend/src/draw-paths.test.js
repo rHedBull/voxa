@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   initDrawState, addPoint, movePoint, removeLastPoint, endActive,
-  selectPath, clearSelection, setRadius, nudgeRadius, setClass,
+  selectPath, clearSelection, selectPoint, extendFromPoint, deleteSelectedPoint,
+  setRadius, nudgeRadius, setClass,
   toggleSmooth, deleteSelected,
   mergeSelection, buildApplyCalls, markApplied, seedFromServer,
 } from './draw-paths.js';
@@ -114,6 +115,114 @@ describe('selection + path edits', () => {
     s = deleteSelected(s);
     expect(s.paths).toHaveLength(1);
     expect(s.selection.size).toBe(0);
+  });
+});
+
+describe('point selection + extend', () => {
+  it('selectPoint selects the point and its path; selectPath/clearSelection drop it', () => {
+    let s = staged2();
+    const a = s.paths[0].key;
+    s = selectPoint(s, a, 1);
+    expect(s.selectedPoint).toEqual({ pathKey: a, pointIdx: 1 });
+    expect([...s.selection]).toEqual([a]);
+    expect(selectPath(s, s.paths[1].key).selectedPoint).toBeNull();
+    expect(clearSelection(s).selectedPoint).toBeNull();
+  });
+
+  it('extendFromPoint appends after a tail point and reselects the new point', () => {
+    let s = staged2();
+    const a = s.paths[0].key;
+    s = selectPoint(s, a, 1);             // last point of a 2-point path
+    s = extendFromPoint(s, P(2));
+    expect(s.paths[0].points).toEqual([P(0), P(1), P(2)]);
+    expect(s.selectedPoint).toEqual({ pathKey: a, pointIdx: 2 });
+    s = extendFromPoint(s, P(3));         // chained extends keep walking the tail
+    expect(s.paths[0].points).toEqual([P(0), P(1), P(2), P(3)]);
+  });
+
+  it('extendFromPoint prepends before the head point', () => {
+    let s = staged2();
+    const a = s.paths[0].key;
+    s = selectPoint(s, a, 0);
+    s = extendFromPoint(s, P(-1));
+    expect(s.paths[0].points).toEqual([P(-1), P(0), P(1)]);
+    expect(s.selectedPoint).toEqual({ pathKey: a, pointIdx: 0 });
+  });
+
+  it('extendFromPoint branches from a middle point instead of rerouting the run', () => {
+    let s = initDrawState({ defaultRadius: 0.2 });
+    s = addPoint(s, P(0), 2); s = addPoint(s, P(1), 2); s = addPoint(s, P(2), 2);
+    s = endActive(s);
+    s = setRadius(selectPath(s, s.paths[0].key), 0.4);
+    s = selectPoint(s, s.paths[0].key, 1);   // middle point — 2 connections
+    s = extendFromPoint(s, P(9));
+    // Trunk untouched; a new active branch runs junction → click.
+    expect(s.paths[0].points).toEqual([P(0), P(1), P(2)]);
+    expect(s.paths).toHaveLength(2);
+    const branch = s.paths[1];
+    expect(branch.points).toEqual([P(1), P(9)]);
+    expect(branch.classId).toBe(2);
+    expect(branch.radius).toBe(0.4);
+    expect(s.active).toBe(branch.key);       // further Ctrl+clicks keep drawing it
+    expect(s.selectedPoint).toBeNull();
+  });
+
+  it('selectPoint while drawing ends the active path so the anchor wins over append', () => {
+    let s = addPoint(initDrawState(), P(0), 0);
+    s = addPoint(s, P(1), 0);
+    s = selectPoint(s, s.paths[0].key, 0);   // click the head while still drawing
+    expect(s.active).toBeNull();
+    s = extendFromPoint(s, P(-1));           // Ctrl+click left of the head
+    expect(s.paths[0].points).toEqual([P(-1), P(0), P(1)]);
+  });
+
+  it('selectPoint on the only point of an active path discards it gracefully', () => {
+    let s = addPoint(initDrawState(), P(0), 0);
+    s = selectPoint(s, s.paths[0].key, 0);   // endActive discards 1-pt paths
+    expect(s.paths).toHaveLength(0);
+    expect(s.selectedPoint).toBeNull();
+    expect(s.active).toBeNull();
+  });
+
+  it('extendFromPoint without a selected point is a no-op; new path clears it', () => {
+    let s = staged2();
+    expect(extendFromPoint(s, P(9))).toBe(s);
+    s = selectPoint(s, s.paths[0].key, 0);
+    s = addPoint(s, P(9), 0);             // starting a new path drops point selection
+    expect(s.selectedPoint).toBeNull();
+  });
+
+  it('deleteSelected clears the selected point with its path', () => {
+    let s = staged2();
+    s = selectPoint(s, s.paths[0].key, 0);
+    s = deleteSelected(s);
+    expect(s.selectedPoint).toBeNull();
+  });
+
+  it('deleteSelectedPoint removes only the anchor point, keeping the path', () => {
+    let s = initDrawState();
+    s = addPoint(s, P(0), 0); s = addPoint(s, P(1), 0); s = addPoint(s, P(2), 0);
+    s = endActive(s);
+    const a = s.paths[0].key;
+    s = selectPoint(s, a, 1);
+    s = deleteSelectedPoint(s);
+    expect(s.paths[0].points).toEqual([P(0), P(2)]);
+    expect(s.selectedPoint).toBeNull();
+    expect([...s.selection]).toEqual([a]);    // path stays selected
+  });
+
+  it('deleteSelectedPoint drops a 2-point path entirely (cannot survive 1 point)', () => {
+    let s = staged2();
+    s = selectPoint(s, s.paths[0].key, 0);
+    s = deleteSelectedPoint(s);
+    expect(s.paths).toHaveLength(1);
+    expect(s.selection.size).toBe(0);
+    expect(s.selectedPoint).toBeNull();
+  });
+
+  it('deleteSelectedPoint without an anchor is a no-op', () => {
+    const s = staged2();
+    expect(deleteSelectedPoint(s)).toBe(s);
   });
 });
 
