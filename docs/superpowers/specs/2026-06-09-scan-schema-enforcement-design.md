@@ -19,7 +19,7 @@ in `lidar/SCHEMA.md` (currently **v2.0**) and re-encoded, independently, in **fi
 
 Because every consumer re-derives the schema, they drift apart. The proof is already on
 disk: voxa moved to v2.0, the standalone validator silently stayed on v1.3, and it now
-fails **all 10 scans with 27 errors** — every error is a missing `labels/gt_class_ids.npy`,
+fails **every one of the 9 current scans** — each on a missing `labels/gt_class_ids.npy`,
 a path v2.0 deliberately removed. **Today nothing is being enforced**: the one validator we
 have rejects 100% of valid data.
 
@@ -97,9 +97,22 @@ not a re-plumbing — but we do **not** build `S3Storage` in this increment.
 
 **`validate.py` — the audit.** Walks the archive through `Storage`, resolves every path via
 `ScanLayout`, checks required files exist, asserts `meta.json::schema_version == "2.0"`
-(any other value → loud failure with a migration hint, never a silent skip), runs
-`validate_invariants` over each `sessions/*/output/` and `prelabel/*/`, and reports
+(any other value → loud failure with a migration hint, never a silent skip), and reports
 **unknown top-level entries** as warnings. This replaces `data/tools/validate_annotated.py`.
+
+What gets validated where:
+- **`sessions/<id>/output/`** — the GT pair. Runs the full `validate_invariants(class_ids,
+  instance_ids, …)` (invariants 3–6) plus shape/dtype (invariants 1–2). `output/` is
+  **optional** (SCHEMA.md: "absent until first explicit save"); a session with no `output/`
+  is a legal *unlabeled* session, **not** an error — skip it, don't flag it.
+- **`prelabel/<id>/`** — preseg result, which has **no per-point class array**, so the GT
+  invariants 3–6 do **not** apply. Validate only: `instance_ids.npy` is `int32` shape
+  `(N_pts,)`, and `segment_summary.json` parses to `{"segments": [{"id", "class_id"}, …]}`
+  (`class_id == -1` is legal — class-agnostic preseg). Do not assert preseg `class_id`s
+  against `classes.json`.
+- **`sessions/<id>/working_*.npy`** — autosave arrays; shape `(N_pts,)` and dtype per the
+  SCHEMA.md table (`working_class_ids` is `int8`, `working_segment_ids` is `int32`). No
+  invariant 3–6 check (these are mid-edit, not validated GT).
 
 ### The `scratch/` allow-list (resolves the stray-dir drift)
 
@@ -166,7 +179,8 @@ with the path, not an omission.
 - `test_invariants.py` — each invariant 1–6 has a passing case and a violating case (ports
   voxa's existing invariant tests so we know behavior is preserved on lift).
 - `test_validate.py` — runs `validate_archive` against the real `lidar/annotated/` fixtures:
-  all 10 current scans pass (errors == 0), and the known strays surface as warnings.
+  all 9 current scans pass (errors == 0), unlabeled sessions (no `output/`) are not flagged,
+  and the known strays surface as warnings.
 - voxa's own suite (`test_segment_io.py`, `test_real_scans_validate.py`) passes unchanged
   after voxa switches to the package — the regression gate for adoption.
 
