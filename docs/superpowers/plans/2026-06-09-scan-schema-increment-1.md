@@ -362,6 +362,8 @@ def test_v3_bad_varies_is_error():
 
 - [ ] **Step 2: Run → FAIL.**
 
+> **Scope note:** `check_meta` ports only the meta.json frame/derivation contract. It does **not** port `validate_scan.py`'s render-run pin check (deferred to increment 2 — see Task D4).
+
 - [ ] **Step 3: Implement.** Port the frame/derivation logic from `scripts/scan/validate_scan.py::validate_scan_dir` (the `frame`/`derivation`/`varies`/`canonical_id`/`is_rigid` checks) into a pure `check_meta(meta: dict) -> tuple[list[str], list[str]]` (errors, warnings). Version gate: if `schema_version` startswith `"3"` → violations are errors; if startswith `"2"` → the same structural findings (missing frame/derivation) are warnings, and superseded legacy fields (`source_laz`, `parent_scan`, `coords`, `coord_offset_m`) are accepted silently; anything else (or missing) → a single hard error with a migration hint. Required-always: `scan_name`, `n_points`, `units`, `class_map_version`. Use `scan_schema.frame.is_rigid`.
 
 - [ ] **Step 4: Export** `check_meta`. Run → PASS.
@@ -411,7 +413,7 @@ def test_known_strays_are_warnings():
   - **per `sessions/*/output/`:** if `output/` absent → skip (legal unlabeled). Else `check_array_shape_dtype` on `gt_class_ids`(int32)/`gt_segment_ids`(int32) and `validate_invariants(...)`.
   - **per `sessions/*/`:** `working_class_ids`(int8)/`working_segment_ids`(int32) shape/dtype only.
   - **per `prelabel/*/`:** `instance_ids.npy` int32 shape `(n_points,)`; `segment_summary.json` parses to `{"segments":[{"id","class_id"}...]}`. No GT invariants.
-  - **top-level entries:** anything not in {`README.md`,`meta.json`,`source/`,`prelabel/`,`sessions/`,`renders/`,`sam3/`,`variants.json`,`scratch/`} → warning. Archival clouds in `source/` (not `scan.ply`/`mesh.glb`/`mesh.meta.json`) → warning.
+  - **top-level entries** (scoped to each `annotated/<scan>/`, **not** the archive root): anything not in `ALLOWED_TOPLEVEL = {README.md, meta.json, source/, prelabel/, sessions/, renders/, sam3/, variants.json, scratch/}` → warning. Archival clouds in `source/` (not `scan.ply`/`mesh.glb`/`mesh.meta.json`) → warning. Expose the set as `validate.ALLOWED_TOPLEVEL` so Task F1's doc-consistency check can import it.
   - return `{scan_name: {"errors": [...], "warnings": [...]}}`.
 
 - [ ] **Step 4: Implement `__main__.py`**
@@ -444,7 +446,7 @@ Expected: tests PASS; CLI prints `9 scans, 0 errors` (+ warnings for strays). **
 
 ## Phase D — voxa adoption (re-export shims, no behavior change)
 
-> **Regression gate for this whole phase:** voxa's `backend/tests/test_segment_io.py` and `test_real_scans_validate.py` (and the full suite) must pass unchanged after each task. Run from `engine/tools/labeling/voxa/`.
+> **Regression gate for this phase:** voxa's `backend/tests/test_segment_io.py` (and the full suite) must pass **unchanged** after each task — this is the proof the shims + save-gate delegation didn't change behavior. **Exception:** the validator-specific tests that import the now-deleted `validate_scan.py` (`test_real_scans_validate.py`, `test_validate_scan.py`) are *rewritten/removed in Task D4* — they are not "unchanged" gates past D3. Run from `engine/tools/labeling/voxa/`.
 
 ### Task D1: voxa depends on scan-schema; shim `scan_layout.py`
 
@@ -453,7 +455,7 @@ Expected: tests PASS; CLI prints `9 scans, 0 errors` (+ warnings for strays). **
 - Modify: `engine/tools/labeling/voxa/backend/scenes/scan_layout.py` (→ shim)
 - Test: existing voxa suite
 
-- [ ] **Step 1:** Add to voxa `backend/requirements.txt`: `-e ../../scan-schema` (path relative to the requirements file; verify the relative path resolves to `engine/tools/scan-schema`). Install: `.venv/bin/pip install -e ../../scan-schema` from the voxa root.
+- [ ] **Step 1:** Add to voxa `backend/requirements.txt`: `-e ../../../scan-schema`. **Path is relative to the requirements file's dir (`backend/`):** `..`→voxa, `../..`→labeling, `../../..`→tools, so `../../../scan-schema`→`engine/tools/scan-schema`. (The equivalent one-off command run *from the voxa root* is `.venv/bin/pip install -e ../../scan-schema` — two levels, different base dir. Don't confuse the two.) After editing, verify: `cd engine/tools/labeling/voxa && .venv/bin/pip install -e ../../scan-schema && .venv/bin/python -c "import scan_schema"`.
 
 - [ ] **Step 2: Replace `scenes/scan_layout.py` body with a shim**
 
@@ -511,17 +513,25 @@ Expected: PASS (save behavior identical).
 
 - [ ] **Step 3: Commit (voxa)** `git commit -am "refactor: save-gate invariants delegate to scan_schema"`
 
-### Task D4: delete the two superseded validators
+### Task D4: delete the two superseded validators + migrate their tests
 
 **Files:**
-- Delete: `engine/tools/labeling/voxa/scripts/scan/validate_scan.py` (+ its test if present, e.g. `backend/tests/test_validate_scan*.py`)
-- Delete: `engine/data/lidar/../tools/validate_annotated.py` (path: `engine/data/tools/validate_annotated.py`)
+- Delete: `engine/tools/labeling/voxa/scripts/scan/validate_scan.py`
+- Delete/rewrite: `engine/tools/labeling/voxa/backend/tests/test_validate_scan.py`, `backend/tests/test_real_scans_validate.py`
+- Delete: `engine/data/tools/validate_annotated.py`
 
-- [ ] **Step 1:** Grep for references first: `grep -rn "validate_scan\|validate_annotated" engine/ --include=*.py | grep -v scan_schema`. If `backfill_scan_frame.py` or tests import `validate_scan`, repoint them at `scan_schema.metadata.check_meta` or remove the dependency.
+> **Scope note (intentional):** `scan_schema.metadata.check_meta` covers the meta.json frame/derivation contract but **does NOT** port `validate_scan.py`'s render-run pin check (`renders/<run>/meta.json::generated_from.variant_id`, lines 58–70). Render-pin validation is **not** in the increment-1 invariant set — it belongs with the lineage/variants work in increment 2. Dropping it here is deliberate scope-shedding, not an oversight.
 
-- [ ] **Step 2:** Delete both files. Run voxa suite → no new failures.
+- [ ] **Step 1: Map references.** `grep -rn "validate_scan\|validate_annotated" engine/ --include=*.py | grep -v scan_schema`. Expect hits in `backend/tests/test_validate_scan.py`, `backend/tests/test_real_scans_validate.py`, possibly `backfill_scan_frame.py`. If `backfill_scan_frame.py` imports `validate_scan`, repoint it at `scan_schema.metadata.check_meta` (frame/derivation parts only).
 
-- [ ] **Step 3: Commit (voxa)** `git commit -am "chore: remove validate_scan.py (superseded by scan_schema)"` and note the data-tree deletion of `validate_annotated.py` in the message (that tree isn't git).
+- [ ] **Step 2: Migrate the two tests.**
+  - `test_real_scans_validate.py` (currently `from validate_scan import validate_scan_dir`, asserts the 9 real scans pass §7): rewrite to assert via `scan_schema.metadata.check_meta` on each scan's `meta.json` that **errors == []** (2.0 grandfathered → only warnings). This preserves the "real scans stay valid" intent against the new definition.
+  - `test_validate_scan.py`: its meta.json/frame/derivation cases → port to `scan_schema`'s `tests/test_metadata.py` (already created in Task C2; add any missing cases). Its **render-pin** case (`test_render_run_missing_meta_flagged` or similar) → **delete** (feature dropped per the scope note).
+  - Then delete `test_validate_scan.py` from voxa.
+
+- [ ] **Step 3: Delete** `scripts/scan/validate_scan.py` and `engine/data/tools/validate_annotated.py`. Run the full voxa suite → green (no references to the deleted module remain).
+
+- [ ] **Step 4: Commit (voxa)** `git commit -am "chore: remove validate_scan.py; migrate its tests to scan_schema (render-pin check deferred to inc.2)"` and note the data-tree deletion of `validate_annotated.py` in the message (that tree isn't git).
 
 ---
 
@@ -578,6 +588,7 @@ Expected: 5 lines (smart_ais_clean, factory_large, navvis_mlx, navvis_vlx3_water
 - [ ] **Step 2: Rename the directory**
 
 Run: `cd engine/data/lidar && mv laz raw`
+(Note: `laz/` contains a `.remember/` subdir — it rides along harmlessly.)
 
 - [ ] **Step 3: Rewrite the 5 paths** `"lidar/laz/…"` → `"lidar/raw/…"` in those `meta.json` files (a small scripted `json` load/dump preserving formatting, or targeted edits).
 
