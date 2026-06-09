@@ -178,8 +178,12 @@ lineage hints and **warns** (never errors) when a legacy link can't be resolved;
 legacy `parent` strings are **not** coerced into the new `{ref, fingerprint}` shape. Legacy
 scans are not rewritten. New 3.0 clouds carry explicit `derivation.root`/`parent`.
 
-**`laz/` → `raw/` rename** is flagged for sign-off; until done, the resolver accepts both
-`raw/` and `laz/`, so the 5 non-null `source_laz` paths (`"lidar/laz/…"`) keep resolving.
+**`laz/` → `raw/` rename happens in increment 1** (the registry that populates `raw/` is
+increment 2, but the directory is renamed now): move `lidar/laz/*` → `lidar/raw/`, rewrite the
+5 non-null `source_laz` paths (`"lidar/laz/…"` → `"lidar/raw/…"`), and point voxa's
+`scene_registry` source_laz resolution at `raw/` (accepting `laz/` too, so a stale path still
+resolves rather than failing silently). This is the one piece of existing-data mutation in an
+otherwise-grandfathered increment; it is a path rename, not a metadata-model change.
 
 **Scope split:** increment 2 builds `raw/sources.json` (registering every family root,
 any format), the `RawSourceRegistry`, and the cross-scan lineage validation. Stamping lineage
@@ -359,16 +363,17 @@ be read is an error with its path, never a silent skip.
 
 1. **Increment 1 (this spec):** the `scan-schema` package (layout + frame + invariants +
    metadata + storage seam) encoding v3.0; the unified validator replacing all three current
-   ones; voxa adoption; the `scratch/` allow-list; and `lidar/SCHEMA.md` rewritten to v3.0
-   (which *documents* the `derivation.root`/`parent` contract). Existing scans grandfathered
-   (warned, not migrated). **No registry, no lineage validation.** Zero new infra.
+   ones; voxa adoption; the `scratch/` allow-list; the `lidar/laz/`→`lidar/raw/` rename (+ the
+   5 `source_laz` path fixes + voxa resolver update); and `lidar/SCHEMA.md` rewritten to v3.0
+   (which *documents* the `derivation.root`/`parent` contract). Existing scans otherwise
+   grandfathered (warned, not migrated). **No registry, no lineage validation.** Zero new infra.
 2. **Increment 2 — source families:** `sources.py` + `raw/sources.json` registering every
    family root (any format/location), the `derivation.root`/`parent` lineage validation
    (incl. the cross-scan index), and the legacy-link fallback. Tail: wire the edit-raw
    full-density export (and any cutout producer) to stamp lineage on its outputs.
 3. **Increment 3 — opt-in legacy migration:** one command (`backfill_scan_frame.py` +
    `scan_index.py` + `scratch/` tidy + `source_laz`→`derivation.root`) to bring the 9 scans to
-   fully-conformant 3.0, and the `laz/`→`raw/` rename.
+   fully-conformant 3.0.
 4. **Increment 4 — HTTP service:** thin FastAPI app whose routes are the `ScanLayout` resource
    names; JSON for small payloads, a location (path now, presigned URL later) for big binaries.
 5. **Increment 5 — S3 backend:** add `S3Storage` behind the `Storage` protocol; module,
@@ -387,12 +392,14 @@ be read is an error with its path, never a silent skip.
   derived cloud carries `derivation.root` (`{source_id, fingerprint}`, supersedes `source_laz`)
   + `derivation.parent` (`{ref, fingerprint}`), fingerprint-based. v3.0 **defines** this
   contract; the registry + cross-scan validation are **increment 2** (split out per spec
-  review — independent subsystem). `laz/`→`raw/` rename flagged for sign-off.
+  review — independent subsystem). `laz/`→`raw/` rename + the 5 `source_laz` path fixes happen
+  in increment 1.
 - **Unify all three validators into the package**: delete `data/tools/validate_annotated.py`
   and voxa `scripts/scan/validate_scan.py`; voxa save-gate imports `scan_schema`.
 - **Location/packaging:** standalone git repo at `engine/tools/scan-schema/`, package
   `scan_schema`, installed editable and pinned by consumers.
 - **Increment 1 scope:** package (layout + frame + invariants + metadata + storage) + unified
-  validator + voxa adoption + `scratch/` allow-list + SCHEMA.md v3.0 rewrite. **Out:** the
-  source-families registry + lineage validation (increment 2), auto-gate, service, S3, reader
-  migration, forced legacy migration.
+  validator + voxa adoption + `scratch/` allow-list + `laz/`→`raw/` rename (+ 5 `source_laz`
+  fixes + resolver update) + SCHEMA.md v3.0 rewrite. **Out:** the source-families registry +
+  lineage validation (increment 2), auto-gate, service, S3, reader migration, forced legacy
+  migration.
