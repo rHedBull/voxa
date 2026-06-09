@@ -238,7 +238,8 @@ engine/tools/scan-schema/
     ├── test_layout.py
     ├── test_invariants.py
     ├── test_metadata.py
-    └── test_validate.py           # runs against real lidar/annotated fixtures
+    ├── test_validate.py           # runs against real lidar/annotated fixtures
+    └── test_sources.py            # [increment 2] registry + lineage checks
 ```
 
 ### Components
@@ -298,8 +299,8 @@ engine/tools/scan-schema/
 ```python
 from scan_schema import ScanLayout, SessionPaths, validate_invariants, validate_archive
 from scan_schema.frame import Frame, is_rigid
-from scan_schema.sources import RawSourceRegistry
 from scan_schema.storage import Storage, LocalStorage
+# increment 2: from scan_schema.sources import RawSourceRegistry
 ```
 
 ### How voxa adopts it
