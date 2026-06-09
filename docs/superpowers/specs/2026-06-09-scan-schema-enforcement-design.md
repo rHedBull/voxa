@@ -1,208 +1,371 @@
-# scan-schema: single-source-of-truth schema enforcement for `lidar/annotated/`
+# scan-schema: v3.0 unified schema + single-source-of-truth enforcement
 
 **Date:** 2026-06-09
 **Status:** Design — approved for spec review
-**Related:** `lidar/SCHEMA.md` (v2.0), `voxa/docs/superpowers/specs/2026-06-03-multi-session-preseg-design.md`
+**Related:** `lidar/SCHEMA.md` (v2.0), `voxa/docs/superpowers/specs/2026-06-03-multi-session-preseg-design.md`,
+`2026-05-29-scan-schema-v1.3-design.md`, `2026-05-29-frame-registration-load-check-design.md`,
+`2026-04-27-lidar-multi-root-loading-design.md`
 
 ## Problem
 
-`lidar/annotated/` is the shared datastore of labeled lidar scans. Its layout is documented
-in `lidar/SCHEMA.md` (currently **v2.0**) and re-encoded, independently, in **five** places:
+`lidar/annotated/` is the shared datastore of labeled lidar scans. Its schema is re-encoded,
+independently, in several places that have drifted apart — and the drift is now two-dimensional:
+
+**1. The schema definition is duplicated across three validators + one doc, and they disagree.**
 
 | Consumer | Role | Schema knowledge | State |
 |---|---|---|---|
-| `lidar/SCHEMA.md` | human doc | prose spec | v2.0 |
-| voxa `scenes/scan_layout.py` + `labeling/segment_io._validate_invariants` | the **only writer** (validates at save) | executable encoding | v2.0, tested, working |
-| `data/tools/validate_annotated.py` | standalone audit | re-encoded by hand | **v1.3 — rotted** |
-| meshbuilder `discovery.py` | reader | own path resolution | unaudited |
-| training pipelines (`train_xscene_real.py`) | reader | own loader | unaudited |
+| `lidar/SCHEMA.md` | human doc | prose spec | layout v2.0, meta.json example **stale** (see below) |
+| voxa `scenes/scan_layout.py` + `labeling/segment_io._validate_invariants` | the **only writer** (validates GT at save) | executable | working |
+| voxa `scripts/scan/validate_scan.py` | standalone metadata lint | re-encoded by hand | checks "v1.3" frame/derivation |
+| `data/tools/validate_annotated.py` | standalone layout audit | re-encoded by hand | **v1.3 — rotted**, rejects all 9 scans |
 
-Because every consumer re-derives the schema, they drift apart. The proof is already on
-disk: voxa moved to v2.0, the standalone validator silently stayed on v1.3, and it now
-fails **every one of the 9 current scans** — each on a missing `labels/gt_class_ids.npy`,
-a path v2.0 deliberately removed. **Today nothing is being enforced**: the one validator we
-have rejects 100% of valid data.
+Because every consumer re-derives the schema, they fall out of sync. The rotted
+`validate_annotated.py` is the proof: it still requires `labels/gt_class_ids.npy`, a path
+v2.0 removed, so it fails **every one of the 9 current scans**. A new hand-coded validator
+would just become the fifth thing to rot.
 
-There is also real on-disk drift — top-level entries that appear nowhere in `SCHEMA.md`:
+**2. There are two conflated version numbers, and the doc never reconciled them.**
 
-| Stray entry | Appears in | What it is |
-|---|---|---|
-| `fresh_run/` | 5 scans | RANSAC / curvature experiments |
-| `stale_preseg_500k/` | 4 scans | superseded presegs |
-| `scripts/`, `sim/`, `README_legacy_v2.md` | munich_water_pump | one-off legacy cruft |
-| `variants.json` | 2 scans | undocumented |
-| no `sessions/` at all | matterport ×2 | unlabeled / half-imported |
+The directory *layout* is versioned "v2.0" (multi-session `sessions/`, `prelabel/`). The
+`meta.json` *metadata model* (the `frame` + `derivation` blocks) was versioned "v1.3" with
+its **own** validator and specs. `SCHEMA.md`'s v2.0 `meta.json` example never absorbed the
+v1.3 metadata model — its example regressed below its own v1.3 changelog entry. So the
+documented schema is internally inconsistent, and **the on-disk reality has fields the doc
+doesn't mention at all**:
 
-**The data drift is downstream of the schema-definition drift.** A new hand-coded validator
-would just become the sixth thing to rot. The fix has to remove the duplication, not add to it.
+| `meta.json` field / file | On disk | In `SCHEMA.md`? | What it is |
+|---|---|---|---|
+| `frame` | 2/9 | ❌ | canonical-frame + `transform_to_canonical`; load-bearing for cross-variant ops |
+| `derivation` | 2/9 | ❌ | variant identity (`variant_id`, `varies`, `role`, `source_fingerprint`) |
+| `coords` / `coord_offset_m` | 4/9 | partial | legacy v1.2 recentering, superseded by `frame.georef` |
+| `variants.json` (file) | 2/9 | ❌ | per-scan variant index; `scan_index.py` generates it |
+| `source_laz` | 9/9 | ✅ | raw full-density link (load-region + edit-raw export) |
+| `source_full_res`, `bbox_*`, `parent_scan` | 1–2/9 | ❌ | advisory caches / fallback |
+| extra `source/*.ply`, `mesh.optimized.glb` | several | ❌ | archival / ignored artifacts |
+
+Enforcing the *documented* v2.0 would reject reality. The fix has to (a) define one schema
+that matches what the code actually requires, and (b) collapse the three validators into one
+executable definition every consumer imports.
 
 ## Goal
 
-One executable definition of the v2.0 schema that every consumer imports, so a schema change
-is a single deliberate version bump rather than silent per-app divergence — and a validator
-built on that same definition that *cannot disagree* with what voxa enforces at write time.
+Define **v3.0** — one coherent schema number that unifies the v2.0 layout and the v1.3
+metadata model and matches what the code requires — and ship it as a standalone, versioned
+`scan-schema` package that becomes the single executable definition. A schema change then
+becomes one deliberate version bump instead of silent per-consumer divergence.
 
-Non-goals (explicitly deferred): the HTTP service, the S3 backend, auto-gating (pre-commit/CI),
-and migrating meshbuilder/training readers. Those are later increments (see Roadmap); this spec
-covers **increment 1** only.
+v3.0 also formalizes **source families**: a few global full-resolution raw scans are the
+roots, and every derived cloud (subsampled / cleaned / cutout / modified) links to both its
+immediate `parent` and its `root` full-res source, so any cloud is traceable up its family
+tree to the raw scan it came from.
 
-## Design
+**Non-goals (deferred):** the HTTP service, the S3 backend, auto-gating (pre-commit/CI),
+migrating meshbuilder/training readers, and **forced migration of existing scans** (see
+"Legacy handling" — existing 2.0 scans are grandfathered, not rewritten).
 
-### A standalone, versioned package: `scan-schema`
+## v3.0 schema
 
-Create `engine/tools/scan-schema/` as **its own git repository** (not a subdir of voxa, not
-inside the `lidar/` data archive). It ships a Python package `scan_schema`, installed
-editable (`pip install -e`) by each consumer. Versioning is the enforcement mechanism:
-consumers pin `scan-schema==2.x`, so a schema bump becomes a version everyone deliberately
-moves to — the exact failure mode (silent v1.3↔v2.0 divergence) that rotted the validator
-becomes impossible.
+v3.0 is **v2.0's directory layout** (`sessions/<id>/`, `prelabel/<id>/`, `renders/`, `sam3/`
+— unchanged) **plus the v1.3 metadata model promoted into the documented contract**, plus a
+`scratch/` allow-list, plus a documented `source/` cloud contract.
+
+### `meta.json` field contract
+
+| Field | v3.0 | Note |
+|---|---|---|
+| `schema_version` | **required** | `"3.0"` |
+| `scan_name`, `n_points`, `units`, `class_map_version` | **required** | core identity |
+| `frame` | **required** | `{canonical_id, transform_to_canonical (4×4 rigid), units, frame_uncertain, georef?}` |
+| `derivation` | **required** | `{scan_id, variant_id, op, varies, role, source_fingerprint, params?, parent, root}` — `parent`/`root` are the lineage links (see "Source families") |
+| `capture_date`, `scanner`, `notes`, `source_mesh`, `sample_method`, `sample_param` | optional | provenance, preserved as-is |
+| `source_full_res` | optional | fallback raw PLY for scans without a LAZ (matterport) |
+| `bbox_*` | optional | advisory caches; absence is never an error |
+| `source_laz`, `parent_scan` | **superseded in 3.0** | folded into `derivation.root` / `derivation.parent` (format-agnostic); tolerated on legacy 2.0 scans |
+| `coords`, `coord_offset_m` | **removed in 3.0** | folded into `frame.georef.offset_m`; tolerated on legacy 2.0 scans |
+
+`frame` semantics: a scan may exist as multiple point-cloud *variants* (the labeled cloud, a
+denser aligned cloud for renders, the raw capture). `frame.transform_to_canonical` is the
+rigid map from this cloud into the scan's shared canonical frame (identity ⟺ this cloud is
+canonical); `frame_uncertain: true` forces the registration health-check
+(`verify_registration.py`) before cross-variant artifacts (render poses, propagated labels)
+are trusted. `derivation.role: "labeling"` marks the variant where GT physically lives
+(≤1 per scan); `derivation.varies` (subset of `{density, frame, points, color, attributes}`)
+drives whether an artifact pinned to another variant can be remapped or must hard-fail.
+
+### `source/` cloud contract
+
+- `source/scan.ply` — **required, fixed name.** THE cloud the viewer/labeler loads
+  (`scene_registry` resolves `ScanLayout.scan_ply`; never a different variant).
+- `source/mesh.glb` — optional, fixed name; canonical geometry if sampled from a mesh.
+- `source/mesh.meta.json` — optional provenance.
+- Archival clouds (`scan.cleaned_*.ply`, `scan.raw_full_*.ply`, `scan.from_voxa_*.ply`) and
+  `mesh.optimized.glb` are **not** schema members → belong under `scratch/`. The validator
+  **warns** (does not error) if they linger in `source/`.
+
+### `variants.json` (conditional)
+
+Per-scan variant index (`scan_id`, `canonical_id`, `labeling_variant`, `variants[]`). Required
+**iff** any artifact (render run, preseg, label) pins a `variant_id` other than the one it sits
+beside (a cross-variant pin); absent otherwise. Generated by `scripts/scan/scan_index.py`.
+The validator requires it only when cross-variant pins are present.
+
+### Source families (lineage) — new in v3.0
+
+A few **global full-resolution raw scans** are the roots of all derived data. Today they live
+as bare files in `lidar/laz/` (5 of them, e.g. `Sample-Data-VLX3-ProcessIndustry-SMART-AIS.laz`
+≈156M pts) with no identity of their own. v3.0 registers them and links every derived cloud
+back to them.
+
+**Raw source registry — `lidar/raw/sources.json`** (archive-level, alongside `classes.json`):
+
+```json
+{
+  "sources": [
+    {
+      "source_id": "smart_ais",
+      "path": "raw/Sample-Data-VLX3-ProcessIndustry-SMART-AIS.laz",
+      "format": "laz",
+      "fingerprint": "sha256:…",
+      "n_points": 156519044,
+      "capture_date": null, "scanner": "NavVis VLX-3", "url": null
+    }
+  ]
+}
+```
+
+`lidar/raw/` is the canonical home for global full-res sources (reorganized from `lidar/laz/`).
+`source_id` is a stable short slug; `fingerprint` is computed once at registration.
+
+**Lineage on every derived cloud — `meta.json::derivation`:**
+
+- `derivation.root`: `{source_id, fingerprint}` — the global full-res ancestor; `source_id`
+  must resolve in `raw/sources.json` and `fingerprint` must match it. Always present on a
+  derived cloud. Format-agnostic (LAZ or PLY), so it **supersedes the LAZ-specific `source_laz`**.
+- `derivation.parent`: `{ref, fingerprint}` — the immediate parent cloud. `ref` is another
+  scan's `scan_id`/`variant_id`, or the `root.source_id` when derived directly from the raw
+  source; `fingerprint` is the parent cloud's content hash. Walking `parent` reconstructs the
+  full chain; `root` is the always-present anchor so traversal never depends on every
+  intermediate existing.
+
+This makes families traceable both ways: down from a root (enumerate clouds whose
+`root.source_id` matches) and up from any leaf (follow `parent` to the root). Fingerprints —
+not paths — are the identity, so links survive moves/renames; a stale fingerprint is a
+detectable break, not a silent mis-link.
+
+**Legacy & grandfathering.** The 9 existing scans are 2.0 and carry `source_laz` (→ root) and
+sometimes `parent_scan` (→ parent). The validator *reads* these as the lineage links (mapping
+`source_laz` to a registry `source_id` by fingerprint) and **warns**, never errors, if a
+legacy link can't be resolved. They are not rewritten. New 3.0 clouds carry explicit
+`derivation.root`/`parent`. Physically renaming `lidar/laz/` → `lidar/raw/` (and the trivial
+`source_laz` path fix that implies) is flagged for sign-off; until then the resolver accepts
+both `raw/` and `laz/`.
+
+**Scope:** increment 1 registers the 5 roots in `raw/sources.json` and defines + validates the
+`derivation.root`/`parent` contract for annotated scans. Stamping lineage onto **cutouts /
+export outputs** (wiring the edit-raw full-density export to register each cutout with
+parent+root links) is deferred to a later increment — the contract is defined now so cutouts
+*can* carry it.
+
+### `scratch/` allow-list (resolves stray-dir drift)
+
+`scratch/` is an allow-listed top-level location for non-schema artifacts: experiment outputs
+(`fresh_run/`, `stale_preseg_500k/`), archival clouds, one-off `scripts/`/`sim/` dirs. Its
+contents are unchecked; its existence is legal.
+
+Validator policy on **top-level** entries:
+- Known schema entry (`README.md`, `meta.json`, `source/`, `prelabel/`, `sessions/`,
+  `renders/`, `sam3/`, `variants.json`, `scratch/`) → OK.
+- Anything else (`variants` legacy files, `scripts/`, `sim/`, `README_legacy_v2.md`) → **warning**.
+
+### Legacy handling (grandfathering — no forced migration)
+
+The 9 scans on disk are `schema_version: "2.0"` and mostly lack `frame`/`derivation`. v3.0
+does **not** rewrite them. The package recognizes both versions:
+
+- **`schema_version` starts with `"3"`** → must fully conform; violations are **errors**.
+- **`schema_version` starts with `"2"`** → legacy. Missing `frame`/`derivation`, legacy
+  `coords`/`coord_offset_m`, and archival clouds in `source/` are **warnings**, never errors.
+  voxa continues to read these (it already synthesizes a default identity `frame` in memory).
+
+voxa's `scene_registry` (today `schema_version.startswith("2")`) is widened to accept `"2"`
+**or** `"3"`. New scans voxa writes going forward stamp `"3.0"` with explicit `frame`/`derivation`.
+Migrating the 9 legacy scans to 3.0 later is a one-command opt-in (`backfill_scan_frame.py` +
+`scan_index.py` + a `scratch/` tidy), explicitly out of scope for this increment.
+
+## Package design
+
+Create `engine/tools/scan-schema/` as **its own git repository**, shipping a Python package
+`scan_schema` installed editable (`pip install -e`) and version-pinned by each consumer.
+Versioning is the enforcement mechanism: consumers pin `scan-schema==3.x`, so a schema bump is
+a deliberate version everyone moves to.
 
 ```
 engine/tools/scan-schema/
-├── pyproject.toml                 # name = "scan-schema", version pinned to schema major (2.x)
+├── pyproject.toml                 # name = "scan-schema", version tracks schema major (3.x)
 ├── README.md
 ├── src/scan_schema/
-│   ├── __init__.py                # public API surface (see below)
-│   ├── layout.py                  # ScanLayout + SessionPaths (lifted from voxa scan_layout.py)
-│   ├── invariants.py              # validate_invariants() (lifted from segment_io._validate_invariants)
+│   ├── __init__.py                # public API
+│   ├── layout.py                  # ScanLayout + SessionPaths (lift of voxa scenes/scan_layout.py)
+│   ├── frame.py                   # Frame/derivation models + is_rigid (lift of voxa scenes/frame.py)
+│   ├── invariants.py              # GT invariants 1–6 (lift of segment_io._validate_invariants + shape/dtype)
+│   ├── metadata.py                # meta.json field contract + frame/derivation checks
+│   │                              #   (lift of scripts/scan/validate_scan.py logic)
+│   ├── sources.py                 # RawSourceRegistry: load raw/sources.json, resolve
+│   │                              #   source_id, verify fingerprint; lineage (root/parent) checks
 │   ├── storage.py                 # Storage protocol + LocalStorage (the S3 seam)
-│   └── validate.py                # whole-archive audit, built on layout + invariants + storage
+│   └── validate.py                # whole-archive audit composing all of the above
 └── tests/
     ├── test_layout.py
     ├── test_invariants.py
+    ├── test_metadata.py
     └── test_validate.py           # runs against real lidar/annotated fixtures
 ```
 
 ### Components
 
-**`layout.py` — the path contract.** A direct lift of voxa's `scenes/scan_layout.py`:
-the frozen `ScanLayout` and `SessionPaths` dataclasses whose properties *are* the logical
-resource names (`.scan_ply`, `.session(id).output_gt_class_ids`, `.preseg_dir(id)`, …).
-Pure path joins, no disk access. This is the seam the later HTTP/S3 increments wrap; keeping
-it pure keeps those increments cheap.
+- **`layout.py`** — direct lift of voxa's `scenes/scan_layout.py`: frozen `ScanLayout` /
+  `SessionPaths` whose properties *are* the logical resource names. Pure path joins, no disk
+  access. This is the seam the later HTTP/S3 increments wrap.
+- **`frame.py`** — lift of voxa's `scenes/frame.py` (`Frame` model, `is_rigid`,
+  legacy-frame synthesis), so frame/derivation parsing has one home.
+- **`invariants.py`** — lift of `segment_io._validate_invariants` (SCHEMA invariants 3–6),
+  plus invariants 1–2 (`len(scan.ply) == meta.n_points`; per-array shape `(N_pts,)` and
+  **per-array dtype** per the SCHEMA.md table — `working_class_ids` is `int8`,
+  `output/gt_class_ids` is `int32`).
+- **`metadata.py`** — the `meta.json` field contract above and the frame/derivation checks
+  currently in `scripts/scan/validate_scan.py` (`canonical_id == "<scan_id>#local"`,
+  `transform_to_canonical` is rigid, `varies` ⊆ allowed set, ≤1 `role: "labeling"`).
+  Version-aware: errors for 3.x, warnings for 2.x.
+- **`sources.py`** — `RawSourceRegistry` loads `raw/sources.json`, resolves a `source_id` to
+  its registered entry, and verifies a `derivation.root`/`parent` link (source exists,
+  fingerprint matches). Also the registration helper that computes a raw file's
+  `{source_id, fingerprint, n_points}` once. `ScanLayout` gains archive-level `raw_dir` and
+  `sources_json` properties (siblings of `classes_json`).
+- **`storage.py`** — small `Storage` protocol (`list`, `stat`, `open`, `read_array`) with one
+  implementation today, `LocalStorage`. The only place that touches a filesystem; the S3
+  increment adds `S3Storage` behind it. Introduced now (~30 lines) so the S3 move is a new
+  backend, not a re-plumbing. `S3Storage` itself is **not** built in this increment.
+- **`validate.py`** — walks the archive through `Storage`, resolves paths via `ScanLayout`,
+  runs metadata + invariant + top-level-entry checks, returns a structured per-scan report
+  (errors + warnings) and a CLI (`python -m scan_schema.validate <root>`) that exits non-zero
+  on any error. Replaces both `data/tools/validate_annotated.py` and
+  `scripts/scan/validate_scan.py`.
 
-**`invariants.py` — the value contract.** A lift of `segment_io._validate_invariants`, which
-already encodes SCHEMA.md invariants 3–6 (class/instance `-1` agreement, per-segment class
-consistency, class IDs ∈ `classes.json`, `class_map_version` match). Invariants 1–2
-(`len(scan.ply) == meta.n_points`; per-array shape `(N_pts,)` and per-array dtype per the
-SCHEMA.md table — note `working_class_ids` is `int8` while `output/gt_class_ids` is `int32`)
-are added here so the package covers all six in one place.
+### What gets validated where
 
-**`storage.py` — the transport seam.** A small `Storage` protocol (`list`, `stat`, `open`,
-`read_array`) with a single implementation today, `LocalStorage` (thin wrapper over
-`pathlib`/`numpy`). This is the only place that touches a filesystem. The S3 increment adds
-an `S3Storage` behind the same protocol; layout, invariants, and validate come along for free.
-We introduce the seam now (it costs ~30 lines) precisely so the S3 move is "a new backend,"
-not a re-plumbing — but we do **not** build `S3Storage` in this increment.
-
-**`validate.py` — the audit.** Walks the archive through `Storage`, resolves every path via
-`ScanLayout`, checks required files exist, asserts `meta.json::schema_version == "2.0"`
-(any other value → loud failure with a migration hint, never a silent skip), and reports
-**unknown top-level entries** as warnings. This replaces `data/tools/validate_annotated.py`.
-
-What gets validated where:
-- **`sessions/<id>/output/`** — the GT pair. Runs the full `validate_invariants(class_ids,
-  instance_ids, …)` (invariants 3–6) plus shape/dtype (invariants 1–2). `output/` is
-  **optional** (SCHEMA.md: "absent until first explicit save"); a session with no `output/`
-  is a legal *unlabeled* session, **not** an error — skip it, don't flag it.
-- **`prelabel/<id>/`** — preseg result, which has **no per-point class array**, so the GT
-  invariants 3–6 do **not** apply. Validate only: `instance_ids.npy` is `int32` shape
-  `(N_pts,)`, and `segment_summary.json` parses to `{"segments": [{"id", "class_id"}, …]}`
-  (`class_id == -1` is legal — class-agnostic preseg). Do not assert preseg `class_id`s
-  against `classes.json`.
-- **`sessions/<id>/working_*.npy`** — autosave arrays; shape `(N_pts,)` and dtype per the
-  SCHEMA.md table (`working_class_ids` is `int8`, `working_segment_ids` is `int32`). No
-  invariant 3–6 check (these are mid-edit, not validated GT).
-
-### The `scratch/` allow-list (resolves the stray-dir drift)
-
-`SCHEMA.md` gains an explicit **allowed top-level entries** list. To it we add one new legal
-entry: `scratch/` — an allow-listed location for experiment outputs (`fresh_run/`,
-`stale_preseg_500k/`, etc.). Its *contents* are unchecked; its *existence* is legal. Stray
-dirs get moved under `scratch/` (mechanical, done during implementation, tracked in the plan).
-
-Validator policy on top-level entries:
-- **Known schema entry** (`README.md`, `meta.json`, `source/`, `prelabel/`, `sessions/`,
-  `renders/`, `sam3/`, `scratch/`) → OK.
-- **Anything else** (`variants.json`, `scripts/`, `sim/`, `README_legacy_v2.md`) → **warning**
-  (reported, non-fatal). This surfaces drift without blocking; promoting specific warnings to
-  errors is a later policy decision, not part of this increment.
+- **`sessions/<id>/output/`** — GT pair. Full `validate_invariants` (3–6) + shape/dtype (1–2).
+  `output/` is **optional** (absent until first save); a session with no `output/` is a legal
+  *unlabeled* session, **not** an error.
+- **`prelabel/<id>/`** — preseg result, **no per-point class array**, so GT invariants 3–6 do
+  **not** apply. Validate only: `instance_ids.npy` is `int32` shape `(N_pts,)`, and
+  `segment_summary.json` parses to `{"segments":[{"id","class_id"},…]}` (`class_id == -1`
+  legal — class-agnostic preseg). Do not assert preseg `class_id`s against `classes.json`.
+- **`sessions/<id>/working_*.npy`** — shape `(N_pts,)`, dtype per table (`working_class_ids`
+  `int8`, `working_segment_ids` `int32`). No 3–6 check (mid-edit, not validated GT).
+- **`meta.json`** — field contract + frame/derivation checks, version-gated (errors for 3.x,
+  warnings for 2.x).
+- **Source lineage** — for a 3.x derived cloud, `derivation.root.source_id` must resolve in
+  `raw/sources.json` and `root.fingerprint` must match the registry; `derivation.parent.ref`
+  must resolve (to the root or another known scan). On legacy 2.x scans the same checks run
+  against `source_laz`/`parent_scan` and downgrade to warnings. `raw/sources.json` itself is
+  validated for unique `source_id`s and well-formed entries.
 
 ### Public API
 
 ```python
 from scan_schema import ScanLayout, SessionPaths, validate_invariants, validate_archive
+from scan_schema.frame import Frame, is_rigid
+from scan_schema.sources import RawSourceRegistry
 from scan_schema.storage import Storage, LocalStorage
 ```
 
-`validate_archive(root, storage=LocalStorage())` returns a structured report
-(per-scan errors + warnings) and the CLI entry point (`python -m scan_schema.validate <root>`)
-exits non-zero on any error — the same contract the old validator had, so existing muscle
-memory / any wrapper keeps working.
-
 ### How voxa adopts it
 
-voxa deletes its own `scenes/scan_layout.py` and the invariant body of
-`segment_io._validate_invariants`, depending on `scan-schema` instead (re-exporting from the
-old import paths if churn is a concern — decided in the plan). voxa stays the **sole writer**
-and keeps validating at save; it just validates against the shared definition. Adoption must
-not change voxa's save behavior or break any reader — verified by voxa's existing
-`test_segment_io.py` and `test_real_scans_validate.py` passing unchanged.
+voxa deletes `scenes/scan_layout.py`, the invariant body of
+`segment_io._validate_invariants`, and `scripts/scan/validate_scan.py`, depending on
+`scan_schema` instead (re-exporting from old import paths if churn is a concern — decided in
+the plan). voxa stays the **sole writer** and keeps validating at save against the shared
+definition. Adoption must not change voxa's save behavior or break a reader — verified by
+voxa's existing `test_segment_io.py` and `test_real_scans_validate.py` passing unchanged.
+`data/tools/validate_annotated.py` is deleted; its CLI contract (exit non-zero on error) is
+preserved by `python -m scan_schema.validate`.
 
 ## Data flow
 
 ```
-                 scan_schema (one definition)
-                 ┌───────────────────────────────┐
-   voxa save ───▶│ layout · invariants · storage  │
-   validator ───▶│                                │──▶ LocalStorage ──▶ lidar/annotated/
-   (readers,     └───────────────────────────────┘
+                 scan_schema (one v3.0 definition)
+                 ┌──────────────────────────────────────────┐
+   voxa save ───▶│ layout · frame · invariants · metadata     │
+   validator ───▶│              · storage                      │──▶ LocalStorage ──▶ lidar/annotated/
+   (readers,     └──────────────────────────────────────────┘
     later)
 ```
 
-One writer (voxa), many readers, one schema definition under all of them. `schema_version`
-in `meta.json` is the coordination point: a reader hitting non-"2.0" data fails loud with a
-migration hint instead of mis-parsing.
+One writer (voxa), many readers, one schema definition under all of them. `schema_version` is
+the coordination point: 3.x is enforced, 2.x is read-with-warnings, anything else fails loud
+with a migration hint.
 
 ## Error handling
 
-Fail loud, never mask. The validator distinguishes **errors** (invariant violations, missing
-required files, wrong `schema_version`, shape/dtype mismatch) from **warnings** (unknown
-top-level entries). Errors exit non-zero; warnings are reported but non-fatal. `validate_invariants`
-raises `ValueError` with the offending invariant number and point count (preserving voxa's
-current messages). No empty excepts, no silent skips — a scan that can't be read is an error
-with the path, not an omission.
+Fail loud, never mask. Errors (invariant violations, missing required files, malformed
+`meta.json`, non-rigid `transform_to_canonical`, shape/dtype mismatch, missing
+`frame`/`derivation` on a 3.x scan) exit non-zero. Warnings (legacy 2.x drift, unknown
+top-level entries, archival clouds in `source/`) are reported but non-fatal. A scan that can't
+be read is an error with its path, never a silent skip.
 
 ## Testing
 
-- `test_layout.py` — property path joins resolve to the documented locations.
-- `test_invariants.py` — each invariant 1–6 has a passing case and a violating case (ports
-  voxa's existing invariant tests so we know behavior is preserved on lift).
+- `test_layout.py` — property path joins resolve to documented locations.
+- `test_invariants.py` — each invariant 1–6 has a passing and a violating case (ports voxa's
+  existing invariant tests).
+- `test_metadata.py` — frame/derivation checks; a 3.x scan missing `frame` errors, a 2.x scan
+  missing it warns; non-rigid `transform_to_canonical` errors; `varies` subset enforced.
+- `test_sources.py` — `raw/sources.json` loads; a `derivation.root` with an unknown
+  `source_id` or mismatched `fingerprint` errors on 3.x, warns on 2.x; duplicate `source_id`
+  in the registry errors; legacy `source_laz` resolves to a registry source by fingerprint.
 - `test_validate.py` — runs `validate_archive` against the real `lidar/annotated/` fixtures:
-  all 9 current scans pass (errors == 0), unlabeled sessions (no `output/`) are not flagged,
-  and the known strays surface as warnings.
-- voxa's own suite (`test_segment_io.py`, `test_real_scans_validate.py`) passes unchanged
-  after voxa switches to the package — the regression gate for adoption.
+  all 9 current (2.0) scans pass with **errors == 0** (their legacy gaps are warnings),
+  unlabeled sessions are not flagged, and known strays (`fresh_run/`, archival clouds) surface
+  as warnings.
+- voxa's `test_segment_io.py` + `test_real_scans_validate.py` pass unchanged after adoption —
+  the regression gate.
 
 ## Roadmap (out of scope here, recorded so increment 1 doesn't paint us into a corner)
 
-1. **Increment 1 (this spec):** the `scan-schema` package + rebuilt validator + voxa adoption
-   + `scratch/` allow-list. Enforcement and the drift-fix land with zero new infra to operate.
-2. **Increment 2 — HTTP service:** a thin FastAPI app whose routes are the `ScanLayout`
-   resource names (`GET /scenes/{name}/source`, `.../sessions/{id}/output`). Returns validated
-   JSON for small/structured payloads; returns a **location** (file path now, presigned URL
-   later) for big binaries (PLY/`.npy`) — never proxies hundreds of MB. Justified when
-   consumers run on different machines or S3 arrives.
-3. **Increment 3 — S3 backend:** add `S3Storage` behind the `Storage` protocol; big-binary
-   responses become presigned URLs. Module, validator, service, voxa, readers unchanged.
-4. **Later, as needed:** migrate meshbuilder/training readers off hand-rolled path resolution
-   onto `scan_schema`; auto-gate the validator (pre-commit in the scan-schema repo / CI).
+1. **Increment 1 (this spec):** the `scan-schema` package (layout + frame + invariants +
+   metadata + sources + storage seam) encoding v3.0; the unified validator replacing all three
+   current ones; voxa adoption; the `scratch/` allow-list; `raw/sources.json` registering the
+   5 roots + the `derivation.root`/`parent` lineage contract for scans; and `lidar/SCHEMA.md`
+   rewritten to v3.0. Existing scans grandfathered (warned, not migrated). Zero new infra.
+2. **Increment 2 — lineage on cutouts/exports:** wire the edit-raw full-density export (and any
+   cutout producer) to stamp `derivation.root`/`parent` on its outputs so they join the family
+   tree.
+3. **Increment 3 — opt-in legacy migration:** one command (`backfill_scan_frame.py` +
+   `scan_index.py` + `scratch/` tidy + `source_laz`→`derivation.root`) to bring the 9 scans to
+   fully-conformant 3.0, and the `laz/`→`raw/` rename.
+4. **Increment 4 — HTTP service:** thin FastAPI app whose routes are the `ScanLayout` resource
+   names; JSON for small payloads, a location (path now, presigned URL later) for big binaries.
+5. **Increment 5 — S3 backend:** add `S3Storage` behind the `Storage` protocol; module,
+   validator, service, voxa, readers unchanged.
+6. **Later:** migrate meshbuilder/training readers onto `scan_schema`; auto-gate the validator.
 
 ## Decisions (pinned 2026-06-09)
 
+- **v3.0 = v2.0 layout + v1.3 metadata, one version number.** `schema_version: "3.0"`.
+- **`frame` + `derivation` required for 3.x; warned (grandfathered) for legacy 2.x.** No
+  forced backfill of existing scans this increment.
+- **Archival clouds + `mesh.optimized.glb` → `scratch/`** (opt-in tidy; validator warns if
+  left in `source/`). `coords`/`coord_offset_m` removed in 3.0, folded into `frame.georef`.
+- **Source families:** global full-res roots registered in `lidar/raw/sources.json`; every
+  derived cloud carries `derivation.root` (`{source_id, fingerprint}`, supersedes `source_laz`)
+  + `derivation.parent` (`{ref, fingerprint}`), fingerprint-based. Roots + scans registered in
+  increment 1; cutout/export lineage deferred. `laz/`→`raw/` rename flagged for sign-off
+  (legacy `source_laz` paths tolerated until then).
+- **Unify all three validators into the package**: delete `data/tools/validate_annotated.py`
+  and voxa `scripts/scan/validate_scan.py`; voxa save-gate imports `scan_schema`.
 - **Location/packaging:** standalone git repo at `engine/tools/scan-schema/`, package
   `scan_schema`, installed editable and pinned by consumers.
-- **Increment 1 scope:** module + rebuilt validator + voxa adoption + `scratch/` allow-list.
-  No auto-gate, no service, no S3, no reader migration yet.
-- **Stray dirs:** allow-list a `scratch/` location in `SCHEMA.md` and move experiment outputs
-  there; the validator warns (does not error) on any other unknown top-level entry.
+- **Increment 1 scope:** package + unified validator + voxa adoption + `scratch/` allow-list +
+  `raw/sources.json` + lineage contract + SCHEMA.md rewrite. No auto-gate, no service, no S3,
+  no reader migration, no cutout-lineage, no forced legacy migration yet.
