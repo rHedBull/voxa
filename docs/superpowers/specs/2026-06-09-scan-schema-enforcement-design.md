@@ -243,6 +243,7 @@ engine/tools/scan-schema/
     ├── test_invariants.py
     ├── test_metadata.py
     ├── test_validate.py           # runs against real lidar/annotated fixtures
+    ├── test_storage.py            # ReadOnlyStorage write ops raise; WritableStorage round-trips
     └── test_sources.py            # [increment 2] registry + lineage checks
 ```
 
@@ -267,10 +268,13 @@ engine/tools/scan-schema/
   registration helper that computes a raw file's `{source_id, fingerprint, n_points}` once.
   `ScanLayout` gains archive-level `raw_dir` and `sources_json` properties (siblings of
   `classes_json`). Not built in increment 1.
-- **`storage.py`** — small `Storage` protocol (`list`, `stat`, `open`, `read_array`) with one
-  implementation today, `LocalStorage`. The only place that touches a filesystem; the S3
-  increment adds `S3Storage` behind it. Introduced now (~30 lines) so the S3 move is a new
-  backend, not a re-plumbing. `S3Storage` itself is **not** built in this increment.
+- **`storage.py`** — small `Storage` protocol (`list`, `stat`, `read_array`, `open`, and the
+  write ops `write_array`/`open_w`/`mkdir`). Two impls ship in increment 1: `ReadOnlyStorage`
+  (default; write ops raise `ReadOnlyError` with the offending path) and `WritableStorage`
+  (filesystem read+write). Readers get `ReadOnlyStorage`; **only voxa** constructs
+  `WritableStorage`. The only place that touches a filesystem; the S3 increment adds
+  `S3Storage`/`S3ReadOnlyStorage` behind the same protocol, so the S3 move is a new backend,
+  not a re-plumbing. `S3Storage` itself is **not** built in this increment.
 - **`validate.py`** — walks the archive through `Storage`, resolves paths via `ScanLayout`,
   runs metadata + invariant + top-level-entry checks, returns a structured per-scan report
   (errors + warnings) and a CLI (`python -m scan_schema.validate <root>`) that exits non-zero
@@ -318,6 +322,56 @@ voxa's existing `test_segment_io.py` and `test_real_scans_validate.py` passing u
 `data/tools/validate_annotated.py` is deleted; its CLI contract (exit non-zero on error) is
 preserved by `python -m scan_schema.validate`.
 
+## Interfaces to the data & write protection
+
+Consumers stop constructing `Path(...)` joins and go through four interface layers (three
+in-process now, one over HTTP later):
+
+1. **Path / resource — `ScanLayout`** (increment 1). The "where is X" interface: every logical
+   resource is a property (`scan_ply`, `meta_json`, `session(id).output_gt_class_ids`, …). Pure
+   path joins. The one place layout is defined.
+2. **Transport — `Storage`** (increment 1). The "give me / put bytes" interface
+   (`list/stat/read_array/open` + write ops). `LocalStorage` today, `S3Storage` later — same
+   protocol, so local→S3 is a swap. This is also the write-protection seam (below).
+3. **Validation — the value contract** (increment 1). `validate_invariants(class_ids,
+   instance_ids, …)` at point level (voxa's save-gate) and `validate_archive(root, storage)` /
+   `python -m scan_schema.validate <root>` for whole-archive audit.
+4. **Network — resource API** (increment 4, later). HTTP routes that *are* the `ScanLayout`
+   resource names; JSON for small payloads, a location (path now, presigned URL later) for big
+   binaries (never proxied).
+
+### Access model
+
+| Consumer | Interface | Access |
+|---|---|---|
+| **voxa** (sole writer) | `ScanLayout` + `WritableStorage` + `validate_invariants` (save-gate) | read + **write** |
+| validator / CI | `validate_archive` / CLI | read-only audit |
+| meshbuilder, training (readers) | `ScanLayout` + `ReadOnlyStorage` | read-only |
+| lineage tools (increment 2) | `RawSourceRegistry` | read-only |
+
+One writer, many readers. Enforcement is voxa's save-gate (write-time) + the audit validator
+(after-the-fact), both calling the *same* `scan_schema` definition, so they cannot disagree.
+
+### Write protection (layered)
+
+Nothing in Python truly *prevents* a write — `ReadOnlyStorage` only stops writes that go
+*through the package*. Real prevention is OS perms (local) / IAM (S3). So protection is layered:
+
+- **Software guard (increment 1):** `ReadOnlyStorage` is the default; only voxa constructs
+  `WritableStorage`. Accidental writes through the package fail loud with the path, instead of
+  silently corrupting data.
+- **OS hardening (documented runbook, increment 1):** `lidar/` writable only by the voxa/owner
+  account; readers run without write perms. `chattr +i` on `raw/` roots and every
+  `source/scan.ply` — these must **never** change, because `derivation` fingerprints depend on
+  them; a silently-edited root invalidates a whole family's lineage. This is documented in
+  SCHEMA.md / a setup note, not enforced by code.
+- **Recovery:** the data is too big for git, but the *metadata* (`meta.json`, `*.json`,
+  `sources.json`) is tiny — tracking just those in git (clouds git-ignored) makes accidental
+  metadata corruption recoverable.
+- **S3 (later increment):** read-only IAM creds for everyone, `PutObject` only for the writer,
+  bucket versioning + object-lock. A validating **write-gateway** (sole creds-holder) is the
+  maximal version — **deferred** (YAGNI with one trusted writer that already validates at save).
+
 ## Data flow
 
 ```
@@ -352,6 +406,8 @@ be read is an error with its path, never a silent skip.
   unknown `source_id` or mismatched `fingerprint` errors on 3.x, warns on 2.x; duplicate
   `source_id` in the registry errors; legacy `source_laz` resolves to a registry source by
   fingerprint.
+- `test_storage.py` — `ReadOnlyStorage` write ops raise `ReadOnlyError`; `WritableStorage`
+  round-trips an array; both read identically.
 - `test_validate.py` — runs `validate_archive` against the real `lidar/annotated/` fixtures:
   all 9 current (2.0) scans pass with **errors == 0** (their legacy gaps are warnings),
   unlabeled sessions are not flagged, and known strays (`fresh_run/`, archival clouds) surface
@@ -396,10 +452,15 @@ be read is an error with its path, never a silent skip.
   in increment 1.
 - **Unify all three validators into the package**: delete `data/tools/validate_annotated.py`
   and voxa `scripts/scan/validate_scan.py`; voxa save-gate imports `scan_schema`.
+- **Write protection (layered):** `ReadOnlyStorage` is the default; only voxa constructs
+  `WritableStorage` (increment 1). OS hardening (perms + `chattr +i` on `raw/` & `source/scan.ply`)
+  documented as a runbook. IAM read-only-by-default is the S3-increment answer; the validating
+  write-gateway is deferred (YAGNI with one trusted writer).
 - **Location/packaging:** standalone git repo at `engine/tools/scan-schema/`, package
   `scan_schema`, installed editable and pinned by consumers.
-- **Increment 1 scope:** package (layout + frame + invariants + metadata + storage) + unified
-  validator + voxa adoption + `scratch/` allow-list + `laz/`→`raw/` rename (+ 5 `source_laz`
-  fixes + resolver update) + SCHEMA.md v3.0 rewrite. **Out:** the source-families registry +
+- **Increment 1 scope:** package (layout + frame + invariants + metadata + storage incl.
+  ReadOnly/Writable) + unified validator + voxa adoption + `scratch/` allow-list + `laz/`→`raw/`
+  rename (+ 5 `source_laz` fixes + resolver update) + write-protection runbook + SCHEMA.md v3.0
+  rewrite. **Out:** the source-families registry +
   lineage validation (increment 2), auto-gate, service, S3, reader migration, forced legacy
   migration.
