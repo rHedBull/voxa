@@ -60,16 +60,19 @@ data/
 ```
 Both annotation files share one schema (`AnnotationDoc` in `app/schemas.py`); a model's output dropped at `predictions.json` is enough to power Compare mode.
 
-**Annotated scan layout** (scan-schema v2, under `$VOXA_LIDAR_ROOT/annotated/<name>/`):
+**Annotated scan layout** (under `$VOXA_LIDAR_ROOT/annotated/<name>/`):
 ```
 <name>/
-├── meta.json              schema_version: "2.0"  (required for discovery)
+├── meta.json              schema_version "2.x" (grandfathered) or "3.0"
 ├── source/scan.ply        point cloud (required)
 ├── prelabel/<preseg_id>/  each pipeline result: instance_ids.npy, segment_summary.json, meta.json
 └── sessions/<session_id>/ each labeling session: session.json, working_*.npy, output/gt_*, history/
 ```
-No `labels/`, `session/`, or `annotation_history/` in v2 — those are absorbed into `sessions/`.
-See `docs/scan-schema.md` for the full layout + per-file contracts + required vs optional behavior.
+No `labels/`, `session/`, or `annotation_history/` — those are absorbed into `sessions/`.
+The schema (layout, meta contract, fingerprints, invariants, validation, lineage, durable writes) is
+defined once in the shared **`scan_schema`** package (`tools/scan-schema`, declared as a VCS dependency
+in `backend/requirements.txt`) — voxa imports it rather than re-implementing it. See `docs/scan-schema.md`
+for the voxa-facing subset and the cross-tool `lidar/SCHEMA.md` for the full contract.
 
 **Class config**: `config/classes.yaml`. Each entry has `label`, `color` (hex string or `[r,g,b]` floats 0-1), and `key` (hotkey). Restart the backend or re-fetch `/api/config` to pick up edits.
 
@@ -82,7 +85,7 @@ See `docs/scan-schema.md` for the full layout + per-file contracts + required vs
 - **Multi-session labeling model**: each annotated scan holds N labeling sessions under `sessions/<session_id>/`. The backend keeps ONE active `SegmentSession` at a time. Label mode (annotated tier) shows a session picker: list, create (name + preseg or blank), rename, delete, switch. Opening a scan auto-resumes the last-worked session (max `saved_at`). Save (Ctrl+S) writes to the active session's `output/` dir; downstream consumers enumerate `sessions/*/output/` — there is no single canonical GT slot. The cuboid/pointset instance doc (right Instances panel) is also session-scoped: `sessions/<id>/instances_gt.json` via `?session_id=` on `/api/annotations/*` (the scene-global `data/annotations/` path is legacy-tier only).
 - **Session pinning + 409**: each session is pinned at creation to a preseg fingerprint (`prelabel/<id>/meta.json::fingerprint`) and a source fingerprint. On resume, voxa string-compares both pins. Any mismatch returns HTTP 409 `{detail, diverged: "preseg"|"source"}` and renders as a blocking banner in the UI. Re-registering the preseg (via `register_preseg()`) is the only supported way to update a preseg.
 - **Per-point labels are read-only in Inspect** — annotated scans load working arrays from the active session (`sessions/<id>/working_*.npy`), surfaced through `LoadResponse.class_ids` / `instance_ids` / `class_palette`. Inspect's "Color by Class / Instance" pills consume them. Editing per-point segments is Label mode only.
-- **Scan directory schema** is what voxa expects on disk for an annotated scan (source.ply, prelabel/<preseg_id>/, sessions/<session_id>/, renders/, sam3/, ...). See `docs/scan-schema.md` for the full layout + per-file contracts + required vs optional behavior. v1.3 scans (with `labels/`, `session/`, `annotation_history/`) are not discovered — run `scripts/migrate_scan_v2.py` first.
+- **Scan directory schema** is what voxa expects on disk for an annotated scan (source.ply, prelabel/<preseg_id>/, sessions/<session_id>/, renders/, sam3/, ...). See `docs/scan-schema.md`. Discovery delegates to `scan_schema.metadata.check_meta`: 2.x scans are grandfathered (missing frame/derivation are warnings) and 3.0 scans are fully validated — both are discovered. Legacy v1.3 scans (with `labels/`, `session/`, `annotation_history/`) are not discovered — run `scripts/migrate_scan_v2.py` first. Promote a 2.x scan to v3.0 lineage with `scripts/scan/promote_to_v3.py` (registers its raw root + writes the v3.0 nested derivation via `scan_schema.Registry.set_derivation`).
 - **Auto-recenter on load** — `_recenter` in `app/core.py` subtracts the mean centroid (`points.mean(axis=0)`) when any coord exceeds 1e3 (LAS UTM scenes). The offset is in `LoadResponse.recenter_offset`. Cuboid endpoints operate in the recentered frame.
 - **Cuboid `rotation` is stored but unused by any scoring** — `_iou_aabb` was removed when Compare moved to per-point class agreement. `rotation` remains in the `Cuboid` schema for Label mode but has no effect in Compare.
 - **Coordinate system**: Three.js Y-up. Cuboid `center`/`size` are in scene units; `rotation` is `[rx, ry, rz]` Euler XYZ in radians.
