@@ -7,7 +7,6 @@ arrays before flushing to disk.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -18,27 +17,9 @@ import numpy as np
 
 from scan_schema.layout import ScanLayout
 from scan_schema.invariants import validate_invariants
-
-
-def atomic_write_npy(path: Path, arr: np.ndarray) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    with open(tmp, "wb") as f:
-        np.save(f, arr)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-
-
-def atomic_write_json(path: Path, payload: dict) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+# Crash-safe writers now live in the schema package; re-exported here so the
+# existing labeling/preseg/migration callers import them unchanged.
+from scan_schema.storage import atomic_write_npy, atomic_write_json  # noqa: F401
 
 
 _TS_RE = re.compile(r"^\d{8}_\d{6}$")
