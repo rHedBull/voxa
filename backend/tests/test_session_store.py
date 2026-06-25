@@ -6,7 +6,7 @@ import pytest
 
 from labeling import session_store as ss
 from preseg.preseg_store import register_preseg
-from scenes.scan_layout import ScanLayout
+from scan_schema.layout import ScanLayout
 
 
 @pytest.fixture

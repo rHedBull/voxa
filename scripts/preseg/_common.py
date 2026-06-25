@@ -50,7 +50,7 @@ def publish_preseg(scan_dir: Path, preseg_id: str, instance_ids: np.ndarray,
     """Publish a preseg result into prelabel/<preseg_id>/ (scan-schema v2)
     via the backend's register_preseg — the single writer of that layout."""
     from preseg.preseg_store import register_preseg
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     return register_preseg(
         ScanLayout(scan_dir), preseg_id, instance_ids,
         summary={"segments": [

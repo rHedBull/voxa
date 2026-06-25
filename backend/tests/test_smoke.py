@@ -30,7 +30,35 @@ def test_config_classes_loaded(client):
     # Either the on-disk classes.yaml or the built-in defaults should populate this.
     assert isinstance(classes, list) and len(classes) > 0
     for c in classes:
-        assert {"id", "label", "color", "hotkey"} <= set(c.keys())
+        assert {"id", "label", "color", "hotkey", "class_id"} <= set(c.keys())
+
+
+def test_class_name_to_id_uses_explicit_ids(tmp_path, monkeypatch):
+    """Explicit `id:` in classes.yaml wins over yaml position (the positional
+    fallback silently corrupted labels when the yaml was reordered)."""
+    import app.core as core
+    cfg = tmp_path / "classes.yaml"
+    cfg.write_text(
+        "classes:\n"
+        "  pipe:\n    id: 0\n    label: Pipe\n"
+        "  fitting:\n    id: 5\n    label: Fitting\n"
+        "  tank:\n    id: 1\n    label: Tank\n"
+        "  legacy_positional:\n    label: NoId\n"
+    )
+    monkeypatch.setattr(core, "CONFIG_PATH", cfg)
+    assert core._voxa_class_name_to_id() == {
+        "pipe": 0, "fitting": 5, "tank": 1, "legacy_positional": 3,
+    }
+
+
+def test_class_name_to_id_rejects_duplicate_ids(tmp_path, monkeypatch):
+    import pytest
+    import app.core as core
+    cfg = tmp_path / "classes.yaml"
+    cfg.write_text("classes:\n  pipe:\n    id: 1\n  tank:\n    id: 1\n")
+    monkeypatch.setattr(core, "CONFIG_PATH", cfg)
+    with pytest.raises(ValueError, match="duplicate class ids"):
+        core._voxa_class_name_to_id()
 
 
 def test_scenes_returns_list(client):

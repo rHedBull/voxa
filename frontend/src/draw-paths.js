@@ -13,7 +13,9 @@
 //   lastRadius: number,
 //   nextKey: number,              // monotonic key source (deterministic, testable)
 // }
-// classId is the int palette index (== position in the classes array).
+// classId is the canonical numeric class id (ClassDef.class_id from
+// /api/config, matching engine/data/lidar/classes.json) — NOT the
+// position in the classes array.
 // instKey groups paths into one instance; starts unique per path, M merges.
 
 export function initDrawState({ defaultRadius = 0.15 } = {}) {

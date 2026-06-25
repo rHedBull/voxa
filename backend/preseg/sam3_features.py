@@ -26,7 +26,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from scenes.fingerprint import cloud_fingerprint
+from scan_schema.fingerprint import cloud_fingerprint
 # Camera/projection math is single-homed in scenes.reproject (the registration
 # health-check and this pipeline MUST project identically); import, don't copy.
 from scenes.reproject import (
@@ -344,3 +344,5 @@ def extract_or_load(
     log(f"SAM3 features done: {features.shape} in "
         f"{time.time()-t0:.1f}s, seen={meta['n_seen']:,}/{n:,}")
     return features, seen, meta
+
+# TODO: this is what is needed for the current preseg_sam3d pipeline based on sam3d feature vectors, right?

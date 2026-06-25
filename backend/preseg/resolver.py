@@ -15,7 +15,7 @@ from typing import Optional
 
 import numpy as np
 
-from scenes.frame import Frame, compose_a_to_v
+from scan_schema.frame import Frame, compose_a_to_v
 
 
 @dataclass
@@ -62,7 +62,7 @@ def dir_cloud_transforms(render_dirs, cloud_frame: Frame, cloud_variant_id: str,
     ``transform_to_canonical`` (so a same-variant run yields identity, and the
     navvis pure-translation case yields the verified Y-up translation).
     """
-    from scenes.render_meta import read_render_meta
+    from scan_schema.render_meta import read_render_meta
 
     R4 = np.eye(4)
     R4[:3, :3] = orientation_R3
@@ -79,3 +79,4 @@ def dir_cloud_transforms(render_dirs, cloud_frame: Frame, cloud_variant_id: str,
         core = np.linalg.inv(rm["frame"].transform_to_canonical) @ cloud_frame.transform_to_canonical
         out[rd] = R4 @ core @ R4inv
     return out
+# TODO: what is here resolved? is this still needed if all data fits perfectly and follows newest dataset schema v1.3?

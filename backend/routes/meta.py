@@ -7,6 +7,7 @@ from app.constants import *  # noqa: F401,F403
 from app.schemas import *  # noqa: F401,F403
 from app import constants  # live LIDAR_ROOT
 from app.core import *  # noqa: F401,F403
+from app.core import _voxa_class_name_to_id
 
 router = APIRouter()
 
@@ -31,9 +32,10 @@ def get_config():
             ClassDef(id="rail",     label="Rail",       color="#a855f7", hotkey="5"),
             ClassDef(id="plate",    label="Base plate", color="#64748b", hotkey="6"),
             ClassDef(id="unknown",  label="Unknown",    color="#ef4444", hotkey="0"),
-        ])
+        ]) # TODO: defaults make no sense
     with CONFIG_PATH.open() as f:
         raw = yaml.safe_load(f) or {}
+    name_to_id = _voxa_class_name_to_id()
     classes = []
     for i, (cid, body) in enumerate((raw.get("classes") or {}).items()):
         color = body.get("color", "#5b8def")
@@ -45,6 +47,7 @@ def get_config():
             label=body.get("label", cid.title()),
             color=color,
             hotkey=str(body.get("key", body.get("hotkey", str(i + 1)))),
+            class_id=name_to_id.get(str(cid).lower(), i),
         ))
     return ConfigResponse(classes=classes)
 
@@ -54,7 +57,7 @@ def list_scenes():
     for s in discover(DATA_DIR, constants.LIDAR_ROOT):
         annot_key = s.name if s.tier == "legacy" else s.scene_id.replace("/", "__")
         gt = (ANNOT_DIR / annot_key / "ground_truth.json").exists()
-        pr = (ANNOT_DIR / annot_key / "predictions.json").exists()
+        pr = (ANNOT_DIR / annot_key / "predictions.json").exists() # TODO: is this still up to date?
         out.append(SceneInfo(
             id=s.scene_id,
             tier=s.tier,
@@ -69,3 +72,4 @@ def list_scenes():
             n_points=s.n_points,
         ))
     return out
+# TODO: fix where to load the scenes from? adapted to new scene data saving schemaq v1.3? where a decimated point cloud is not a new scene

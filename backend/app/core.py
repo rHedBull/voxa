@@ -23,7 +23,7 @@ from scenes.lidar_io import (
 )
 from scenes.point_cloud import PointCloud, load_glb, load_ply
 from scenes.reproject import euler_xyz_matrix
-from scenes.scan_layout import ScanLayout
+from scan_schema.layout import ScanLayout
 from scenes.scene_registry import (
    SceneSource, discover, load_lidar_root_from_env,
    resolve as resolve_scene,
@@ -57,7 +57,7 @@ def _annotation_path(scene: str, kind: str, session_id: str | None = None) -> Pa
         # labeling session — a scene-global file would leak instances across
         # sessions (every session showing the last-saved session's panel).
         from labeling.session_store import _validate_session_id
-        from scenes.scan_layout import ScanLayout
+        from scan_schema.layout import ScanLayout
         try:
             _validate_session_id(session_id)
         except ValueError as e:
@@ -310,14 +310,22 @@ def _coerce_class_id(v):
 def _voxa_class_name_to_id() -> dict[str, int]:
     """Build {class-name-lower: int-id} from the configured classes.yaml.
 
-    Mirrors the enumeration order used by ``get_config()`` so id↔name
-    stays consistent with the palette the frontend renders.
+    Uses each class's explicit ``id:`` (the canonical id from
+    engine/data/lidar/classes.json) and falls back to yaml position only
+    when absent — positional ids silently corrupt labels if the yaml is
+    ever reordered. Mirrors ``get_config()`` so id↔name stays consistent
+    with the palette the frontend renders.
     """
     if not CONFIG_PATH.exists():
         return {}
     raw = yaml.safe_load(CONFIG_PATH.read_text()) or {}
-    return {str(name).lower(): i
-            for i, name in enumerate((raw.get("classes") or {}).keys())}
+    out: dict[str, int] = {}
+    for i, (name, body) in enumerate((raw.get("classes") or {}).items()):
+        explicit = body.get("id") if isinstance(body, dict) else None
+        out[str(name).lower()] = int(explicit) if explicit is not None else i
+    if len(set(out.values())) != len(out):
+        raise ValueError(f"duplicate class ids in {CONFIG_PATH}: {out}")
+    return out
 
 def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> tuple:
     """Compute per-segment bounding box as center + size (float32).

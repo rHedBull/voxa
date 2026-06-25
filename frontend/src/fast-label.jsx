@@ -66,8 +66,9 @@ export function FastLabelKeys({ active, classes, onStep, onPickClass, onExit }) 
 // Bottom-center status strip while fast mode is active.
 export function FastLabelHUD({ queue, pos, classes }) {
   const seg = queue[pos];
-  // summary classIds are palette indexes (deriveSummary), -1 = unlabeled.
-  const presegCls = seg && seg.classId >= 0 ? classes[seg.classId] : null;
+  // summary classIds are canonical numeric class ids (deriveSummary), -1 = unlabeled.
+  const presegCls = seg && seg.classId >= 0
+    ? classes.find((c) => c.class_id === seg.classId) : null;
   return (
     <div style={{
       position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',

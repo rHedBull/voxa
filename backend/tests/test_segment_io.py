@@ -9,9 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from labeling.segment_io import (
-    atomic_write_json,
     atomic_write_npy,
-    compute_fingerprint,
     load_session_aux,
     load_working_arrays,
     prune_history,
@@ -153,37 +151,8 @@ def test_save_labels_rejects_class_map_version_mismatch(tmp_path):
                     write_history=False)
 
 
-def test_compute_fingerprint_is_content_addressed():
-    a = np.array([1, 2, 3], dtype=np.int32)
-    b = np.array([1, 2, 3], dtype=np.int32)
-    c = np.array([1, 2, 4], dtype=np.int32)
-    assert compute_fingerprint(a) == compute_fingerprint(b)
-    assert compute_fingerprint(a) != compute_fingerprint(c)
-    assert compute_fingerprint(a).startswith("sha256:")
-
-
-def test_compute_fingerprint_handles_non_contiguous_views():
-    base = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
-    view = base.T  # non-contiguous
-    contig = np.ascontiguousarray(view)
-    assert compute_fingerprint(view) == compute_fingerprint(contig)
-
-
-def test_atomic_write_npy_round_trip(tmp_path):
-    p = tmp_path / "x.npy"
-    arr = np.arange(100, dtype=np.int32)
-    atomic_write_npy(p, arr)
-    assert p.exists()
-    assert not (tmp_path / "x.npy.tmp").exists()
-    np.testing.assert_array_equal(np.load(p), arr)
-
-
-def test_atomic_write_json_round_trip(tmp_path):
-    p = tmp_path / "x.json"
-    atomic_write_json(p, {"a": 1, "b": [2, 3]})
-    assert p.exists()
-    assert not (tmp_path / "x.json.tmp").exists()
-    assert json.loads(p.read_text()) == {"a": 1, "b": [2, 3]}
+# atomic_write_npy/json round-trip + tmp-cleanup are tested in the scan_schema
+# package (tests/test_storage.py), which now owns those writers.
 
 
 def test_prune_history_keeps_only_timestamped_dirs(tmp_path):

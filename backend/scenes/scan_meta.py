@@ -1,53 +1,20 @@
-"""Scan/variant meta.json reader with v1.2 -> v1.3 back-compat (§4.1)."""
+"""Voxa-side viewer heuristics over scan meta.json.
+
+The canonical meta.json reader (frame hydration + derivation normalization) now
+lives in the shared package (``scan_schema.metadata.read_scan_meta``); this module
+keeps only the voxa-specific view concerns: Y-up inference and the UI summary.
+"""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import numpy as np
-
-from scenes.frame import Frame, frame_from_dict
+from scan_schema.metadata import read_scan_meta
 
 
 def is_z_up_from_meta(meta: dict) -> bool:
     """Frame rule shared by scene discovery and the migration script: a scan
     is Y-up only when sampled from a mesh and not from a LAZ; default Z-up."""
     return not (meta.get("source_mesh") and not meta.get("source_laz"))
-
-
-
-def _legacy_frame(meta: dict) -> Frame:
-    """Synthesize a frame for a pre-v1.3 meta.json.
-
-    We don't know the aligned canonical for legacy clouds, so we treat the stored
-    cloud as its own canonical-local (identity transform) and flag it uncertain so
-    the §6 registration health-check is mandatory before trusting it. The legacy
-    ``coord_offset_m`` (if any) is preserved as the world georeference offset.
-    """
-    scan_id = meta.get("scan_name", "unknown")
-    offset = meta.get("coord_offset_m")
-    georef = {"offset_m": offset} if offset else None
-    return Frame(np.eye(4), f"{scan_id}#local",
-                 units=meta.get("units", "meters"),
-                 georef=georef, frame_uncertain=True)
-
-
-def read_scan_meta(scan_dir: Path) -> dict:
-    """Return the parsed meta.json with ``frame`` as a ``Frame`` and a normalized
-    ``derivation`` block (synthesized for legacy scans)."""
-    meta = json.loads((Path(scan_dir) / "meta.json").read_text())
-    if "frame" in meta:
-        meta["frame"] = frame_from_dict(meta["frame"])
-    else:
-        meta["frame"] = _legacy_frame(meta)
-    if "derivation" not in meta:
-        scan_id = meta.get("scan_name", "unknown")
-        meta["derivation"] = {
-            "scan_id": scan_id, "variant_id": scan_id,
-            "parent": "original", "op": "asis", "varies": [],
-            "source_fingerprint": None, "role": None,
-        }
-    return meta
 
 
 def frame_summary(scan_dir: Path) -> dict:

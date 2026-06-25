@@ -10,7 +10,8 @@ if [[ ! -d "$ROOT/.venv" ]]; then
   exit 1
 fi
 
-# Install dev deps on demand (cheap if already present).
+# Install dev deps on demand (cheap if already present). requirements-dev.txt
+# includes requirements.txt, which declares scan_schema (VCS branch ref).
 "$ROOT/.venv/bin/pip" install --quiet -r "$ROOT/backend/requirements-dev.txt"
 
 exec "$ROOT/.venv/bin/pytest" "$@"

@@ -1,8 +1,8 @@
-# Scan directory schema v2.0 (voxa-facing)
+# Scan directory schema (voxa-facing)
 
 What voxa expects on disk for an annotated scan. The canonical, broader schema lives at `lidar/SCHEMA.md` in the data tree; this doc captures the subset voxa actually reads + writes so the layout is discoverable from inside the repo.
 
-In code, this layout is encoded once in `backend/scenes/scan_layout.py::ScanLayout` and `SessionPaths` — every module that needs a path inside a scan dir (`scene_registry`, `lidar_io`, `segment_io`, the load and save routes, `session_store`, `preseg_store`) resolves it there rather than hard-coding subpaths. Update `ScanLayout` and this doc together when the on-disk layout changes.
+In code, this layout is encoded once in the shared `scan_schema` package (`scan_schema.layout::ScanLayout` and `SessionPaths`) — every module that needs a path inside a scan dir (`scene_registry`, `lidar_io`, `segment_io`, the load and save routes, `session_store`, `preseg_store`) resolves it there rather than hard-coding subpaths. The canonical source now lives in the separate `tools/scan-schema` repo; update `scan_schema.layout` and this doc together when the on-disk layout changes.
 
 ## Where scans live
 
@@ -10,15 +10,15 @@ In code, this layout is encoded once in `backend/scenes/scan_layout.py::ScanLayo
 $VOXA_LIDAR_ROOT/annotated/<scan_name>/
 ```
 
-`$VOXA_LIDAR_ROOT` defaults to `/home/hendrik/coding/engine/data/lidar`. Override via env. Every directory under `annotated/` that contains a `source/scan.ply` **and** a `meta.json` with `schema_version` starting with `"2"` is a scene. v1.3 scans (any other `schema_version` or none) are skipped at discovery with a log hint to run `scripts/migrate_scan_v2.py`.
+`$VOXA_LIDAR_ROOT` defaults to `/home/hendrik/coding/engine/data/lidar`. Override via env. Every directory under `annotated/` with a `source/scan.ply` and a `meta.json` that passes `scan_schema.metadata.check_meta` (no errors) is a scene — i.e. both **2.x** scans (grandfathered: missing frame/derivation are warnings) and **3.0** scans (fully validated). Legacy v1.3 scans (or any unsupported `schema_version`) are skipped at discovery with a log hint to run `scripts/migrate_scan_v2.py`. Promote a 2.x scan to v3.0 lineage with `scripts/scan/promote_to_v3.py` (see Migration below).
 
-Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_viewer/*.ply`) and `raw/` (LAZ previews under `<lidar_root>/laz/*.laz`) — are surfaced by the scene picker as discovery shortcuts for unlabeled data. Neither has the per-scan substructure below; to label one, scaffold it into `annotated/` via `data/tools/scaffold_annotation.py`.
+Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_viewer/*.ply`) and `raw/` (LAZ source files under `<lidar_root>/raw/*.laz`, also the registry roots in `raw/sources.json`) — are surfaced by the scene picker as discovery shortcuts for unlabeled data. Neither has the per-scan substructure below; to label one, scaffold it into `annotated/` via `data/tools/scaffold_annotation.py`.
 
 ## Per-scan layout (`annotated/<scan_name>/`)
 
 ```
 <scan_name>/
-├── meta.json                          (required)  provenance + schema_version: "2.0"
+├── meta.json                          (required)  provenance + frame/derivation; schema_version "2.x" or "3.0"
 ├── README.md                          (recommended)
 ├── source/
 │   ├── scan.ply                       (required)  point cloud being labeled (xyz + rgb)
@@ -41,8 +41,9 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 │       │   ├── gt_segment_ids.npy     int32, shape (N_pts,)
 │       │   └── gt_segment_metadata.json
 │       └── history/<YYYYMMDD_HHMMSS>/ per-session save backups (10 most recent kept)
-├── renders/<run_id>/                  (unchanged)
+├── renders/<run_id>/
 │   ├── manifest.json                  poses + intrinsics per frame
+│   ├── meta.json                      render-run pin (generated_from, frame, intrinsics)
 │   └── frame_NNN_*.png                color renders
 └── sam3/                              (unchanged)  feature cache + pipeline workspace
     ├── sam3_features.npz
@@ -57,7 +58,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 | Path | Voxa behavior if missing |
 |---|---|
 | `source/scan.ply` | scene not discovered |
-| `meta.json` with `schema_version` starting with `"2"` | scene not discovered; logged as v1.3 with migration hint |
+| `meta.json` passing `scan_schema.metadata.check_meta` (2.x or 3.0) | scene not discovered; legacy/unsupported `schema_version` logged with a migration hint |
 | `sessions/` | UI shows an empty session list + create-session picker; no canvas until a session is created or selected |
 | `prelabel/` | blank-start sessions only; preseg dropdown in session-create UI shows nothing |
 | `sessions/<id>/output/` | session listed as unsaved (no `has_output` flag); Compare mode has no GT from that session |
@@ -83,7 +84,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 - **`sessions/<id>/centerlines.json`** — Draw sub-mode persistence. Optional; absent until the first centerline apply. Flat shape `{ "paths": [{ "points": [[x,y,z],…], "radius", "smooth", "class_id", "instance_id" }] }` with coordinates in the recentered viewer frame. Write semantics are replace-by-`instance_id`: an apply targeting an existing instance replaces that instance's stored paths; a new instance appends; instance ids absorbed by a merge (`merged_from` in the apply request) have their entries deleted in the same write. Written by `labeling/centerline.py::update_centerlines` only; the per-point labels it produced live in the working arrays like any other edit (undo reverts labels, not this file).
 - **`sessions/<id>/output/gt_class_ids.npy`** — `int32`, shape `(N_pts,)`. `-1` = unlabeled. Written by explicit Save (Ctrl+S).
 - **`sessions/<id>/output/gt_segment_ids.npy`** — `int32`, shape `(N_pts,)`. `-1` = unlabeled.
-- **`sessions/<id>/output/gt_segment_metadata.json`** — `{ "n_points", "n_gt_segments", "n_labeled_points", "class_map_version", "segments": [...] }`. The `class_map_version` value here is an output mirror — it records which `classes.json::version` was active at save time. Invariant 6 is enforced by `segment_io._validate_invariants` comparing `meta.json::class_map_version` (read via `_read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped.
+- **`sessions/<id>/output/gt_segment_metadata.json`** — `{ "n_points", "n_gt_segments", "n_labeled_points", "class_map_version", "segments": [...] }`. The `class_map_version` value here is an output mirror — it records which `classes.json::version` was active at save time. Invariant 6 is enforced by `scan_schema.invariants.validate_invariants` comparing `meta.json::class_map_version` (read via `segment_io._read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped.
 - **`renders/<run>/manifest.json`** — `{ "scene", "frames": [{ "file", "position": [x,y,z], "target": [x,y,z], ... }] }`. SAM3 feature extraction reads `file`/`position`/`target` (or `yaw`).
 
 ### `session.json` schema
@@ -109,7 +110,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 
 ### Session pinning semantics
 
-Pins are frozen at create time: `source_fingerprint` covers the recentered cloud positions, `preseg_fingerprint` covers `instance_ids.npy` — both computed via `segment_io.compute_fingerprint()` (sha256 over dtype + shape + bytes).
+Pins are frozen at create time: `source_fingerprint` covers the recentered cloud positions, `preseg_fingerprint` covers `instance_ids.npy` — both computed via `scan_schema.fingerprint.array_fingerprint` (sha256 over dtype + shape + bytes; re-exported through `segment_io`).
 
 **On resume** (`/api/load`): the backend calls `session_store.verify_pins()` which string-compares the session's `preseg_fingerprint` against `prelabel/<id>/meta.json::fingerprint` (no array load or re-hashing on the hot path) and the loaded cloud's current fingerprint against `source_fingerprint`.
 
@@ -123,7 +124,7 @@ These v1.3 invariants carry over, applied **per session's `output/`**:
 
 1. **Invariant 3**: `class_id == -1 ⟺ instance_id == -1` (per point in the output files). Preseg-only points are dropped to `-1` in export; the in-memory canvas and `working_*.npy` keep the preseg structure for reload.
 2. **Invariant 4**: per-segment class consistency — every point sharing an `instance_id` must share the same `class_id`.
-3. **Invariant 6**: enforced by `segment_io._validate_invariants` comparing `meta.json::class_map_version` (read via `_read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped. The `class_map_version` written into `gt_segment_metadata.json` records which registry version the save used and is never read back for enforcement.
+3. **Invariant 6**: enforced by `scan_schema.invariants.validate_invariants` comparing `meta.json::class_map_version` (read via `segment_io._read_meta_class_map_version`) against `classes.json::version` at save time; if `meta.json` is missing the check is skipped. The `class_map_version` written into `gt_segment_metadata.json` records which registry version the save used and is never read back for enforcement.
 
 ### Environment
 
@@ -158,7 +159,7 @@ prelabel/ransac_*            → prelabel/ransac/{instance_ids.npy,
 meta.json                    → schema_version: "2.0"
 ```
 
-Working-array coalescing rule: `working_* = session/working_*` if present, else the migrated GT cast to int8/int32, else all `-1`. The legacy session's pins are **recomputed** from the migrated `prelabel/ransac/instance_ids.npy` and the cloud (same path as `compute_fingerprint` in the load route) — not copied from the old `prelabel_fingerprint` field — so the pin provably matches what is on disk after migration.
+Working-array coalescing rule: `working_* = session/working_*` if present, else the migrated GT cast to int8/int32, else all `-1`. The legacy session's pins are **recomputed** from the migrated `prelabel/ransac/instance_ids.npy` and the cloud (same path as `scan_schema.fingerprint.array_fingerprint` in the load route) — not copied from the old `prelabel_fingerprint` field — so the pin provably matches what is on disk after migration.
 
 Usage:
 ```bash
@@ -170,4 +171,17 @@ python scripts/migrate_scan_v2.py --scan munich_water_pump /home/hendrik/coding/
 
 The script refuses loudly (per scan) on anything unexpected: a `sessions/` dir already present, unexpected files in `prelabel/`, shape mismatches. Recovery from a mid-migration crash is manual; the second run refuses rather than guessing.
 
-**Voxa v2 reads ONLY v2.** A non-v2 scan fails discovery and is skipped; the skip is logged at INFO level naming the found `schema_version` and the migrate script (`scripts/migrate_scan_v2.py`).
+## Promotion to v3.0
+
+`migrate_scan_v2.py` lands a scan at `2.0` (no frame/derivation — grandfathered). To promote it to full **v3.0 lineage**, use `scripts/scan/promote_to_v3.py`, which routes the write through `scan_schema.Registry.set_derivation`:
+
+```bash
+python scripts/scan/promote_to_v3.py /home/hendrik/coding/engine/data/lidar --dry-run
+python scripts/scan/promote_to_v3.py /home/hendrik/coding/engine/data/lidar
+# or a subset:
+python scripts/scan/promote_to_v3.py /home/hendrik/coding/engine/data/lidar --only smart_ais_clean
+```
+
+Per scan it: resolves the raw root (via `meta.source_laz` basename, else by scan name, from `raw/sources.json`), synthesizes an identity `<scan_id>#local` frame if absent (the stored cloud is its own canonical-local; `coord_offset_m` is preserved as georef), and calls `set_derivation(..., bump_to_3=True)` — writing the nested `root`/`parent` (`file_sha256`) derivation and flipping `schema_version` to `3.0`. `bump_to_3` makes frame/derivation **hard requirements**, so a scan with no resolvable root (e.g. a source whose `.laz` isn't registered) is **skipped** and stays 2.x. Regenerate `variants.json` afterward with `scripts/scan/scan_index.py`.
+
+**Voxa reads both 2.x and 3.0** (discovery gate = `check_meta`, see *Where scans live*). Only legacy v1.3 (or unsupported versions) fail discovery and are skipped, logged at INFO with the found `schema_version` and the migrate script.

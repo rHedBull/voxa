@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from scenes.scan_meta import is_z_up_from_meta
-from scenes.scan_layout import ScanLayout
+from scan_schema.layout import ScanLayout
+from scan_schema.metadata import check_meta
 
 
 VALID_TIERS = ("legacy", "annotated", "decimated", "raw")
@@ -97,17 +98,23 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
                 continue
             scan = plys[0]
         meta_path = lay.meta_json
-        # v2 requires a readable meta.json with schema_version 2.x. A scan with
-        # missing/unreadable/older meta is skipped (with a migration hint).
+        # Discovery gate delegates to the shared schema: keep a scan iff
+        # scan_schema.metadata.check_meta reports no errors. On a 2.x scan,
+        # missing frame/derivation are warnings (grandfathered → kept); a
+        # non-2.x/3.x version or missing required field is an error → skipped.
         try:
             with meta_path.open() as f:
                 meta = json.load(f)
         except (OSError, ValueError, json.JSONDecodeError):
             meta = None
-        if meta is None or not str(meta.get("schema_version") or "").startswith("2"):
+        if meta is None:
+            logging.info("skipping %s: missing/unreadable meta.json", sd.name)
+            continue
+        errors, _ = check_meta(meta)
+        if errors:
             logging.info(
-                "skipping %s: scan-schema %r != 2.x — run scripts/migrate_scan_v2.py",
-                sd.name, (meta or {}).get("schema_version") if meta else None)
+                "skipping %s: scan-schema errors %r — run scripts/migrate_scan_v2.py",
+                sd.name, errors)
             continue
 
         mesh_path = lay.mesh_glb
@@ -119,12 +126,12 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
         # Resolve source LAZ (the cloud the PLY was subsampled from) so the
         # viewer can pop full-density points back from the original file when a
         # cuboid is selected. Path stored in meta is canonical archive-relative
-        # (`lidar/laz/<file>.laz`); fall back to basename lookup under
-        # `<lidar_root>/laz/` so we're robust to small path format drift.
+        # (`lidar/raw/<file>.laz`); fall back to basename lookup under
+        # `<lidar_root>/raw/` so we're robust to small path format drift.
         source_laz_path: Optional[str] = None
         src_laz_str = meta.get("source_laz")
         if src_laz_str:
-            cand1 = lidar_root / "laz" / Path(src_laz_str).name
+            cand1 = lidar_root / "raw" / Path(src_laz_str).name
             cand2 = lidar_root.parent / src_laz_str
             for cand in (cand1, cand2):
                 if cand.exists():
@@ -161,7 +168,7 @@ def _discover_decimated(lidar_root: Path) -> list[SceneSource]:
 
 
 def _discover_raw(lidar_root: Path) -> list[SceneSource]:
-    root = lidar_root / "laz"
+    root = lidar_root / "raw"
     if not root.is_dir():
         return []
     out: list[SceneSource] = []

@@ -38,12 +38,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from labeling.segment_io import (atomic_write_json, atomic_write_npy,
-                                 compute_fingerprint, utc_now_iso)
+                                 utc_now_iso)
+from scan_schema.fingerprint import array_fingerprint
 from preseg.preseg_store import register_preseg
 from scenes.lidar_io import z_up_to_y_up_xyz
 from scenes.scan_meta import is_z_up_from_meta
 from scenes.point_cloud import load_ply
-from scenes.scan_layout import ScanLayout
+from scan_schema.layout import ScanLayout
 
 
 def _read_ply_positions(ply_path: Path) -> np.ndarray:
@@ -285,7 +286,7 @@ def _migrate_scan(scan_dir: Path, *, dry_run: bool) -> tuple[bool, str]:
         # Compute source_fingerprint (must match what /api/load computes)
         z_up = is_z_up_from_meta(meta)
         display_pts = _display_positions(positions, z_up)
-        source_fingerprint = compute_fingerprint(display_pts)
+        source_fingerprint = array_fingerprint(display_pts)
 
         # Timestamp from labels mtime, fallback to session/current.json, fallback to now
         ts_source: Path | None = None

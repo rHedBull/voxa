@@ -103,7 +103,7 @@ def main() -> int:
         return 2
     class_id = class_map[class_name]
 
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     preseg_dir = ScanLayout(scan_dir).preseg_dir(preseg_id)
     if preseg_dir.is_dir() and any(preseg_dir.iterdir()) and not args.force:
         print(f"ERROR: prelabel already exists in {preseg_dir} (use --force)",
@@ -148,9 +148,9 @@ def main() -> int:
 
     # v1.3 §5 frame-aware remap, fail-closed on cross-scan/unpinned runs.
     from preseg.resolver import dir_cloud_transforms
-    from scenes.fingerprint import cloud_fingerprint
-    from scenes.frame import apply_transform
-    from scenes.scan_meta import read_scan_meta
+    from scan_schema.fingerprint import cloud_fingerprint
+    from scan_schema.frame import apply_transform
+    from scan_schema.metadata import read_scan_meta
     sm = read_scan_meta(scan_dir)
     from preseg.sam3_features import discover_render_runs
     runs = discover_render_runs(scan_dir.name, scan_dir=scan_dir)

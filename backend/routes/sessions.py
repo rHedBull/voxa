@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 def _annotated_layout(scene_id: str):
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     src = _resolve(scene_id)
     if src.tier != "annotated":
         raise HTTPException(409, "sessions exist only on annotated/<scene>")

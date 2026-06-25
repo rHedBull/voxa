@@ -110,6 +110,10 @@ class ClassDef(BaseModel):
     label: str
     color: str
     hotkey: str = ""
+    # Canonical numeric class id (classes.yaml `id:`, matching
+    # engine/data/lidar/classes.json). The frontend uses this — never the
+    # array position — to map numeric class ids to palette entries.
+    class_id: int = -1
 
 class ConfigResponse(BaseModel):
     classes: list[ClassDef]

@@ -16,6 +16,13 @@ if [[ ! -d "$ROOT/.venv" ]]; then
   "$ROOT/.venv/bin/pip" install --quiet -r requirements.txt
 fi
 
+# scan_schema is declared in requirements.txt (a published VCS branch ref). The
+# requirements install above only runs on first venv creation, so self-heal any
+# pre-existing venv that predates the dependency. Skips when already importable —
+# no per-run refetch.
+"$ROOT/.venv/bin/python" -c 'import scan_schema' 2>/dev/null || \
+  "$ROOT/.venv/bin/pip" install --quiet -r requirements.txt
+
 export VOXA_DATA_DIR="${VOXA_DATA_DIR:-$ROOT/data}"
 mkdir -p "$VOXA_DATA_DIR/scenes" "$VOXA_DATA_DIR/annotations"
 

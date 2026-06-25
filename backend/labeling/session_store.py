@@ -17,7 +17,7 @@ from labeling.segment_io import (atomic_write_json, filter_tiny_segments,
                                  load_session_aux, save_session_aux,
                                  utc_now_iso)
 from preseg.preseg_store import load_preseg, read_preseg_meta
-from scenes.scan_layout import ScanLayout
+from scan_schema.layout import ScanLayout
 
 
 def _validate_session_id(session_id: str) -> None:

@@ -77,7 +77,7 @@ def test_sessions_create_with_preseg(client_with_loaded_annotated_scene, scan_di
     assert body["preseg_id"] == "ransac"
     new_sid = body["session_id"]
     # working arrays seeded on disk
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     lay = ScanLayout(scan_dir_for_loaded_scene)
     sp = lay.session(new_sid)
     assert sp.working_segment_ids.exists()

@@ -31,10 +31,11 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from preseg.registration import check_registration, registration_score  # noqa: E402
 from preseg.resolver import resolve_render_run  # noqa: E402
-from scenes.fingerprint import cloud_fingerprint  # noqa: E402
-from scenes.frame import Frame, apply_transform  # noqa: E402
+from scan_schema.fingerprint import cloud_fingerprint  # noqa: E402
+from scan_schema.frame import Frame, apply_transform  # noqa: E402
+from scan_schema.registry import Registry  # noqa: E402
 from scenes.point_cloud import load_ply  # noqa: E402
-from scenes.render_meta import read_render_meta, write_render_meta  # noqa: E402
+from scan_schema.render_meta import read_render_meta, write_render_meta  # noqa: E402
 from scenes.reproject import ORIENTATION_PRESETS, euler_xyz_matrix  # noqa: E402
 
 
@@ -106,16 +107,24 @@ def main() -> int:
     M_render_to_canon = np.linalg.inv(R4) @ np.linalg.inv(T_yup) @ R4
 
     if not args.dry_run:
+        # Write the recovered identity scan-frame, then route the lineage write
+        # through the shared Registry (the single v3.0 writer) rather than
+        # hand-rolling a derivation block.
         sm = json.loads((scan_dir / "meta.json").read_text())
-        sm["schema_version"] = "1.3"
         sm["frame"] = Frame(np.eye(4), f"{scan_dir.name}#local",
                             georef={"offset_m": sm["coord_offset_m"]} if sm.get("coord_offset_m") else None,
                             frame_uncertain=False).to_dict()
-        sm["derivation"] = {"scan_id": scan_dir.name, "variant_id": variant_id,
-                            "parent": "original", "op": "voxel_downsample",
-                            "varies": ["density"], "source_fingerprint": fp_scan, "role": "labeling"}
         (scan_dir / "meta.json").write_text(json.dumps(sm, indent=2))
-        print(f"[write] {scan_dir/'meta.json'}")
+        reg = Registry.load(scan_dir.parent.parent)
+        root = (reg.root_by_basename(sm["source_laz"]) if sm.get("source_laz")
+                else reg.root(scan_dir.name))
+        if root is None:
+            print(f"ERROR: no registered root for {scan_dir.name}; register-root first",
+                  file=sys.stderr)
+            return 5
+        reg.set_derivation(scan_dir, root_id=root.source_id, parent_ref=root.source_id,
+                           varies=["density"], role="labeling", bump_to_3=True)
+        print(f"[write] {scan_dir/'meta.json'} (v3.0 via Registry)")
 
         render_frame = Frame(M_render_to_canon, f"{scan_dir.name}#local")
         for run in sorted(d for d in (scan_dir / "renders").iterdir() if (d / "manifest.json").exists()):

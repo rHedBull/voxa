@@ -81,8 +81,8 @@ def main() -> int:
 
     # v1.3 frame/provenance for resolve+remap (read_scan_meta synthesizes a
     # frame_uncertain frame for legacy scans, so this is always safe).
-    from scenes.fingerprint import cloud_fingerprint
-    from scenes.scan_meta import read_scan_meta
+    from scan_schema.fingerprint import cloud_fingerprint
+    from scan_schema.metadata import read_scan_meta
     _sm = read_scan_meta(scan_dir)
     cloud_frame = _sm["frame"]
     cloud_variant = _sm["derivation"]["variant_id"]

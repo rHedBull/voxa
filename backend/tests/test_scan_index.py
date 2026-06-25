@@ -7,8 +7,8 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan"))
 from scan_index import build_variants_index  # noqa: E402
 
-from scenes.frame import Frame  # noqa: E402
-from scenes.render_meta import write_render_meta  # noqa: E402
+from scan_schema.frame import Frame  # noqa: E402
+from scan_schema.render_meta import write_render_meta  # noqa: E402
 
 
 def _scan(tmp_path):
@@ -43,6 +43,25 @@ def test_index_includes_label_and_render_variants(tmp_path):
     assert by_id["aligned15M"]["source_fingerprint"] == "sha256:bbb"
     # render variant carries the recorded transform_to_canonical
     assert np.allclose(np.asarray(by_id["aligned15M"]["transform_to_canonical"])[:3, 3], [10, 0, 0])
+
+
+def test_v3_nested_derivation_surfaces_root_lineage(tmp_path):
+    # A promoted v3.0 scan: nested root/parent, no flat source_fingerprint.
+    (tmp_path / "source").mkdir(parents=True)
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "schema_version": "3.0", "scan_name": tmp_path.name,
+        "frame": {"canonical_id": f"{tmp_path.name}#local",
+                  "transform_to_canonical": np.eye(4).tolist()},
+        "derivation": {"scan_id": tmp_path.name, "variant_id": "labelcloud",
+                       "varies": ["density"], "role": "labeling",
+                       "root": {"source_id": "the_root", "fingerprint": "sha256:root"},
+                       "parent": {"ref": "the_root", "fingerprint": "sha256:root"}},
+    }))
+    by_id = {v["variant_id"]: v for v in build_variants_index(tmp_path)["variants"]}
+    lv = by_id["labelcloud"]
+    assert lv["source_fingerprint"] is None              # v3.0 has no flat content hash
+    assert lv["root_source_id"] == "the_root"            # lineage surfaced instead
+    assert lv["root_fingerprint"] == "sha256:root"
 
 
 def test_index_dedups_repeated_render_variant(tmp_path):
