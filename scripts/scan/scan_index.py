@@ -17,8 +17,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from scenes.render_meta import read_render_meta  # noqa: E402
-from scenes.scan_meta import read_scan_meta  # noqa: E402
+from scan_schema.render_meta import read_render_meta  # noqa: E402
+from scan_schema.metadata import read_scan_meta  # noqa: E402
 
 
 def build_variants_index(scan_dir: Path) -> dict:

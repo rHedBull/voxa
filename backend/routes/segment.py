@@ -142,7 +142,7 @@ def segment_save():
     )
     # Build a sanitized snapshot for the session output/ on the side; do NOT
     # touch in-memory state. SCHEMA invariant 3 (class==-1 ⟺ inst==-1, see
-    # segment_io._validate_invariants) requires stripping preseg-only
+    # scan_schema.invariants.validate_invariants) requires stripping preseg-only
     # points (inst≥0, class=-1) on export because preseg is a suggestion,
     # not authoritative GT. The SegmentSession itself is the working
     # canvas with active preseg colors, so it MUST keep its full

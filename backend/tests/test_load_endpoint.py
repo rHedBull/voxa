@@ -16,9 +16,9 @@ import pytest
 from fastapi.testclient import TestClient
 from plyfile import PlyData, PlyElement
 from PIL import Image
-from scenes.fingerprint import cloud_fingerprint  # noqa: E402  (backend on path via conftest)
-from scenes.frame import Frame
-from scenes.render_meta import write_render_meta
+from scan_schema.fingerprint import cloud_fingerprint  # noqa: E402  (backend on path via conftest)
+from scan_schema.frame import Frame
+from scan_schema.render_meta import write_render_meta
 
 
 def _write_ply(path: Path, n: int = 8) -> None:
@@ -40,8 +40,8 @@ def _seed_v2_session(scan_dir: Path, inst: np.ndarray, *, summary_segments: list
     a v2 meta.json + a sibling classes.json under the lidar root."""
     from preseg.preseg_store import register_preseg
     from labeling.session_store import create_session
-    from labeling.segment_io import compute_fingerprint
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.fingerprint import array_fingerprint as compute_fingerprint
+    from scan_schema.layout import ScanLayout
     lay = ScanLayout(scan_dir)
     register_preseg(lay, "ransac", inst.astype(np.int32),
                     summary={"segments": summary_segments},
@@ -70,7 +70,7 @@ def lidar_client(tmp_path, monkeypatch):
     _write_ply(scan / "source" / "scan.ply", n=8)
     (scan / "meta.json").write_text(json.dumps({
         "scan_name": "demo", "n_points": 8, "schema_version": "2.0",
-        "class_map_version": 1, "source_mesh": "mesh.glb"}))
+        "units": "meters", "class_map_version": 1, "source_mesh": "mesh.glb"}))
     _write_classes_json(lidar)
     _seed_v2_session(scan, np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32),
                      summary_segments=[{"id": 0, "class_id": 0},
@@ -83,7 +83,7 @@ def lidar_client(tmp_path, monkeypatch):
     _write_ply(bare / "source" / "scan.ply", n=4)
     (bare / "meta.json").write_text(json.dumps({
         "scan_name": "stub", "n_points": 4, "schema_version": "2.0",
-        "source_mesh": "mesh.glb"}))
+        "units": "meters", "class_map_version": 1, "source_mesh": "mesh.glb"}))
 
     # Patch main.LIDAR_ROOT in place. Reloading main breaks pydantic model
     # identity (ClassDef-from-old-load isn't ClassDef-from-new-load), so we
@@ -156,7 +156,7 @@ def test_load_pin_mismatch_409(client_with_annotated_scene, tmp_path):
     pinned → its declared fingerprint changes → resume raises 409."""
     client, scene_id, session_id = client_with_annotated_scene
     from main import _resolve
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     from preseg.preseg_store import register_preseg
     src = _resolve(scene_id)
     lay = ScanLayout(Path(src.extras["scan_dir"]))
@@ -179,7 +179,7 @@ def test_load_explicit_corrupt_session_409(client_with_annotated_scene):
     membership check; explicitly resuming it must be a clean 409, not a 500."""
     client, scene_id, session_id = client_with_annotated_scene
     from main import _resolve
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     src = _resolve(scene_id)
     lay = ScanLayout(Path(src.extras["scan_dir"]))
     lay.session(session_id).session_json.write_text("{broken")
@@ -216,7 +216,8 @@ def test_mesh_endpoint_serves_glb_when_present(lidar_client, tmp_path, monkeypat
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(
         str(scan / "source" / "scan.ply"))
     (scan / "meta.json").write_text(
-        '{"scan_name": "withmesh", "n_points": 4, "schema_version": "2.0"}')
+        '{"scan_name": "withmesh", "n_points": 4, "schema_version": "2.0",'
+        ' "units": "meters", "class_map_version": 1}')
     # Pretend mesh — content body doesn't matter for these assertions.
     (scan / "source" / "mesh.glb").write_bytes(b"glTF\x02\x00\x00\x00")
 
@@ -264,7 +265,7 @@ def test_annotated_z_up_swap_when_source_is_laz(lidar_client, tmp_path, monkeypa
     _write_tall_ply(scan_dir)
     (scan_dir / "meta.json").write_text(
         '{"scan_name": "tall_laz", "n_points": 10, "source_laz": "x.laz",'
-        ' "schema_version": "2.0"}')
+        ' "units": "meters", "class_map_version": 1, "schema_version": "2.0"}')
 
     monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     body = lidar_client.post("/api/load",
@@ -285,7 +286,7 @@ def test_annotated_no_swap_when_source_is_glb(lidar_client, tmp_path, monkeypatc
     _write_tall_ply(scan_dir)
     (scan_dir / "meta.json").write_text(
         '{"scan_name": "tall_glb", "n_points": 10, "source_mesh": "source/mesh.glb",'
-        ' "schema_version": "2.0"}')
+        ' "units": "meters", "class_map_version": 1, "schema_version": "2.0"}')
 
     monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     body = lidar_client.post("/api/load",
@@ -356,7 +357,7 @@ def test_subsample_idx_present_and_correct_when_subsampling(tmp_path, monkeypatc
         str(scan_dir / "source" / "scan.ply"))
     (scan_dir / "meta.json").write_text(
         '{"scan_name": "big", "n_points": 20, "schema_version": "2.0",'
-        ' "source_mesh": "mesh.glb"}')
+        ' "units": "meters", "class_map_version": 1, "source_mesh": "mesh.glb"}')
 
     monkeypatch.setattr("app.constants.LIDAR_ROOT", lidar, raising=False)
     client = TestClient(main.app)
@@ -450,7 +451,8 @@ def _build_render_scene(lidar, name, *, cloud_rgb, img_rgb):
     pts = _wall_ply(scan / "source" / "scan.ply", cloud_rgb, R)
     fp = cloud_fingerprint(pts)
     scan.joinpath("meta.json").write_text(json.dumps({
-        "scan_name": name, "n_points": len(pts), "units": "meters", "schema_version": "2.0",
+        "scan_name": name, "n_points": len(pts), "units": "meters", "class_map_version": 1,
+        "schema_version": "2.0",
         "frame": {"canonical_id": f"{name}#local", "transform_to_canonical": np.eye(4).tolist(),
                   "units": "meters", "frame_uncertain": False},
         "derivation": {"scan_id": name, "variant_id": "v1", "parent": "original", "op": "asis",

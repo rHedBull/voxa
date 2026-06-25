@@ -39,7 +39,7 @@ def _build_annotated_root(tmp_path: Path) -> Path:
     _write_ply(scan_dir / "source" / "scan.ply", n=8)
     (scan_dir / "meta.json").write_text(json.dumps({
         "scan_name": "demo", "n_points": 8, "coords": "world", "units": "meters",
-        "schema_version": "2.0", "source_mesh": "mesh.glb",
+        "class_map_version": 1, "schema_version": "2.0", "source_mesh": "mesh.glb",
     }))
     (root / "classes.json").write_text(json.dumps({
         "version": 1, "unlabeled_id": -1,

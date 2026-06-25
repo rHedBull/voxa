@@ -85,7 +85,7 @@ def main() -> int:
     ply_path = scan_dir / "source" / "scan.ply"
     npz_path = scan_dir / "sam3" / scan_dir.name / "sam3_features.npz"
 
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     preseg_dir = ScanLayout(scan_dir).preseg_dir(args.preseg_id)
 
     if not npz_path.exists():

@@ -57,9 +57,9 @@ from sam3_common import load_ply, build_processor, segment, union_mask, gather_f
 
 # Frame-aware remap support (scan-schema v1.3).
 try:
-    from scenes.scan_meta import read_scan_meta  # noqa: E402
-    from scenes.fingerprint import cloud_fingerprint  # noqa: E402
-    from scenes.frame import apply_transform  # noqa: E402
+    from scan_schema.metadata import read_scan_meta  # noqa: E402
+    from scan_schema.fingerprint import cloud_fingerprint  # noqa: E402
+    from scan_schema.frame import apply_transform  # noqa: E402
     from scenes.reproject import euler_xyz_matrix  # noqa: E402
     from preseg.resolver import dir_cloud_transforms  # noqa: E402
     _V13 = True

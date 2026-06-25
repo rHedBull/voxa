@@ -13,8 +13,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from labeling.segment_io import (atomic_write_json, atomic_write_npy,
-                                 compute_fingerprint, utc_now_iso)
-from scenes.scan_layout import ScanLayout
+                                 utc_now_iso)
+from scan_schema.fingerprint import array_fingerprint
+from scan_schema.layout import ScanLayout
 
 _ID_RE = re.compile(r"^[a-z0-9_-]+$")
 
@@ -51,7 +52,7 @@ def register_preseg(layout: ScanLayout, preseg_id: str, instance_ids: np.ndarray
         "preseg_id": preseg_id,
         "generator": generator,
         "params": params,
-        "fingerprint": compute_fingerprint(instance_ids),
+        "fingerprint": array_fingerprint(instance_ids),
         "n_segments": int(np.unique(instance_ids[instance_ids >= 0]).size),
         "created_at": utc_now_iso(),
     }

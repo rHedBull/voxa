@@ -1,9 +1,16 @@
-"""Lint a scan directory against the scan-schema v1.3 invariants (§7).
+"""Lint a single scan directory against the shared scan-schema contract.
 
-    .venv/bin/python scripts/validate_scan.py <scan_dir>
+    .venv/bin/python scripts/scan/validate_scan.py <scan_dir>
 
-Exit 0 if clean, 1 if any invariant is violated. The checks live in
-``validate_scan_dir(scan_dir) -> list[str]`` so they are unit-testable.
+Meta-level checks delegate to ``scan_schema.metadata.check_meta`` (the single
+schema definition) — 2.x scans grandfather frame/derivation as warnings, 3.x
+treats them as errors. Voxa adds one supplement the package doesn't model: a
+render-run pin check (renders/<run>/meta.json::generated_from.variant_id).
+
+For whole-archive validation use the package CLI: ``python -m scan_schema
+validate <lidar_root>``. The per-scan checks live in
+``validate_scan_dir(scan_dir) -> list[str]`` so they stay unit-testable.
+Exit 0 if clean, 1 if any error is found.
 """
 from __future__ import annotations
 
@@ -12,48 +19,27 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from scenes.frame import is_rigid  # noqa: E402
-
-_ALLOWED_VARIES = {"density", "frame", "points", "color", "attributes"}
+from scan_schema.metadata import check_meta  # noqa: E402
 
 
 def validate_scan_dir(scan_dir: Path) -> list[str]:
+    """Return hard errors for a scan dir (empty == clean). Schema-version /
+    frame / derivation / required-field checks come from check_meta; the
+    render-run pin check is a voxa-local supplement."""
     scan_dir = Path(scan_dir)
-    violations: list[str] = []
     meta_path = scan_dir / "meta.json"
     if not meta_path.exists():
         return [f"{scan_dir}: missing meta.json"]
-    meta = json.loads(meta_path.read_text())
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, ValueError) as exc:
+        return [f"{scan_dir}: unreadable meta.json: {exc}"]
 
-    sv = meta.get("schema_version")
-    if not sv:
-        violations.append("missing schema_version")
-
-    if sv and str(sv) >= "1.3":
-        frame = meta.get("frame")
-        deriv = meta.get("derivation")
-        scan_id = (deriv or {}).get("scan_id") or meta.get("scan_name")
-        if not frame:
-            violations.append("v1.3 requires a frame block")
-        else:
-            M = np.asarray(frame.get("transform_to_canonical", []), dtype=float)
-            if M.shape != (4, 4) or not is_rigid(M):
-                violations.append("frame.transform_to_canonical must be a 4x4 rigid transform")
-            if frame.get("canonical_id") != f"{scan_id}#local":
-                violations.append(
-                    f"frame.canonical_id should be '{scan_id}#local', "
-                    f"got '{frame.get('canonical_id')}'")
-        if not deriv:
-            violations.append("v1.3 requires a derivation block")
-        else:
-            bad = set(deriv.get("varies", [])) - _ALLOWED_VARIES
-            if bad:
-                violations.append(f"derivation.varies has invalid entries: {sorted(bad)}")
+    errors, _warnings = check_meta(meta)
+    violations: list[str] = list(errors)
 
     renders = scan_dir / "renders"
     if renders.exists():

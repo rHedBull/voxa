@@ -16,16 +16,17 @@ import {
 } from './draw-paths.js';
 
 // Capture-phase keyboard driver (same trick as FastLabelKeys: beat the
-// LabelMode global keydown). classes[i] ↔ palette index i.
+// LabelMode global keydown). Class identity travels as the canonical
+// numeric class_id (classes.yaml `id:`), never the array position.
 export function DrawKeys({ active, classes, onKey }) {
   useEffect(() => {
     if (!active) return undefined;
     const handler = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;   // leave Ctrl+S/Z/click alone
-      const clsIdx = classes.findIndex((c) => c.hotkey === e.key);
+      const cls = classes.find((c) => c.hotkey === e.key);
       let handled = true;
-      if (clsIdx >= 0) onKey({ type: 'class', clsIdx });
+      if (cls) onKey({ type: 'class', classId: cls.class_id });
       else if (e.key === 'Enter') onKey({ type: 'apply' });
       else if (e.key === 'Escape') onKey({ type: 'escape' });
       else if (e.key === 'Backspace' || e.key === 'Delete') onKey({ type: 'backspace' });
@@ -74,13 +75,13 @@ function DrawHUD({ state, toast }) {
   );
 }
 
-function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx, hideApplied }) {
+function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClassId, hideApplied }) {
   const layerRef = useRef(null);        // { group, remove }
   const dragRef = useRef(null);         // { pathKey, pointIdx, plane, mesh, last }
   const drawRef = useRef(draw);
   drawRef.current = draw;
-  const defaultClsIdxRef = useRef(defaultClsIdx);
-  defaultClsIdxRef.current = defaultClsIdx;
+  const defaultClassIdRef = useRef(defaultClassId);
+  defaultClassIdRef.current = defaultClassId;
 
   // One overlay group for the lifetime of the sub-mode.
   useEffect(() => {
@@ -102,7 +103,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx, hideApp
       group.remove(c);
     }
     for (const p of draw.paths) {
-      const cls = classes[p.classId];
+      const cls = classes.find((c) => c.class_id === p.classId);
       const color = new THREE.Color(cls?.color || '#60a5fa');
       const isSel = draw.selection.has(p.key) || draw.active === p.key;
       const applied = draw.instanceIds[p.instKey] != null;
@@ -242,7 +243,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx, hideApp
           setDraw((s) => {
             if (!s.active && s.selectedPoint) return extendFromPoint(s, xyz);
             const activePath = s.active && s.paths.find((p) => p.key === s.active);
-            const classId = activePath ? activePath.classId : defaultClsIdxRef.current;
+            const classId = activePath ? activePath.classId : defaultClassIdRef.current;
             return addPoint(s, xyz, classId);
           });
         }
@@ -318,7 +319,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClsIdx, hideApp
 
 export default function DrawMode({
   viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
-  defaultClsIdx, onClassChange, onApplied,
+  defaultClassId, onClassChange, onApplied,
 }) {
   const [draw, setDraw] = useState(() => initDrawState());
   const drawLiveRef = useRef(draw);
@@ -390,7 +391,7 @@ export default function DrawMode({
       }) : st);
       onApplied?.({
         instanceId: r.instanceId,
-        classIdx: call.classId,
+        classId: call.classId,
         mergedFrom: call.mergedFrom,
       });
     }
@@ -402,8 +403,8 @@ export default function DrawMode({
   const onKey = useCallback((action) => {
     switch (action.type) {
       case 'class':
-        onClassChange(action.clsIdx);
-        setDraw((s) => setClass(s, action.clsIdx));
+        onClassChange(action.classId);
+        setDraw((s) => setClass(s, action.classId));
         break;
       case 'apply':
         applySelection();
@@ -449,8 +450,8 @@ export default function DrawMode({
   // a class row (or pressing its hotkey) re-targets the selected/active
   // paths, mirroring the hotkey semantics.
   useEffect(() => {
-    setDraw((s) => (s.active || s.selection.size) ? setClass(s, defaultClsIdx) : s);
-  }, [defaultClsIdx]);
+    setDraw((s) => (s.active || s.selection.size) ? setClass(s, defaultClassId) : s);
+  }, [defaultClassId]);
 
   return (
     <>
@@ -461,7 +462,7 @@ export default function DrawMode({
         draw={draw}
         setDraw={setDraw}
         classes={classes}
-        defaultClsIdx={defaultClsIdx}
+        defaultClassId={defaultClassId}
         hideApplied={hideApplied}
       />
       <DrawPanel
@@ -522,7 +523,7 @@ function DrawPanel({
       </div>
       <div style={{ maxHeight: 180, overflowY: 'auto' }}>
         {draw.paths.map((p) => {
-          const cls = classes[p.classId];
+          const cls = classes.find((c) => c.class_id === p.classId);
           const applied = draw.instanceIds[p.instKey] != null;
           const isSel = draw.selection.has(p.key);
           return (

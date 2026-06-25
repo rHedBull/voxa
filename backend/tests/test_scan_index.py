@@ -7,8 +7,8 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan"))
 from scan_index import build_variants_index  # noqa: E402
 
-from scenes.frame import Frame  # noqa: E402
-from scenes.render_meta import write_render_meta  # noqa: E402
+from scan_schema.frame import Frame  # noqa: E402
+from scan_schema.render_meta import write_render_meta  # noqa: E402
 
 
 def _scan(tmp_path):

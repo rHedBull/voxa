@@ -113,12 +113,12 @@ def verify_scan_registration(scan_dir, *, max_frames: int = 8, orientation: str 
     from PIL import Image
 
     from preseg.resolver import dir_cloud_transforms
-    from scenes.fingerprint import cloud_fingerprint
-    from scenes.frame import apply_transform
+    from scan_schema.fingerprint import cloud_fingerprint
+    from scan_schema.frame import apply_transform
     from scenes.point_cloud import load_ply
-    from scenes.render_meta import read_render_meta
+    from scan_schema.render_meta import read_render_meta
     from scenes.reproject import ORIENTATION_PRESETS, euler_xyz_matrix
-    from scenes.scan_meta import read_scan_meta
+    from scan_schema.metadata import read_scan_meta
 
     scan_dir = Path(scan_dir)
     renders_root = scan_dir / "renders"

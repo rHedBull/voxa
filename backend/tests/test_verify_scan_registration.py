@@ -7,9 +7,9 @@ from PIL import Image
 from plyfile import PlyData, PlyElement
 
 from preseg.registration import verify_scan_registration
-from scenes.fingerprint import cloud_fingerprint
-from scenes.frame import Frame
-from scenes.render_meta import write_render_meta
+from scan_schema.fingerprint import cloud_fingerprint
+from scan_schema.frame import Frame
+from scan_schema.render_meta import write_render_meta
 
 
 # A wall at z=-5, in front of a camera at the origin looking down -z.

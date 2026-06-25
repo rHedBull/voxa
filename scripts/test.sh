@@ -13,4 +13,9 @@ fi
 # Install dev deps on demand (cheap if already present).
 "$ROOT/.venv/bin/pip" install --quiet -r "$ROOT/backend/requirements-dev.txt"
 
+# scan_schema is a runtime dependency but lives editable outside requirements
+# (see run.sh). test.sh is an independent entry point, so ensure it here too.
+"$ROOT/.venv/bin/python" -c 'import scan_schema' 2>/dev/null || \
+  "$ROOT/.venv/bin/pip" install --quiet -e "$ROOT/../../scan-schema"
+
 exec "$ROOT/.venv/bin/pytest" "$@"

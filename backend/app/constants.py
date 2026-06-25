@@ -7,7 +7,7 @@ from pathlib import Path
 from scenes.scene_registry import load_lidar_root_from_env
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 DATA_DIR = Path(os.environ.get("VOXA_DATA_DIR", ROOT / "data"))
 

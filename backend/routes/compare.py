@@ -44,7 +44,7 @@ def compare_points(tier: str, name: str, req: ComparePointsRequest):
     """Compare two finished per-point labelings of one scan. Reads both
     sources from disk — no dependency on the in-memory loaded scene."""
     from labeling.compare_points import compare_class_arrays
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
 
     src = _resolve(f"{tier}/{name}")
     if src.tier != "annotated":

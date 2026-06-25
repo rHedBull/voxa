@@ -825,8 +825,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // back, faster than the prop re-renders.
   const instancesRef = useRefLabel(instances);
   instancesRef.current = instances;
-  const onDrawApplied = useCallbackLabel(({ instanceId, classIdx, mergedFrom }) => {
-    const cls = classes[classIdx];
+  const onDrawApplied = useCallbackLabel(({ instanceId, classId, mergedFrom }) => {
+    const cls = classes.find((c) => c.class_id === classId);
     if (!cls) return;
     const absorbed = new Set(mergedFrom);
     const kept = instancesRef.current.filter(
@@ -1096,8 +1096,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             onExit={() => setSubMode(null)}
             pointSize={pointSize}
             setPointSize={setPointSize}
-            defaultClsIdx={Math.max(0, classes.findIndex((c) => c.id === activeClass))}
-            onClassChange={(idx) => classes[idx] && setActiveClass(classes[idx].id)}
+            defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
+            onClassChange={(cid) => {
+              const cls = classes.find((c) => c.class_id === cid);
+              if (cls) setActiveClass(cls.id);
+            }}
             onApplied={onDrawApplied}
           />
         )}

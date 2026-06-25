@@ -3,7 +3,7 @@ import inspect
 import numpy as np
 
 from preseg.sam3_features import _cache_key
-from scenes.fingerprint import cloud_fingerprint
+from scan_schema.fingerprint import cloud_fingerprint
 
 
 def test_cache_key_keys_on_fingerprint_not_count():

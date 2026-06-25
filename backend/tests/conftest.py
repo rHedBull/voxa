@@ -78,8 +78,8 @@ def build_annotated_root(tmp_path: Path) -> tuple[Path, str]:
     # v2: preseg result + one session seeded from it
     from preseg.preseg_store import register_preseg
     from labeling.session_store import create_session
-    from labeling.segment_io import compute_fingerprint
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.fingerprint import array_fingerprint as compute_fingerprint
+    from scan_schema.layout import ScanLayout
     from plyfile import PlyData
     lay = ScanLayout(scan_dir)
     inst = np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32)

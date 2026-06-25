@@ -16,6 +16,15 @@ if [[ ! -d "$ROOT/.venv" ]]; then
   "$ROOT/.venv/bin/pip" install --quiet -r requirements.txt
 fi
 
+# scan_schema: shared schema package (frame/layout/fingerprint/validate),
+# installed editable from its sibling checkout under tools/. Kept out of
+# requirements.txt because that file is pip-installed from two different cwds
+# (run.sh from backend/, test.sh from repo root) so a relative path can't suit
+# both. Ensured here unconditionally (idempotent) so a venv created before
+# scan_schema became a dependency still self-heals on the next run.
+"$ROOT/.venv/bin/python" -c 'import scan_schema' 2>/dev/null || \
+  "$ROOT/.venv/bin/pip" install --quiet -e "$ROOT/../../scan-schema"
+
 export VOXA_DATA_DIR="${VOXA_DATA_DIR:-$ROOT/data}"
 mkdir -p "$VOXA_DATA_DIR/scenes" "$VOXA_DATA_DIR/annotations"
 

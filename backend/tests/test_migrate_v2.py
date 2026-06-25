@@ -80,7 +80,7 @@ def build_v13_root(tmp_path: Path, *, with_session: bool = True) -> Path:
     # meta.json — source_mesh means Y-up (no z-up rotation)
     (scan_dir / "meta.json").write_text(json.dumps({
         "scan_name": "demo", "n_points": 8, "schema_version": "1.3",
-        "source_mesh": "mesh.glb",
+        "units": "meters", "class_map_version": 1, "source_mesh": "mesh.glb",
     }))
 
     # classes.json at lidar root
@@ -140,7 +140,7 @@ def test_full_migrate(tmp_path):
     assert "fingerprint" in preseg_meta
 
     # session.json has correct pins
-    from labeling.segment_io import compute_fingerprint
+    from scan_schema.fingerprint import array_fingerprint as compute_fingerprint
     inst = np.load(scan_dir / "prelabel" / "ransac" / "instance_ids.npy").astype(np.int32)
     expected_preseg_fp = compute_fingerprint(inst)
     assert preseg_meta["fingerprint"] == expected_preseg_fp
@@ -331,7 +331,7 @@ def test_post_migration_load_zup_utm_scan(tmp_path, monkeypatch):
     # source_laz (and no source_mesh) → the loader treats the scan as Z-up.
     (scan_dir / "meta.json").write_text(json.dumps({
         "scan_name": "utm", "n_points": 8, "schema_version": "1.3",
-        "source_laz": "lidar/laz/utm.laz",
+        "units": "meters", "class_map_version": 1, "source_laz": "lidar/laz/utm.laz",
     }))
     (root / "classes.json").write_text(json.dumps({
         "version": 1, "unlabeled_id": -1,

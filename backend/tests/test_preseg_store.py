@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from preseg.preseg_store import list_presegs, load_preseg, register_preseg
-from scenes.scan_layout import ScanLayout
+from scan_schema.layout import ScanLayout
 
 
 @pytest.fixture

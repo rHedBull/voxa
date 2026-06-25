@@ -48,8 +48,8 @@ def lidar_root(tmp_path):
     _write_tiny_ply(root / "ply_viewer" / "Construction-site-sample-data.ply")
     _write_tiny_ply(root / "ply_viewer" / "Factory-large.ply")
     # raw LAZ — just an empty placeholder file; load_laz isn't called here
-    (root / "laz").mkdir(parents=True, exist_ok=True)
-    (root / "laz" / "Factory-large.laz").write_bytes(b"placeholder")
+    (root / "raw").mkdir(parents=True, exist_ok=True)
+    (root / "raw" / "Factory-large.laz").write_bytes(b"placeholder")
     # classes.json
     (root / "classes.json").write_text(json.dumps({
         "version": 1, "unlabeled_id": -1,

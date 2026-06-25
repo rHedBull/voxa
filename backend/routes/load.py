@@ -32,8 +32,10 @@ def load_scene(req: LoadRequest):
     # Recenter for float32 stability (LAS UTM, etc).
     pc, offset = _recenter(pc)
 
-    from labeling.segment_io import compute_fingerprint
-    source_fp = compute_fingerprint(pc.points.astype(np.float32))
+    from scan_schema.fingerprint import array_fingerprint
+    # Byte-exact xyz pin (NOT cloud_fingerprint) — must reproduce the value
+    # stored in existing session.json pins so resume doesn't spuriously 409.
+    source_fp = array_fingerprint(pc.points.astype(np.float32))
 
     # v2: resolve the active session (explicit session_id or last-worked
     # default) and rebuild its in-memory state. Per-point labels live in the

@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from preseg.resolver import dir_cloud_transforms, resolve_render_run
-from scenes.frame import Frame
-from scenes.render_meta import write_render_meta
+from scan_schema.frame import Frame
+from scan_schema.render_meta import write_render_meta
 
 
 def _runmeta(variant_id, fp, T, canonical="navvis#local", scan="navvis"):

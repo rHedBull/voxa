@@ -89,7 +89,7 @@ def main() -> int:
 
     scan_dir, ply_path = _resolve_scene(args.scene)
 
-    from scenes.scan_layout import ScanLayout
+    from scan_schema.layout import ScanLayout
     preseg_dir = ScanLayout(scan_dir).preseg_dir(args.preseg_id)
     if preseg_dir.is_dir() and any(preseg_dir.iterdir()) and not args.force:
         print(f"Refusing to overwrite existing prelabel in {preseg_dir} (use --force).",

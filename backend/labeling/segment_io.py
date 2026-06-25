@@ -6,7 +6,6 @@ arrays before flushing to disk.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -17,19 +16,8 @@ from typing import Optional
 
 import numpy as np
 
-from scenes.scan_layout import ScanLayout
-
-
-def compute_fingerprint(arr: np.ndarray) -> str:
-    """Content-addressed sha256 of a numpy array's bytes. Stable across
-    save/load (numpy preserves byte layout for fixed dtypes)."""
-    h = hashlib.sha256()
-    h.update(bytes(arr.dtype.str, "ascii"))
-    h.update(b":")
-    h.update(bytes(str(arr.shape), "ascii"))
-    h.update(b":")
-    h.update(np.ascontiguousarray(arr).tobytes())
-    return f"sha256:{h.hexdigest()}"
+from scan_schema.layout import ScanLayout
+from scan_schema.invariants import validate_invariants
 
 
 def atomic_write_npy(path: Path, arr: np.ndarray) -> None:
@@ -85,49 +73,6 @@ def _read_meta_class_map_version(scan_dir: Path) -> Optional[int]:
         return int(raw["class_map_version"])
     except (OSError, ValueError, json.JSONDecodeError, KeyError, TypeError):
         return None
-
-
-def _validate_invariants(
-    class_ids: np.ndarray, instance_ids: np.ndarray,
-    registry: Optional[dict] = None,
-    meta_class_map_version: Optional[int] = None,
-) -> None:
-    """SCHEMA invariants 3, 4, and (when registry is supplied) 5 & 6."""
-    cls_unl = class_ids == -1
-    inst_unl = instance_ids == -1
-    if not np.array_equal(cls_unl, inst_unl):
-        n_bad = int(np.sum(cls_unl != inst_unl))
-        raise ValueError(
-            f"invariant 3: class_ids[i]==-1 ⟺ instance_ids[i]==-1 violated at {n_bad} points",
-        )
-    labeled = ~cls_unl
-    if labeled.any():
-        ii = instance_ids[labeled]
-        ci = class_ids[labeled]
-        order = np.argsort(ii, kind="stable")
-        ii_s, ci_s = ii[order], ci[order]
-        boundaries = np.concatenate(([True], ii_s[1:] != ii_s[:-1]))
-        first_cls = ci_s[boundaries]
-        group_idx = np.cumsum(boundaries) - 1
-        if not np.array_equal(ci_s, first_cls[group_idx]):
-            raise ValueError(
-                "invariant 4: per-segment class consistency violated",
-            )
-    if registry is not None and labeled.any():
-        unknown = sorted({int(c) for c in np.unique(class_ids[labeled]).tolist()
-                          if int(c) not in registry["by_id"]})
-        if unknown:
-            raise ValueError(
-                f"invariant 5: class IDs {unknown} not in classes.json "
-                f"(known: {sorted(registry['by_id'])})",
-            )
-    if (registry is not None and meta_class_map_version is not None
-            and meta_class_map_version != registry["version"]):
-        raise ValueError(
-            f"invariant 6: meta.json::class_map_version "
-            f"({meta_class_map_version}) != classes.json::version "
-            f"({registry['version']})",
-        )
 
 
 def _build_segment_metadata(
@@ -198,9 +143,9 @@ def save_labels(
     """
     registry = _load_class_registry(scan_dir)
     meta_version = _read_meta_class_map_version(scan_dir)
-    _validate_invariants(class_ids, instance_ids,
-                         registry=registry,
-                         meta_class_map_version=meta_version)
+    validate_invariants(class_ids, instance_ids,
+                        registry=registry,
+                        meta_class_map_version=meta_version)
 
     sp = ScanLayout(scan_dir).session(session_id)
     sp.output_dir.mkdir(parents=True, exist_ok=True)
