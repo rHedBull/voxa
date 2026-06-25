@@ -30,14 +30,21 @@ def build_variants_index(scan_dir: Path) -> dict:
 
     variants: dict[str, dict] = {}
     # the labeling variant (this scan dir)
-    variants[deriv["variant_id"]] = {
+    entry = {
         "variant_id": deriv["variant_id"],
         "varies": deriv.get("varies", []),
         "role": deriv.get("role"),
+        # legacy flat content hash (None on v3.0); for v3.0 the lineage is the
+        # nested root (file_sha256), surfaced below.
         "source_fingerprint": deriv.get("source_fingerprint"),
         "transform_to_canonical": frame.transform_to_canonical.tolist(),
         "path": str(scan_dir),
     }
+    root = deriv.get("root")
+    if root:
+        entry["root_source_id"] = root.get("source_id")
+        entry["root_fingerprint"] = root.get("fingerprint")
+    variants[deriv["variant_id"]] = entry
     labeling_variant = deriv["variant_id"] if deriv.get("role") == "labeling" else None
 
     # render-source variants, from each render run's generated_from pin
