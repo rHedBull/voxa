@@ -12,7 +12,7 @@ xgboost==2.1.3
 open3d==0.19.0
 scikit-learn==1.4.0
 optuna>=3.5,<5
-# scan_schema (frame/layout/fingerprint/validate) is a runtime dependency,
-# installed editable from the sibling tools/scan-schema checkout by scripts/run.sh
-# and scripts/test.sh — not pinned here (a relative path can't suit both cwds). CI
-# must run one of those scripts (or `pip install -e tools/scan-schema`) before pytest.
+# scan_schema — the shared scan-directory schema package (frame / layout /
+# fingerprint / validate). Pinned to the published branch so fresh clones and CI
+# resolve it without needing the engine-monorepo sibling checkout.
+scan-schema @ git+https://github.com/rHedBull/scan_schema.git@main

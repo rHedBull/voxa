@@ -10,12 +10,8 @@ if [[ ! -d "$ROOT/.venv" ]]; then
   exit 1
 fi
 
-# Install dev deps on demand (cheap if already present).
+# Install dev deps on demand (cheap if already present). requirements-dev.txt
+# includes requirements.txt, which declares scan_schema (VCS branch ref).
 "$ROOT/.venv/bin/pip" install --quiet -r "$ROOT/backend/requirements-dev.txt"
-
-# scan_schema is a runtime dependency but lives editable outside requirements
-# (see run.sh). test.sh is an independent entry point, so ensure it here too.
-"$ROOT/.venv/bin/python" -c 'import scan_schema' 2>/dev/null || \
-  "$ROOT/.venv/bin/pip" install --quiet -e "$ROOT/../../scan-schema"
 
 exec "$ROOT/.venv/bin/pytest" "$@"
