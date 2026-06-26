@@ -65,8 +65,21 @@ scan_name  ^  SCENE _ VENDOR (?: _ DENSITY )?  $
 ```
 
 The check splits on `_`, requires exactly one token ∈ `KNOWN_VENDORS`, everything before it is
-the scene (≥1 token), an optional trailing density token after the vendor. A name with no
-vendor token, or a vendor token not in the allow-list, is a violation (warning).
+the scene (≥1 token), and **at most one** density token immediately after the vendor (nothing
+else may follow). Violations (each a warning): no vendor token; a vendor token not in the
+allow-list; uppercase / leading / trailing underscore; **any token after the vendor that is not a
+single valid density** (e.g. `water_pump_navvis_foo`, or two trailing tokens).
+
+**Enforceable vs guideline:**
+- `is_valid_scan_name` / `is_valid_source_id` enforce the *grammar* above (statically, from the
+  name alone).
+- The rule "density present **only** when >1 density of the same `<scene>_<vendor>` is
+  materialized" is a **human guideline**, not machine-checkable from a single name (it needs the
+  set of sibling dirs). It is documented, not enforced by the predicate.
+
+**Known limitation:** "exactly one vendor token" means a future *scene* that legitimately contains
+a vendor word (e.g. a scene literally named `navvis_lab`) would be flagged. Not triggered by any
+current name; documented so a maintainer recognizes the false positive if it ever appears.
 
 ## 4. Rename map (migration target)
 
@@ -103,10 +116,15 @@ were already vendor-first.)
 
 - Add `KNOWN_VENDORS` + two predicates (`is_valid_scan_name`, `is_valid_source_id`) to
   `scan_schema` (new small module `naming.py`, exported from `__init__`).
-- `validate_archive` / `check_meta`: when `meta.json::scan_name` fails `is_valid_scan_name`,
-  append `warnings: "scan_name '<x>' does not match <scene>_<vendor>[_<density>]"`. When a
-  `sources.json` key fails `is_valid_source_id`, append a warning in the registry/lineage pass.
-- **Never an error.** A misnamed scan stays discoverable; voxa's discovery gate (errors-only)
+- **scan_name:** in `validate_archive`'s per-scan pass, when `meta.json::scan_name` fails
+  `is_valid_scan_name`, append `warnings: "scan_name '<x>' does not match
+  <scene>_<vendor>[_<density>]"` to that scan's result.
+- **source_id:** `validate_archive` returns a dict keyed by **scan_name**, and lineage is only
+  visited per-scan via `_check_lineage`, so a root referenced by no scan would never be checked.
+  Add a **dedicated pass over `Registry.roots`**: for each root key failing `is_valid_source_id`,
+  attach a warning under a synthetic result key `"raw/sources.json"` (a reserved, non-scan key in
+  the returned dict). This guarantees every root is checked regardless of references.
+- **Never an error.** A misnamed scan/root stays discoverable; voxa's discovery gate (errors-only)
   is unaffected.
 
 ## 6. Migration (`scripts/scan/rename_scans.py`)
@@ -116,15 +134,27 @@ rename is reviewable and deterministic, not inferred.
 
 ### Blast radius — exact references to rewrite
 
+This list was verified field-by-field against real scans (`navvis_vlx3_water_treatment`, munich)
+during spec review. A `scan_name` is embedded in **id fields** (rewrite) and in **free-text
+provenance strings** (`...source`, `notes`, README — rewrite the structured provenance strings,
+leave prose). The two kinds are called out below.
+
 **scan_name refs** (per scan):
 - directory: `annotated/<old>/` → `annotated/<new>/`
 - `meta.json::scan_name`
 - `meta.json::frame.canonical_id` (`<scan_name>#local`) — v3.0 scans only
 - `meta.json::derivation.scan_id` — v3.0 scans only
-- `variants.json::scan_id`, `::canonical_id`, and each `variants[].path` (absolute path to the
-  scan dir)
+- `variants.json::scan_id`, `::canonical_id`, each `variants[].path` (absolute path to the scan
+  dir), and each `variants[].source` provenance string (e.g.
+  `"potree:<scan_name> (scan_15M.las)"`)
+- `renders/<run>/meta.json`: `generated_from.scan_id`, `generated_from.canonical_id`
+  (`<scan_name>#local`), `generated_from.source` provenance string (~9 render dirs across v3.0
+  scans + munich)
+- `renders/<run>/manifest.json::scene`
+- `sessions/<id>/instances_gt.json::scene` — value is the **tier-prefixed** id
+  `"annotated/<scan_name>"` → rewrite to `"annotated/<new>"` (1 `legacy` + per-session dirs)
 - `source/mesh.meta.json::scene` (provenance label) — where present
-- `README.md` — **report only**, do not blind-replace free text (manual edit)
+- `README.md` — **report only**, do not blind-replace free prose (manual edit)
 
 **source_id refs** (archive-wide):
 - `raw/sources.json` key rename (7)
@@ -138,36 +168,52 @@ rename is reviewable and deterministic, not inferred.
 - Session pins: `session.json::source_fingerprint` / `preseg_fingerprint` are **content**
   fingerprints (`cloud_fingerprint` / `array_fingerprint`), independent of names → no 409s after
   rename. Confirmed.
+- **Stray non-`.json` files** that embed a name (e.g.
+  `sessions/.../instances_gt.json.bak-inst178`, `.bak*`): the migration **does not rewrite**
+  them and the residual scan **skips** them (whitelisted by suffix). They are pre-existing strays
+  slated for removal by the separate stray-cleanup workstream; this is logged, not silently
+  ignored.
+
+**Note on schema impact:** none of the render/instance-doc fields above are validated against
+scan_name by `validate.py`, so omitting them would **not** surface as a schema error — only the
+residual scan (step 5) catches them. That is exactly why the blast radius must be exhaustive
+rather than relying on the 0-errors gate.
 
 ### Algorithm
 
 1. Validate preconditions: `python -m scan_schema <root>` reports **0 errors**; every old name in
    RENAME_MAP exists; no new name collides with an existing dir/key.
-2. **Backup**: `data/lidar` is **not** a git repo — tar the affected `annotated/<scan>/{meta.json,
-   variants.json,source/mesh.meta.json}` + `raw/sources.json` to a timestamped tarball before any
-   write. Print its path.
+2. **Backup**: `data/lidar` is **not** a git repo, and step 4 does whole-directory renames, so a
+   partial-field tarball is not a sufficient undo. Tar each affected `annotated/<old>/` tree **in
+   full** plus `raw/sources.json` to a timestamped tarball before any write. Print its path.
 3. Rewrite JSON id-fields per the blast-radius list (load → set → atomic write via
    `scan_schema.storage`).
-4. `git mv`-equivalent dir renames (plain `os.rename`, same filesystem).
-5. Scan all `*.json` under each renamed scan for **residual** occurrences of the old
-   scan_name/source_id strings and **report** them (catches refs this spec missed) — fail the run
-   if any residual is found in a non-free-text field.
-6. **Postcondition gate**: re-run `python -m scan_schema <root>` → must still be **0 errors**, and
-   the naming warnings must be **gone**.
+4. Dir renames (plain `os.rename`, same filesystem).
+5. **Residual scan**: walk every `*.json` under each renamed scan (skipping whitelisted `.bak*`
+   strays) and check each **field value** for an exact / token-boundary match against any old
+   name — **not** a naive substring/`grep`. Substring matching would self-fail, since the old
+   `construction_site` is a substring of its new `construction_site_navvis` (and similar for
+   munich). Fail the run on any residual id-field match.
+6. **Postcondition gate**: re-run `python -m scan_schema <root>` → must still be **0 errors**, the
+   naming warnings must be **gone**, and the residual scan must be clean.
 
 ### Safety / reversibility
 
 - Dry-run prints the full diff (every file + field + old→new) and the residual-scan report.
-- The tarball is the undo for the archive.
+- The full per-scan-dir tarball is the undo for the archive.
 - The `test_real_scans_validate.py` sweep is the automated gate (run before + after).
 
 ## 7. Interaction with munich lineage (cross-link, not in scope here)
 
-munich's two scans are v2.0 (no `frame`/`derivation`), so their rename only touches
-`meta.json::scan_name` + README + dir. Their mesh root is **not yet registered**, so it is absent
-from the source_id table. When the separate lineage workstream registers munich's `mesh.glb` as a
-root, that root **must** be named `water_pump_navvis` per this convention. Order: either workstream
-first; if lineage runs first, add `water_pump_navvis` to the source_id allow-set so it validates.
+munich's two scans are v2.0 (no `frame`/`derivation`), so their scan_name rename touches a
+**smaller** field set than v3.0 scans — but **not** just meta+README+dir: at least
+`munich_water_pump/renders/interior_grid__o3d__20260607/manifest.json` embeds the old name, so the
+renders/instance-doc rewrites in §6 apply to munich too. Their mesh root is **not yet registered**,
+so it is absent from the source_id table. When the separate lineage workstream registers munich's
+`mesh.glb` as a root, that root **must** be named `water_pump_navvis` per this convention — which
+already satisfies `is_valid_source_id`, so no enforcement change is needed (there is no separate
+"allow-set"; enforcement is `KNOWN_VENDORS` + the name predicates). Either workstream may run
+first.
 
 ## 8. Testing
 
@@ -175,9 +221,14 @@ first; if lineage runs first, add `water_pump_navvis` to the source_id allow-set
   conforming names and each violation shape (no vendor, unknown vendor, bad density, uppercase,
   trailing/leading underscore).
 - **Migration** (`backend/tests/test_rename_scans.py` or a `scan_schema` test): build a tmp
-  fixture archive (2 scans, 1 root, full v3.0 meta + variants), run the migration `--apply`,
-  assert: dirs renamed, all id-fields rewritten, `variant_id` untouched, `validate_archive`
-  error-free, naming warnings gone, residual-scan clean.
+  fixture archive exercising the **full** blast radius — 2 scans + 1 root, with v3.0 meta +
+  variants (incl. a `variants[].source` provenance string), a `renders/<run>/{meta.json,
+  manifest.json}`, a `sessions/<id>/instances_gt.json` (tier-prefixed `scene`), and a stray
+  `.bak-*` file. Run `--apply` and assert: dirs renamed; **every** id-field in §6 rewritten
+  (meta, variants, renders, instances_gt, mesh.meta); `variant_id` and the `.bak-*` stray
+  untouched; the substring-trap name pair (`construction_site` → `construction_site_navvis`)
+  doesn't self-fail the residual scan; `validate_archive` error-free; naming warnings gone;
+  residual-scan clean.
 
 ## 9. Rollout order
 
