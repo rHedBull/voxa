@@ -69,7 +69,7 @@ def _plan_scan(scan_dir: Path, old: str, new: str, src_map: dict) -> dict:
     m = _load(mp)
     m["scan_name"] = new
     fr = m.get("frame")
-    if isinstance(fr, dict) and fr.get("canonical_id"):
+    if isinstance(fr, dict) and fr.get("canonical_id") == f"{old}#local":
         fr["canonical_id"] = f"{new}#local"
     d = m.get("derivation")
     if isinstance(d, dict):
@@ -101,7 +101,7 @@ def _plan_scan(scan_dir: Path, old: str, new: str, src_map: dict) -> dict:
             if rm.exists():
                 j = _load(rm)
                 fr = j.get("frame")
-                if isinstance(fr, dict) and fr.get("canonical_id"):
+                if isinstance(fr, dict) and fr.get("canonical_id") == f"{old}#local":
                     fr["canonical_id"] = f"{new}#local"
                 gf = j.get("generated_from")
                 if isinstance(gf, dict):
@@ -199,13 +199,19 @@ def run_migration(root: Path, rename_map: dict, apply: bool,
     olds = set(scan_map) | set(src_map)
     log: list[str] = []
 
-    # Preconditions (by OLD name; nothing mutated yet).
+    # Preconditions (by OLD name; nothing mutated yet). Explicit raises, not
+    # asserts — these guard against renaming a missing scan or colliding onto an
+    # existing dir and must NOT be stripped under `python -O`.
     for old, new in scan_map.items():
-        assert (root / "annotated" / old).is_dir(), f"missing scan {old}"
-        assert not (root / "annotated" / new).exists(), f"collision {new}"
-        assert is_valid_scan_name(new), f"target not valid: {new}"
+        if not (root / "annotated" / old).is_dir():
+            raise SystemExit(f"precondition: missing scan {old}")
+        if (root / "annotated" / new).exists():
+            raise SystemExit(f"precondition: collision, {new} already exists")
+        if not is_valid_scan_name(new):
+            raise SystemExit(f"precondition: target scan_name not valid: {new}")
     for new in src_map.values():
-        assert is_valid_source_id(new), f"target not valid: {new}"
+        if not is_valid_source_id(new):
+            raise SystemExit(f"precondition: target source_id not valid: {new}")
 
     # PLAN — build the full post-migration view (pure).
     planned: dict[Path, dict] = {}
