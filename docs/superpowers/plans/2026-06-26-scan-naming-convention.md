@@ -892,11 +892,34 @@ Expected: prints every file + field it would rewrite for all 9 scans + sources.j
 
 **Files:** none (mutates the archive)
 
+> ⚠️ **Labeled-scan safety** (`munich_*`, `water_treatment_navvis`, `smart_ais_navvis` hold real
+> labels — see [[feedback_labeled_scans_precious]]): the migration rewrites only JSON id-strings
+> and must NOT alter any label array. Step 1b/Step 5 below *prove* this by sha256-comparing every
+> `.npy` before and after.
+
 - [ ] **Step 1: Baseline** — `.venv/bin/python -m scan_schema /home/hendrik/coding/engine/data/lidar` → confirm `0 errors` (record the naming warnings present).
+- [ ] **Step 1b: Snapshot label-array hashes** — record a sha256 of every `.npy` under `annotated/` keyed by path-relative-to-its-scan (so a rename doesn't look like a change):
+
+```bash
+cd /home/hendrik/coding/engine/data/lidar/annotated
+find . -name '*.npy' | sed 's#^\./[^/]*/##' | sort -u >/tmp/npy_rel_before.txt   # sanity: relpath set
+find . -name '*.npy' -exec sha256sum {} \; | awk '{n=$2; sub(/^\.\/[^/]*\//,"",n); print $1, n}' | sort -k2 >/tmp/npy_before.txt
+wc -l /tmp/npy_before.txt
+```
+
 - [ ] **Step 2: Apply** — `.venv/bin/python scripts/scan/rename_scans.py /home/hendrik/coding/engine/data/lidar --apply` → expect a backup tarball path printed, the rewrite log, no residual error, `APPLIED`.
 - [ ] **Step 3: Postcondition** — `.venv/bin/python -m scan_schema /home/hendrik/coding/engine/data/lidar` → expect `0 errors` AND **no** `scan_name ... does not match` / `source_id ...` warnings.
 - [ ] **Step 4: Test sweep** — `VOXA_LIDAR_ROOT=/home/hendrik/coding/engine/data/lidar .venv/bin/python -m pytest backend/tests/test_real_scans_validate.py -q` → all green.
-- [ ] **Step 5: Manually edit each README.md** to the new name (the script reported them; free text, hand-edited). Re-run Step 3 to confirm still clean.
+- [ ] **Step 5: Prove labels untouched** — re-hash and diff against the snapshot (keyed by scan-relative path, so the dir rename is ignored); **must be identical**:
+
+```bash
+cd /home/hendrik/coding/engine/data/lidar/annotated
+find . -name '*.npy' -exec sha256sum {} \; | awk '{n=$2; sub(/^\.\/[^/]*\//,"",n); print $1, n}' | sort -k2 >/tmp/npy_after.txt
+diff /tmp/npy_before.txt /tmp/npy_after.txt && echo "LABELS BYTE-IDENTICAL ✓"
+```
+Expected: no diff, `LABELS BYTE-IDENTICAL ✓`. If anything differs, STOP and restore from the backup tarball.
+
+- [ ] **Step 6: Manually edit each README.md** to the new name (the script reported them; free text, hand-edited). Re-run Step 3 to confirm still clean.
 
 ### Task B5: Docs
 
