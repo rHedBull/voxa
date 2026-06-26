@@ -436,13 +436,35 @@ def _ply(path: Path, n: int):
 
 
 def _build_fixture(root: Path):
-    """Two-scan archive exercising the full blast radius."""
+    """Two-scan archive: one exercises the full blast radius (factory_large);
+    one exercises the prefix-substring trap (construction_site, whose old name is
+    a prefix of its new name construction_site_navvis — spec §8 regression guard)."""
     raw = root / "raw"; raw.mkdir(parents=True)
     (raw / "sources.json").write_text(json.dumps({"sources": [
         {"source_id": "factory_large", "path": "raw/Factory.laz", "format": "laz",
          "fingerprint": "sha256:aa", "n_points": 5, "origin_url": None,
          "registered_at": "2026-01-01T00:00:00+00:00"},
+        {"source_id": "construction_site_sample_data", "path": "raw/Construction.laz",
+         "format": "laz", "fingerprint": "sha256:cc", "n_points": 5, "origin_url": None,
+         "registered_at": "2026-01-01T00:00:00+00:00"},
     ]}))
+
+    # --- second scan: prefix-substring trap (minimal — meta + ply only) ---
+    c = root / "annotated" / "construction_site"
+    _ply(c / "source" / "scan.ply", 5)
+    (c / "meta.json").write_text(json.dumps({
+        "schema_version": "3.0", "scan_name": "construction_site", "n_points": 5,
+        "units": "meters", "class_map_version": 1,
+        "frame": {"canonical_id": "construction_site#local",
+                  "transform_to_canonical": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},
+        "derivation": {"scan_id": "construction_site", "variant_id": "construction_site",
+                       "varies": ["density"], "role": "labeling",
+                       "root": {"source_id": "construction_site_sample_data",
+                                "fingerprint": "sha256:cc"},
+                       "parent": {"ref": "construction_site_sample_data",
+                                  "fingerprint": "sha256:cc"}},
+    }))
+
     s = root / "annotated" / "factory_large"
     _ply(s / "source" / "scan.ply", 5)
     # NOTE: variant_id / labeling_variant are deliberately set to the OLD scan_name
@@ -486,8 +508,12 @@ def _build_fixture(root: Path):
         "scene": "annotated/factory_large"}))
 
 
-RENAME = {"scans": {"factory_large": "factory_navvis"},
-          "sources": {"factory_large": "factory_navvis"}}
+RENAME = {
+    "scans": {"factory_large": "factory_navvis",
+              "construction_site": "construction_site_navvis"},
+    "sources": {"factory_large": "factory_navvis",
+                "construction_site_sample_data": "construction_site_navvis"},
+}
 
 
 def test_dry_run_changes_nothing(tmp_path):
@@ -540,7 +566,17 @@ def test_apply_renames_and_rewrites_all_refs(tmp_path):
 
     sources = json.loads((tmp_path / "raw" / "sources.json").read_text())
     ids = {e["source_id"] for e in sources["sources"]}
-    assert ids == {"factory_navvis"}
+    assert ids == {"factory_navvis", "construction_site_navvis"}
+
+    # prefix-substring trap: construction_site renamed cleanly, no self-trip,
+    # and its already-correct prefix wasn't double-appended
+    cnew = tmp_path / "annotated" / "construction_site_navvis"
+    assert cnew.exists() and not (tmp_path / "annotated" / "construction_site").exists()
+    cmeta = json.loads((cnew / "meta.json").read_text())
+    assert cmeta["scan_name"] == "construction_site_navvis"
+    assert cmeta["frame"]["canonical_id"] == "construction_site_navvis#local"
+    assert cmeta["derivation"]["root"]["source_id"] == "construction_site_navvis"
+    assert cmeta["derivation"]["variant_id"] == "construction_site"   # retained
 
     # postconditions: validate_archive error-free + no naming warnings
     report = scan_schema.validate_archive(tmp_path)
