@@ -216,7 +216,7 @@ git commit -m "feat: export naming predicates; bump to 3.1.0"
 - Modify: `src/scan_schema/validate.py` (per-scan loop, after meta is loaded — near the top-level-entries block ~line 277)
 - Test: `tests/test_validate.py`
 
-- [ ] **Step 1: Write the failing test** (append to `tests/test_validate.py`; reuse its existing tmp-archive fixture/helpers — inspect the file first for the helper that writes a minimal scan, e.g. `_write_scan`)
+- [ ] **Step 1: Write the failing test** (append to `tests/test_validate.py`; reuse its existing tmp-archive helpers — inspect the file first: the real helpers are `_mk_scan` / `_v3_meta` / `_registry`, there is no `_make_archive`. Either call those directly or add a thin `_make_archive(tmp_path, scan_name)` wrapper around them.)
 
 ```python
 def test_validate_warns_on_nonconforming_scan_name(tmp_path):
@@ -234,7 +234,7 @@ def test_validate_no_naming_warning_for_conforming(tmp_path):
     assert not any("does not match" in w for w in report["factory_navvis"]["warnings"])
 ```
 
-> If `test_validate.py` lacks a reusable archive-builder helper, add a small `_make_archive(tmp_path, scan_name)` that writes `annotated/<scan_name>/{meta.json, source/scan.ply}` with a 1-point PLY and matching `n_points`, mirroring the existing tests' setup.
+> The archive builder must write `annotated/<scan_name>/{meta.json, source/scan.ply}` with a 1-point PLY, matching `n_points`, and the required meta fields (`scan_name`, `n_points`, `units`, `class_map_version`) so `check_meta` returns no errors and only the *naming* warning is exercised.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -247,13 +247,16 @@ Expected: FAIL — no such warning
 from scan_schema.naming import is_valid_scan_name, is_valid_source_id
 ```
 
-and inside the per-scan loop (after `scan_name = scan_dir.name`, anywhere before `result[scan_name] = ...`):
+and inside the per-scan loop, **after `meta` is loaded** (so the declared `scan_name`
+is available) and before `result[scan_name] = ...`. Per spec §5 the check targets
+`meta.json::scan_name`, falling back to the dir name when meta is absent/omits it:
 
 ```python
         # Naming convention (warn-level, never an error).
-        if not is_valid_scan_name(scan_name):
+        declared = (meta or {}).get("scan_name", scan_name)
+        if not is_valid_scan_name(declared):
             warnings.append(
-                f"scan_name {scan_name!r} does not match "
+                f"scan_name {declared!r} does not match "
                 "<scene>_<vendor>[_<density>]"
             )
 ```
@@ -275,11 +278,12 @@ git commit -m "feat: warn on non-conforming scan_name in validate_archive"
 **Files:**
 - Modify: `src/scan_schema/validate.py` (after the per-scan `for` loop, before `return result`)
 - Modify: `src/scan_schema/__main__.py` (count fix)
-- Test: `tests/test_validate.py`
+- Test: `tests/test_validate.py`, `tests/test_main.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
+# tests/test_validate.py
 def test_validate_warns_on_nonconforming_source_id(tmp_path):
     root = _make_archive(tmp_path, scan_name="factory_navvis")
     # write a sources.json with one bad + one good key
@@ -294,6 +298,19 @@ def test_validate_warns_on_nonconforming_source_id(tmp_path):
     assert rk["errors"] == []
 ```
 
+```python
+# tests/test_main.py — the reserved key must NOT be counted as a scan
+def test_cli_excludes_reserved_key_from_scan_count(tmp_path, capsys):
+    root = _make_archive(tmp_path, scan_name="factory_navvis")          # 1 real scan
+    _write_sources(root, {"factory_large": "raw/Factory-large.laz"})    # bad root
+    from scan_schema.__main__ import main as audit_main                 # match real entrypoint
+    audit_main([str(root)])
+    out = capsys.readouterr().out
+    assert "1 scans, 0 errors" in out          # NOT "2 scans"
+    assert "warn   [raw/sources.json]" in out
+```
+
+> Inspect `tests/test_main.py` for the existing CLI-invocation pattern (how it calls the audit entrypoint + captures output) and mirror it — the import/arg shape above is illustrative.
 > Add a `_write_sources(root, mapping)` helper writing `raw/sources.json` in the `{"sources": [{source_id, path, format, fingerprint, n_points, ...}]}` shape (see real `raw/sources.json`). Fingerprint/n_points can be dummy values; the naming pass only reads keys.
 
 - [ ] **Step 2: Run to verify it fails**
@@ -332,7 +349,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/scan_schema/validate.py src/scan_schema/__main__.py tests/test_validate.py
+git add src/scan_schema/validate.py src/scan_schema/__main__.py tests/test_validate.py tests/test_main.py
 git commit -m "feat: warn on non-conforming source_id via registry-roots pass"
 ```
 
@@ -363,13 +380,13 @@ git push origin main      # or open+merge a PR if main is protected
 
 - [ ] **Step 1: Reinstall scan_schema from main**
 
-Run:
+Run (`--no-cache-dir` avoids pip serving a stale git ref from cache):
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps \
+.venv/bin/pip install --force-reinstall --no-deps --no-cache-dir \
   "scan-schema @ git+https://github.com/rHedBull/scan_schema.git@main"
 .venv/bin/python -c "import scan_schema; print(scan_schema.__version__)"
 ```
-Expected: prints `3.1.0`
+Expected: prints `3.1.0` (if it prints `3.0.0`, the new commit isn't on `main` yet — revisit A5)
 
 - [ ] **Step 2: Sanity-check the new warnings appear on the real archive**
 
@@ -381,21 +398,31 @@ Expected: still `0 errors`, but now several `warn [<scan>] scan_name ... does no
 ### Task B2: Migration script + test (TDD on a fixture)
 
 **Files:**
+- Modify: `pyproject.toml` (pytest `pythonpath`)
 - Create: `scripts/scan/rename_scans.py`
 - Test: `backend/tests/test_rename_scans.py`
 
 The script exposes a testable function `run_migration(root, rename_map, apply: bool) -> Report` plus a CLI. `rename_map` is `{"scans": {old: new}, "sources": {old: new}}`. Reading the real RENAME_MAP from a module constant keeps the CLI deterministic; the test injects a small map.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Make `scripts/` importable from pytest**
+
+`scripts/` lives at the repo root, but `pyproject.toml` has `pythonpath = ["backend"]` only, so `from scripts.scan.rename_scans import ...` would raise `ModuleNotFoundError`. Add the repo root so `scripts.scan.rename_scans` resolves as a PEP-420 namespace package (no `__init__.py` needed):
+
+```toml
+# pyproject.toml — [tool.pytest.ini_options]
+pythonpath = ["backend", "."]
+```
+
+Run: `grep -n pythonpath pyproject.toml` → confirm `["backend", "."]`.
+
+- [ ] **Step 2: Write the failing test**
 
 ```python
 # backend/tests/test_rename_scans.py
 import json
 from pathlib import Path
-import numpy as np
-import pytest
 
-from scripts.scan.rename_scans import run_migration  # adjust import path if needed
+from scripts.scan.rename_scans import run_migration
 import scan_schema
 
 
@@ -418,20 +445,23 @@ def _build_fixture(root: Path):
     ]}))
     s = root / "annotated" / "factory_large"
     _ply(s / "source" / "scan.ply", 5)
+    # NOTE: variant_id / labeling_variant are deliberately set to the OLD scan_name
+    # ("factory_large") — the real-world case for 6/9 scans. The migration MUST leave
+    # them untouched and the residual gate MUST NOT trip on them (deferred namespace).
     (s / "meta.json").write_text(json.dumps({
         "schema_version": "3.0", "scan_name": "factory_large", "n_points": 5,
-        "class_map_version": 1,
+        "units": "meters", "class_map_version": 1,
         "frame": {"canonical_id": "factory_large#local",
                   "transform_to_canonical": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},
-        "derivation": {"scan_id": "factory_large", "variant_id": "voxel3M",
+        "derivation": {"scan_id": "factory_large", "variant_id": "factory_large",
                        "varies": ["density"], "role": "labeling",
                        "root": {"source_id": "factory_large", "fingerprint": "sha256:aa"},
                        "parent": {"ref": "factory_large", "fingerprint": "sha256:aa"}},
     }))
     (s / "variants.json").write_text(json.dumps({
         "scan_id": "factory_large", "canonical_id": "factory_large#local",
-        "labeling_variant": "voxel3M",
-        "variants": [{"variant_id": "voxel3M", "varies": ["density"], "role": "labeling",
+        "labeling_variant": "factory_large",
+        "variants": [{"variant_id": "factory_large", "varies": ["density"], "role": "labeling",
                       "path": str(s), "root_source_id": "factory_large",
                       "root_fingerprint": "sha256:aa", "source_fingerprint": None,
                       "source": "potree:factory_large (scan_15M.las)",
@@ -441,7 +471,7 @@ def _build_fixture(root: Path):
     (r / "meta.json").write_text(json.dumps({
         "run_id": "upper",
         "frame": {"canonical_id": "factory_large#local"},
-        "generated_from": {"scan_id": "factory_large", "variant_id": "voxel3M",
+        "generated_from": {"scan_id": "factory_large", "variant_id": "factory_large",
                            "source": "potree:factory_large (scan_15M.las)",
                            "source_fingerprint": "sha256:bb", "n_points": 5},
     }))
@@ -479,7 +509,8 @@ def test_apply_renames_and_rewrites_all_refs(tmp_path):
     assert meta["derivation"]["scan_id"] == "factory_navvis"
     assert meta["derivation"]["root"]["source_id"] == "factory_navvis"
     assert meta["derivation"]["parent"]["ref"] == "factory_navvis"
-    assert meta["derivation"]["variant_id"] == "voxel3M"   # untouched
+    # deferred namespace: retained even though it equals the OLD scan_name
+    assert meta["derivation"]["variant_id"] == "factory_large"
 
     var = json.loads((new / "variants.json").read_text())
     assert var["scan_id"] == "factory_navvis"
@@ -487,11 +518,13 @@ def test_apply_renames_and_rewrites_all_refs(tmp_path):
     assert var["variants"][0]["path"].endswith("factory_navvis")
     assert var["variants"][0]["root_source_id"] == "factory_navvis"
     assert var["variants"][0]["source"] == "potree:factory_navvis (scan_15M.las)"
-    assert var["variants"][0]["variant_id"] == "voxel3M"   # untouched
+    assert var["variants"][0]["variant_id"] == "factory_large"   # untouched
+    assert var["labeling_variant"] == "factory_large"            # untouched
 
     rmeta = json.loads((new / "renders" / "upper" / "meta.json").read_text())
     assert rmeta["frame"]["canonical_id"] == "factory_navvis#local"
     assert rmeta["generated_from"]["scan_id"] == "factory_navvis"
+    assert rmeta["generated_from"]["variant_id"] == "factory_large"  # untouched
     assert rmeta["generated_from"]["source"] == "potree:factory_navvis (scan_15M.las)"
     rman = json.loads((new / "renders" / "upper" / "manifest.json").read_text())
     assert rman["scene"] == "factory_navvis"
@@ -516,12 +549,12 @@ def test_apply_renames_and_rewrites_all_refs(tmp_path):
                    for r in report.values() for w in r["warnings"])
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 3: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest backend/tests/test_rename_scans.py -q`
-Expected: FAIL — `ModuleNotFoundError` / `run_migration` undefined
+Expected: FAIL — `run_migration` undefined (script not yet written)
 
-- [ ] **Step 3: Implement `scripts/scan/rename_scans.py`**
+- [ ] **Step 4: Implement `scripts/scan/rename_scans.py`**
 
 Structure (write complete, following `scripts/scan/promote_to_v3.py` conventions — argparse, `--apply` default-off, archive root arg, atomic writes via `scan_schema.atomic_write_json`):
 
@@ -537,7 +570,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 import tarfile
 from pathlib import Path
 
@@ -567,18 +599,21 @@ RENAME_MAP = {
     },
 }
 
-# Files whose embedded names are rewritten, keyed by their JSON id-fields.
-# (Free-text README is reported, never auto-edited. .bak* strays are skipped.)
+# Architecture: PLAN (pure, build {path: rewritten_obj}) -> RESIDUAL (field-scoped,
+# whitelisting the deferred variant_id/labeling_variant namespace + free-text notes)
+# -> only THEN mutate (backup, write, rename). The residual gate runs BEFORE any
+# disk write, so a missed reference aborts cleanly instead of leaving the archive
+# half-migrated. README + notes are reported for manual review, never auto-edited.
+
+# Keys that legitimately retain an old-name-equal value after rename:
+#   variant_id / labeling_variant — the deferred namespace (spec non-goal), MUST keep old value
+#   notes — free text, hand-reviewed like README
+_RETAINED_KEYS = {"variant_id", "labeling_variant"}
+_FREETEXT_KEYS = {"notes"}
 
 
 def _load(p: Path) -> dict:
     return json.loads(p.read_text())
-
-
-def _write(p: Path, obj: dict, apply: bool, log: list[str]):
-    log.append(f"  rewrite {p}")
-    if apply:
-        atomic_write_json(p, obj)
 
 
 def _sub_name(s, old, new):
@@ -587,9 +622,10 @@ def _sub_name(s, old, new):
     return re.sub(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, s)
 
 
-def _rewrite_scan(scan_dir: Path, old: str, new: str,
-                  src_map: dict, apply: bool, log: list[str]):
-    # meta.json
+def _plan_scan(scan_dir: Path, old: str, new: str, src_map: dict) -> dict:
+    """Pure: return {path: rewritten_obj} for one scan. No disk writes."""
+    planned: dict[Path, dict] = {}
+
     mp = scan_dir / "meta.json"
     m = _load(mp)
     m["scan_name"] = new
@@ -600,10 +636,9 @@ def _rewrite_scan(scan_dir: Path, old: str, new: str,
     if isinstance(d, dict):
         if d.get("scan_id") == old:
             d["scan_id"] = new
-        _apply_source_map_to_derivation(d, src_map)
-    _write(mp, m, apply, log)
+        _apply_source_map_to_derivation(d, src_map)   # variant_id left untouched
+    planned[mp] = m
 
-    # variants.json
     vp = scan_dir / "variants.json"
     if vp.exists():
         v = _load(vp)
@@ -611,16 +646,15 @@ def _rewrite_scan(scan_dir: Path, old: str, new: str,
             v["scan_id"] = new
         if v.get("canonical_id") == f"{old}#local":
             v["canonical_id"] = f"{new}#local"
-        for var in v.get("variants", []):
+        for var in v.get("variants", []):            # variant_id / labeling_variant untouched
             if isinstance(var.get("path"), str):
-                var["path"] = var["path"].replace(f"/{old}", f"/{new}")
+                var["path"] = _sub_name(var["path"], old, new)
             if var.get("root_source_id") in src_map:
                 var["root_source_id"] = src_map[var["root_source_id"]]
             if isinstance(var.get("source"), str):
                 var["source"] = _sub_name(var["source"], old, new)
-        _write(vp, v, apply, log)
+        planned[vp] = v
 
-    # renders/<run>/{meta.json,manifest.json}
     rroot = scan_dir / "renders"
     if rroot.is_dir():
         for run in sorted(rroot.iterdir()):
@@ -636,15 +670,14 @@ def _rewrite_scan(scan_dir: Path, old: str, new: str,
                         gf["scan_id"] = new
                     if isinstance(gf.get("source"), str):
                         gf["source"] = _sub_name(gf["source"], old, new)
-                _write(rm, j, apply, log)
+                planned[rm] = j
             mf = run / "manifest.json"
             if mf.exists():
                 j = _load(mf)
                 if j.get("scene") == old:
                     j["scene"] = new
-                    _write(mf, j, apply, log)
+                planned[mf] = j
 
-    # sessions/<id>/instances_gt.json  (tier-prefixed scene)
     sroot = scan_dir / "sessions"
     if sroot.is_dir():
         for sess in sorted(sroot.iterdir()):
@@ -653,19 +686,16 @@ def _rewrite_scan(scan_dir: Path, old: str, new: str,
                 j = _load(ig)
                 if j.get("scene") == f"annotated/{old}":
                     j["scene"] = f"annotated/{new}"
-                    _write(ig, j, apply, log)
+                planned[ig] = j
 
-    # source/mesh.meta.json::scene
     mm = scan_dir / "source" / "mesh.meta.json"
     if mm.exists():
         j = _load(mm)
         if j.get("scene") == old:
             j["scene"] = new
-            _write(mm, j, apply, log)
+        planned[mm] = j
 
-    # README.md — report only
-    if (scan_dir / "README.md").exists():
-        log.append(f"  REVIEW (free text, not auto-edited): {scan_dir/'README.md'}")
+    return planned
 
 
 def _apply_source_map_to_derivation(d: dict, src_map: dict):
@@ -677,47 +707,60 @@ def _apply_source_map_to_derivation(d: dict, src_map: dict):
         parent["ref"] = src_map[parent["ref"]]
 
 
-def _rewrite_sources(root: Path, src_map: dict, apply: bool, log: list[str]):
+def _plan_sources(root: Path, src_map: dict) -> dict:
     sp = root / "raw" / "sources.json"
     body = _load(sp)
     for e in body.get("sources", []):
         if e.get("source_id") in src_map:
             e["source_id"] = src_map[e["source_id"]]
-    _write(sp, body, apply, log)
+    return {sp: body}
 
 
-def _backup(root: Path, scan_olds, apply: bool, log: list[str]) -> Path | None:
-    tar_path = root / "rename_backup.tar"   # caller stamps a timestamp via args
+def _residual(view: dict, olds: set) -> tuple[list[str], list[str]]:
+    """Recursively scan every string VALUE in the post-migration `view`
+    ({path: obj}) for a token-boundary occurrence of any old name.
+    Returns (fail_hits, review_hits): hits under _RETAINED_KEYS are ignored
+    (expected); hits under _FREETEXT_KEYS are 'review' (reported, non-fatal);
+    everything else is a 'fail' (a reference the migration missed)."""
+    pats = {o: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(o)}(?![A-Za-z0-9_])") for o in olds}
+    fail, review = [], []
+
+    def walk(obj, where, key=None):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                walk(v, where, k)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v, where, key)
+        elif isinstance(obj, str):
+            if key in _RETAINED_KEYS:
+                return
+            for o, p in pats.items():
+                if p.search(obj):
+                    msg = f"{where} [{key}]: residual {o!r} in {obj!r}"
+                    (review if key in _FREETEXT_KEYS else fail).append(msg)
+
+    for path, obj in view.items():
+        walk(obj, path)
+    return fail, review
+
+
+def _backup(root: Path, scan_olds, tar_path: Path, log: list[str]):
     log.append(f"  backup -> {tar_path}")
-    if apply:
-        with tarfile.open(tar_path, "w") as t:
-            for old in scan_olds:
-                t.add(root / "annotated" / old, arcname=f"annotated/{old}")
-            t.add(root / "raw" / "sources.json", arcname="raw/sources.json")
-    return tar_path
+    with tarfile.open(tar_path, "w") as t:
+        for old in scan_olds:
+            t.add(root / "annotated" / old, arcname=f"annotated/{old}")
+        t.add(root / "raw" / "sources.json", arcname="raw/sources.json")
 
 
-def _residual_scan(root: Path, scan_map, src_map, log) -> list[str]:
-    """Field-exact (token-boundary) check for any leftover old name in *.json
-    (skipping .bak* strays). Returns a list of offending file:value strings."""
-    olds = set(scan_map) | set(src_map)
-    hits = []
-    for jf in (root / "annotated").rglob("*.json"):
-        if ".bak" in jf.name:
-            continue
-        text = jf.read_text()
-        for old in olds:
-            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", text):
-                hits.append(f"{jf}: residual {old!r}")
-    return hits
-
-
-def run_migration(root: Path, rename_map: dict, apply: bool) -> dict:
+def run_migration(root: Path, rename_map: dict, apply: bool,
+                  backup_name: str = "rename_backup.tar") -> dict:
     root = Path(root)
     scan_map, src_map = rename_map["scans"], rename_map["sources"]
+    olds = set(scan_map) | set(src_map)
     log: list[str] = []
 
-    # Preconditions
+    # Preconditions (by OLD name; nothing mutated yet).
     for old, new in scan_map.items():
         assert (root / "annotated" / old).is_dir(), f"missing scan {old}"
         assert not (root / "annotated" / new).exists(), f"collision {new}"
@@ -725,28 +768,55 @@ def run_migration(root: Path, rename_map: dict, apply: bool) -> dict:
     for new in src_map.values():
         assert is_valid_source_id(new), f"target not valid: {new}"
 
-    _backup(root, scan_map.keys(), apply, log)
+    # PLAN — build the full post-migration view (pure).
+    planned: dict[Path, dict] = {}
     for old, new in scan_map.items():
-        _rewrite_scan(root / "annotated" / old, old, new, src_map, apply, log)
-    _rewrite_sources(root, src_map, apply, log)
+        planned.update(_plan_scan(root / "annotated" / old, old, new, src_map))
+    planned.update(_plan_sources(root, src_map))
+
+    # RESIDUAL (before mutating): planned objects + every other *.json (read from
+    # disk, .bak* skipped) so an un-rewritten reference is caught, not written over.
+    view = dict(planned)
+    for jf in (root / "annotated").rglob("*.json"):
+        if ".bak" in jf.name or jf in planned:
+            continue
+        view[jf] = _load(jf)
+    fail, review = _residual(view, olds)
+    for r in review:
+        log.append(f"  REVIEW (free-text, not auto-edited): {r}")
+    for old in scan_map:
+        rd = root / "annotated" / old / "README.md"
+        if rd.exists():
+            log.append(f"  REVIEW (free text, not auto-edited): {rd}")
+    if fail:
+        raise SystemExit(
+            "RESIDUAL old names in un-rewritten id-fields (fix the rewriter):\n"
+            + "\n".join(fail))
+
+    for p in planned:
+        log.append(f"  rewrite {p}")
+
+    # MUTATE — only now. Backup first (archive is not under git).
     if apply:
+        _backup(root, scan_map.keys(), root / backup_name, log)
+        for p, obj in planned.items():
+            atomic_write_json(p, obj)
         for old, new in scan_map.items():
             (root / "annotated" / old).rename(root / "annotated" / new)
 
-    residual = _residual_scan(root, scan_map, src_map, log) if apply else []
-    if residual:
-        raise SystemExit("RESIDUAL old names remain:\n" + "\n".join(residual))
-
     print("\n".join(log))
-    return {"log": log, "residual": residual}
+    return {"log": log, "planned": [str(p) for p in planned], "review": review}
 
 
 def main(argv=None):
+    from datetime import datetime, timezone
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("root", type=Path)
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
-    run_migration(a.root, RENAME_MAP, apply=a.apply)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_migration(a.root, RENAME_MAP, apply=a.apply,
+                  backup_name=f"rename_backup_{stamp}.tar")
     print(f"\n{'APPLIED' if a.apply else 'DRY-RUN (no changes)'}")
 
 
@@ -754,17 +824,20 @@ if __name__ == "__main__":
     main()
 ```
 
-> Note: the residual scan runs only on `--apply` (post-rename). On dry-run it's skipped because nothing was rewritten. The dir-rename's `_sub_name` token-boundary regex prevents the `construction_site` ⊂ `construction_site_navvis` self-match.
+> Note: the residual gate runs in **both** dry-run and apply, against the in-memory
+> post-migration view, **before** any disk write — so a missed reference aborts with
+> the archive untouched. Hits under `variant_id`/`labeling_variant` (deferred namespace)
+> are expected and ignored; `notes`/README hits are reported for manual review, not failed.
 
-- [ ] **Step 4: Run to verify it passes**
+- [ ] **Step 5: Run to verify it passes**
 
 Run: `.venv/bin/python -m pytest backend/tests/test_rename_scans.py -q`
-Expected: PASS
+Expected: PASS (both `test_dry_run_changes_nothing` and `test_apply_renames_and_rewrites_all_refs`)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add scripts/scan/rename_scans.py backend/tests/test_rename_scans.py
+git add pyproject.toml scripts/scan/rename_scans.py backend/tests/test_rename_scans.py
 git commit -m "feat: rename_scans migration to <scene>_<vendor> convention"
 ```
 
