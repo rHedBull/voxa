@@ -147,12 +147,16 @@ leave prose). The two kinds are called out below.
 - `variants.json::scan_id`, `::canonical_id`, each `variants[].path` (absolute path to the scan
   dir), and each `variants[].source` provenance string (e.g.
   `"potree:<scan_name> (scan_15M.las)"`)
-- `renders/<run>/meta.json`: `generated_from.scan_id`, `generated_from.canonical_id`
-  (`<scan_name>#local`), `generated_from.source` provenance string (~9 render dirs across v3.0
-  scans + munich)
+- `renders/<run>/meta.json`: `generated_from.scan_id`, `generated_from.source` provenance string,
+  and the render meta's top-level `frame.canonical_id` (`<scan_name>#local`). Note: there is **no**
+  `generated_from.canonical_id` — verified, the canonical id is the sibling top-level `frame`
+  block, mirroring the scan `meta.json`. (~9 render dirs across v3.0 scans; munich's lone render
+  dir has only `manifest.json`, no render `meta.json`, so this line is v3.0-only there.)
 - `renders/<run>/manifest.json::scene`
 - `sessions/<id>/instances_gt.json::scene` — value is the **tier-prefixed** id
-  `"annotated/<scan_name>"` → rewrite to `"annotated/<new>"` (1 `legacy` + per-session dirs)
+  `"annotated/<scan_name>"` → rewrite to `"annotated/<new>"`. Present only in sessions that have
+  one (e.g. a labeling session dir); not every session/`legacy` dir carries it — the migration
+  rewrites wherever the file exists, not a fixed count.
 - `source/mesh.meta.json::scene` (provenance label) — where present
 - `README.md` — **report only**, do not blind-replace free prose (manual edit)
 
