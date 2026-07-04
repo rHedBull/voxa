@@ -17,6 +17,7 @@ dist/
 # Voxa runtime data — scenes and annotations are user content, not code
 data/scenes/
 data/annotations/
+data/fw_experiment/
 
 # OS / editor
 .DS_Store

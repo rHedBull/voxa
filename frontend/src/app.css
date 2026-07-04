@@ -467,6 +467,11 @@ kbd {
 
 .class-list, .inst-list, .sugg-list { display: flex; flex-direction: column; gap: 1px; }
 
+/* Cap the class palette to a fixed height so a growing class count can't
+   push the presegment panel below it out of view — it scrolls internally
+   instead, same pattern as .preseg-panel's own inst-list. */
+.class-list { max-height: 240px; overflow-y: auto; flex-shrink: 0; }
+
 .inst-filter { position: relative; margin: 4px 4px 6px; }
 .inst-filter .ins-input { width: 100%; padding-right: 22px; }
 .inst-filter-clear {

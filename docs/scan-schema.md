@@ -14,12 +14,31 @@ $VOXA_LIDAR_ROOT/annotated/<scan_name>/
 
 Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_viewer/*.ply`) and `raw/` (LAZ source files under `<lidar_root>/raw/*.laz`, also the registry roots in `raw/sources.json`) — are surfaced by the scene picker as discovery shortcuts for unlabeled data. Neither has the per-scan substructure below; to label one, scaffold it into `annotated/` via `data/tools/scaffold_annotation.py`.
 
+## Naming convention
+
+Scan names and source IDs follow a structured slug:
+
+```
+scan_name  = <scene>_<vendor>[_<density>]
+source_id  = <scene>_<vendor>
+```
+
+- **scene** — one or more lowercase alphanumeric tokens joined by underscores (`[a-z0-9]+(_[a-z0-9]+)*`).
+- **vendor** — a known capture vendor from `scan_schema.KNOWN_VENDORS` (currently `navvis`, `matterport`). To admit a new vendor, extend that tuple in the `scan_schema` package.
+- **density** — an approximate point-count suffix (`\d+[km]` or `full`, e.g. `500k`, `3m`). Include it **only** when more than one density of the same `<scene>_<vendor>` is materialized on disk; for a single-density scan, `scan_name` equals the `source_id` base.
+
+The scheme is scene-first so names sort and grep cleanly by subject. Both IDs are stable slugs: rename only when the capture itself is being superseded.
+
+**Enforcement**: warn-level only. `scan_schema.is_valid_scan_name` / `is_valid_source_id` flag non-conforming names during `validate_archive` / `python -m scan_schema <root>` — a warning, never an error, so discovery is never blocked.
+
+**Examples** (real archive scans): `water_treatment_navvis`, `smart_ais_navvis`, `mechanical_room_matterport`, `water_pump_navvis_500k`, `water_pump_navvis_3m`.
+
 ## Per-scan layout (`annotated/<scan_name>/`)
 
 ```
 <scan_name>/
 ├── meta.json                          (required)  provenance + frame/derivation; schema_version "2.x" or "3.0"
-├── README.md                          (recommended)
+├── README.md                          (recognized, not enforced — every current scan has one)
 ├── source/
 │   ├── scan.ply                       (required)  point cloud being labeled (xyz + rgb)
 │   └── mesh.glb                       (optional)  textured mesh for the companion window
@@ -57,6 +76,7 @@ Two additional tiers — `decimated/` (raw PLY previews under `<lidar_root>/ply_
 
 | Path | Voxa behavior if missing |
 |---|---|
+| `README.md` | no effect — recognized by the validator (in `ALLOWED_TOPLEVEL`) but never checked for presence |
 | `source/scan.ply` | scene not discovered |
 | `meta.json` passing `scan_schema.metadata.check_meta` (2.x or 3.0) | scene not discovered; legacy/unsupported `schema_version` logged with a migration hint |
 | `sessions/` | UI shows an empty session list + create-session picker; no canvas until a session is created or selected |
