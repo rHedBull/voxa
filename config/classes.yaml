@@ -1,6 +1,6 @@
 # Voxa class definitions for industrial plant scans.
 # Aligned with the canonical IDs in engine/data/lidar/classes.json.
-# Strategy: 6 broad classes. Primary focus is `pipe`; secondary classes are
+# Strategy: broad classes. Primary focus is `pipe`; secondary classes are
 # labeled opportunistically in the same pass. Ambiguous segments stay unlabeled.
 #
 # id:    canonical numeric class id (MUST match engine/data/lidar/classes.json).
@@ -36,6 +36,46 @@ classes:
     key: "5"
   unknown:
     id: 6
-    label: Unknown / Review
+    label: Exclude / Review
     color: "#6b7280"
     key: "0"
+  wall:
+    id: 7
+    label: Wall
+    color: "#8b5cf6"
+    key: "6"
+  floor:
+    id: 8
+    label: Floor
+    color: "#06b6d4"
+    key: "7"
+  ceiling:
+    id: 9
+    label: Ceiling
+    color: "#ec4899"
+    key: "8"
+  beam:
+    id: 10
+    label: Beam
+    color: "#78716c"
+    key: "9"
+  pillar:
+    id: 11
+    label: Pillar
+    color: "#fbbf24"
+    key: "q"
+  stair:
+    id: 12
+    label: Stair
+    color: "#14b8a6"
+    key: "w"
+  cable:
+    id: 13
+    label: Cable
+    color: "#facc15"
+    key: "e"
+  other:
+    id: 14
+    label: Other
+    color: "#94a3b8"
+    key: "r"
