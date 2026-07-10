@@ -237,3 +237,37 @@ def test_materialize_raw_streams_chunks_through_replay(tmp_path):
     for i in range(len(inside), len(points)):
         assert all_inst[i] == 20
         assert all_cls[i] == 3
+
+
+def _write_tiny_las_no_rgb(path, points):
+    """A minimal LAS 1.2 / point-format-0 file (NO color channels)."""
+    import laspy
+
+    header = laspy.LasHeader(point_format=0, version="1.2")
+    header.scales = np.array([0.001, 0.001, 0.001])
+    header.offsets = np.array([0.0, 0.0, 0.0])
+    las = laspy.LasData(header)
+    pts = np.asarray(points, dtype=np.float64)
+    las.x, las.y, las.z = pts[:, 0], pts[:, 1], pts[:, 2]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    las.write(str(path))
+
+
+def test_materialize_raw_colorless_las_yields_none_rgb(tmp_path):
+    # A LAS without RGB must stream fine, with rgb8 None on every chunk.
+    points = [[0.0, 0.0, 0.0], [0.4, 0.0, 0.0], [5.0, 5.0, 5.0]]
+    las_path = tmp_path / "raw_nocolor.las"
+    _write_tiny_las_no_rgb(las_path, points)
+
+    index = _index([[0, 0, 0], [8, 8, 8]], [10, 20],
+                   [_obb_vol(10, 1, [0, 0, 0], [2, 2, 2])],
+                   {10: 1, 20: 0}, {10: 7, 20: 3})
+
+    chunks = list(materialize_raw(
+        index, las_path, scene_is_z_up=False, offset=np.array([0.0, 0.0, 0.0]),
+        chunk=2,
+    ))
+    assert sum(len(c[0]) for c in chunks) == len(points)
+    assert all(c[1] is None for c in chunks)   # rgb-absent path
+    all_inst = np.concatenate([c[3] for c in chunks], axis=0)
+    assert all_inst[0] == 10 and all_inst[2] == 20   # replay still runs
