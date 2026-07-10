@@ -149,11 +149,17 @@ exactly.
   release (sphere tracks live), same alloc-thrash avoidance as the pipe drag.
   The scroll-resize-vs-zoom gate reuses the capture-listener-on-parent trick.
 - **`api.js`** — one new call, `beamApply(beams, targetClasses)` (see backend).
-- **`mode-label.jsx`** — add the Beam sub-mode toggle; reuse the existing
-  `onDrawApplied` pointset-row surfacing (rename to a shared `onGraphApplied` if
-  cleaner, but the mechanism is unchanged) so applied/committed beams become
-  unconfirmed pointset instances. Host `BeamPanel` in the left sidebar like
-  `DrawPanel`.
+- **`mode-label.jsx`** — add the Beam sub-mode toggle; surface applied beams as
+  pointset rows through the **same row-creation code** as `onDrawApplied`
+  (`mode-label.jsx:828`), but that code currently hard-codes `confirmed: true`
+  and `source: 'draw'`. Extract a shared helper (e.g. `applyPointsetRow`) that
+  takes `confirmed` and `source` as arguments: the existing Draw call passes
+  `confirmed: true, source: 'draw'` (behavior unchanged); the beam call passes
+  **`confirmed: false, source: 'beam'`** so beams land as *unconfirmed* rows and
+  join the review/confirm workflow, and beam rows are distinguishable from draw
+  rows for later filtering. This is the only change to existing `mode-label.jsx`
+  behavior and it must not alter Draw's confirmed-row output. Host `BeamPanel` in
+  the left sidebar like `DrawPanel`.
 
 ### Backend
 
@@ -191,6 +197,12 @@ exactly.
     independently as its own instance via `apply_reassign(indices, target_inst,
     target_class)`. `target_inst: -1` allocates a new instance ID (existing
     `reassign` convention); a real ID re-applies that beam (drag-a-joint + Enter).
+    Field naming across the round-trip: the request carries `target_inst` (the
+    input, matching `reassign`), the per-beam response carries `new_instance_id`
+    (the allocated result), and the edge / `structure.json` model stores it as
+    `instance_id`. The frontend maps response `new_instance_id` → edge
+    `instance_id` after apply, then sends that back on the next re-apply as
+    `target_inst`.
   - Coordinates are in the recentered frame (the frame the viewer and cuboid /
     centerline endpoints already use).
   - Response: a list of per-beam results, each the same shape as the
@@ -248,12 +260,13 @@ Per session, `sessions/<id>/structure.json`:
 ## Reuse map (build on pipe infrastructure)
 
 Reused **as-is**: `segment_state.apply_reassign` (undo stack, delta, dirty,
-Ctrl+S save); `atomic_write_json`; the `onDrawApplied` unconfirmed-pointset-row
-surfacing in `mode-label.jsx`; viewer seams (`attachOverlayGroup`,
+Ctrl+S save); `atomic_write_json`; viewer seams (`attachOverlayGroup`,
 `firstHitUnderCursor`, `evtToNdc`, `getCamera`, `setOrbitEnabled`); the
 wheel-capture-on-parent scroll-resize trick; the ◌/● hide-toggle affordance and
 CSS; LabelMode's raw-RGB cloud + point-size slider + walk nav + capture-phase key
-driver pattern.
+driver pattern. The pointset-row creation in `mode-label.jsx` is reused but
+**parameterized** (see the `mode-label.jsx` bullet) — beams need `confirmed:
+false`, so its hard-coded `confirmed: true` is extracted into an argument.
 
 **New**, mirroring a pipe file without modifying it: `beam-graph.js` (vs.
 `draw-paths.js`), `beam-mode.jsx` (vs. `draw-mode.jsx`), `backend/labeling/
