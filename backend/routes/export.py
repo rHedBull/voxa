@@ -29,6 +29,7 @@ from labeling.export_pipeline import (
     build_manifest,
     build_taxonomy,
     count_absent_instances,
+    drop_unlabeled_rows,
     validate_export_request,
 )
 
@@ -205,8 +206,7 @@ def export_labels(req: ExportLabelsRequest) -> Response:
             inst = inst.copy()
             out_cls, out_inst = apply_filters_remap(cls, inst, confirmed_by_inst, req, src_to_tgt)
             if req.drop_unlabeled:
-                keep = out_cls >= 0
-                pos, col, out_cls, out_inst = pos[keep], col[keep], out_cls[keep], out_inst[keep]
+                out_cls, pos, col, out_inst = drop_unlabeled_rows(out_cls, pos, col, out_inst)
             ply_path.write_bytes(_ply_labeled_bytes(pos, col, out_cls, out_inst))
             total = len(pos)
 
@@ -221,8 +221,7 @@ def export_labels(req: ExportLabelsRequest) -> Response:
                     oc, oi = apply_filters_remap(cls, inst, confirmed_by_inst, req, src_to_tgt)
                     rgb_use = rgb if rgb is not None else np.zeros((len(xyz), 3), np.uint8)
                     if req.drop_unlabeled:
-                        keep = oc >= 0
-                        xyz, rgb_use, oc, oi = xyz[keep], rgb_use[keep], oc[keep], oi[keep]
+                        oc, xyz, rgb_use, oi = drop_unlabeled_rows(oc, xyz, rgb_use, oi)
                     body.write(_ply_labeled_chunk_bytes(xyz, rgb_use, oc, oi))
                     total += len(xyz)
             with ply_path.open("wb") as out:
@@ -232,7 +231,9 @@ def export_labels(req: ExportLabelsRequest) -> Response:
             body_path.unlink()
 
         else:
-            raise HTTPException(422, f"unknown resolution.kind: {req.resolution.kind!r}")
+            # Unreachable via normal flow (validate_export_request rejects
+            # unknown kinds), but kept shape-consistent with the 422 above.
+            raise HTTPException(422, {"errors": [f"unknown resolution kind: {req.resolution.kind!r}"]})
 
         manifest = build_manifest(
             taxonomy, p50, p90, scan=req.scene, session=req.session_id,

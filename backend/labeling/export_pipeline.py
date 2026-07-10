@@ -59,6 +59,9 @@ def validate_export_request(
                 f"remap target id {to_id} collides with a kept-through source class id"
             )
 
+    if req.resolution.kind not in ("scan", "subsample", "raw"):
+        errors.append(f"unknown resolution kind: {req.resolution.kind!r}")
+
     if req.resolution.kind == "subsample":
         n = req.resolution.n
         if n is None or n < 1:
@@ -154,6 +157,13 @@ def apply_filters_remap(
 
     # instance_ids is read-only here; return it directly (no full-array memcpy).
     return out_cls, instance_ids
+
+
+def drop_unlabeled_rows(class_ids, *arrays):
+    """Keep only points with class_id >= 0. Returns (class_ids, *arrays) all
+    masked by the same boolean. Used by both export regimes."""
+    keep = class_ids >= 0
+    return (class_ids[keep], *(a[keep] for a in arrays))
 
 
 def count_absent_instances(

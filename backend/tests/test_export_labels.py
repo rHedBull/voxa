@@ -104,6 +104,12 @@ def test_raw_unavailable():
     assert any("raw" in e.lower() for e in errors)
 
 
+def test_unknown_resolution_kind_rejected():
+    req = _base_req(resolution={"kind": "bogus"})
+    errors = validate_export_request(req, n_scan=1000, palette_ids={0, 1, 2, 3}, raw_available=True)
+    assert any("unknown resolution kind" in e.lower() for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # Task 2: build_taxonomy / apply_filters_remap / count_absent_instances
 # ---------------------------------------------------------------------------
@@ -182,6 +188,19 @@ def test_excluded_class_absent_from_taxonomy():
     req = _base_req(include_classes=[0, 1])
     taxonomy, src_to_tgt = build_taxonomy(_PALETTE, req)
     assert 2 not in taxonomy
+
+
+def test_drop_unlabeled_rows_drops_negatives_keeps_alignment():
+    from labeling.export_pipeline import drop_unlabeled_rows
+    cls = np.array([-1, 0, 2, -1, 5], dtype=np.int64)
+    pos = np.arange(5 * 3, dtype=np.float32).reshape(5, 3)
+    inst = np.array([9, 10, 11, 12, 13], dtype=np.int64)
+    out_cls, out_pos, out_inst = drop_unlabeled_rows(cls, pos, inst)
+    assert list(out_cls) == [0, 2, 5]
+    assert list(out_inst) == [10, 11, 13]
+    # positions stay row-aligned with the kept class ids
+    assert np.array_equal(out_pos, pos[[1, 2, 4]])
+    assert len(out_cls) == len(out_pos) == len(out_inst) == 3
 
 
 def test_count_absent_instances_counts_distinct_not_points():
@@ -618,3 +637,17 @@ def test_export_labels_raw_unavailable_422(client_with_annotated_scene):
         "resolution": {"kind": "raw"},
     })
     assert r.status_code == 422
+
+
+def test_export_labels_unknown_kind_422_error_shape(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "bogus"},
+    })
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert isinstance(detail["errors"], list)
+    assert any("unknown resolution kind" in e.lower() for e in detail["errors"])
