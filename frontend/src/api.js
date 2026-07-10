@@ -232,21 +232,24 @@ export const VoxaAPI = {
     const j = await r.json();
     return j.presegs;
   },
-  async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [] }) {
+  async applyShape({ shape, targetClass, targetInst = -1, mergedFrom = [] }) {
     const body = {
-      paths,
+      shape,
       target_class: targetClass,
       target_inst: targetInst,
       merged_from: mergedFrom,
     };
-    const r = await fetch('/api/segment/centerline-apply', {
+    const r = await fetch('/api/segment/apply-shape', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`centerlineApply failed: ${r.status} ${await r.text()}`);
+    if (!r.ok) throw new Error(`applyShape failed: ${r.status} ${await r.text()}`);
     const j = await r.json();
     return { ..._decodeApplyResponse(j), instanceId: j.instance_id ?? null };
+  },
+  async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [] }) {
+    return this.applyShape({ shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom });
   },
   async getCenterlines() {
     const r = await fetch('/api/segment/centerlines');
