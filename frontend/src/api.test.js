@@ -249,7 +249,7 @@ describe('decodeCompareResponse', () => {
 describe('centerline API', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('centerlineApply posts snake_case payload and decodes the delta', async () => {
+  it('centerlineApply posts a tube shape to apply-shape and decodes the delta', async () => {
     let capturedUrl, capturedOpts;
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
       capturedUrl = url;
@@ -260,12 +260,14 @@ describe('centerline API', () => {
       paths: [{ points: [[0, 0, 0], [1, 0, 0]], radius: 0.15, smooth: false }],
       targetClass: 'pipe', targetInst: -1, mergedFrom: [4],
     });
-    expect(capturedUrl).toBe('/api/segment/centerline-apply');
+    // centerlineApply now delegates to the generic apply-shape endpoint.
+    expect(capturedUrl).toBe('/api/segment/apply-shape');
     const body = JSON.parse(capturedOpts.body);
     expect(body.target_class).toBe('pipe');
     expect(body.target_inst).toBe(-1);
     expect(body.merged_from).toEqual([4]);
-    expect(body.paths[0].radius).toBe(0.15);
+    expect(body.shape.type).toBe('tube');
+    expect(body.shape.paths[0].radius).toBe(0.15);
   });
 
   it('centerlineApply surfaces instance_id on the decoded response', async () => {

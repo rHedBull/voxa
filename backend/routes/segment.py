@@ -86,12 +86,57 @@ def segment_state():
         session_id=_state.get("session_id"),
     )
 
+def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
+                      merged_from: list[int]) -> dict:
+    """Shared core for /apply-shape and /centerline-apply: resolve a shape to
+    full-res point indices, reassign them, and run the per-shape structure
+    persist hook (tube -> update_centerlines; obb -> none)."""
+    from labeling.shapes import shape_indices
+    # Guard the tube session requirement BEFORE mutating working arrays, so a
+    # session-less tube apply 409s cleanly instead of leaving partial state.
+    if shape.get("type") == "tube" and seg.session_dir is None:
+        raise HTTPException(409, "centerline labeling requires an active session")
+    idx = shape_indices(np.asarray(seg.positions), shape)
+    if idx.size == 0:
+        # Same key-absence contract as _serialize_apply on an empty delta.
+        return {"op": "apply-shape", "n_affected": 0, "dirty": bool(seg.dirty)}
+    out = seg.apply_reassign(idx, target_inst=target_inst, target_class=target_class)
+    # new_instance_id is only present on fresh allocation (target_inst < 0);
+    # on re-apply the requested id is reused.
+    instance_id = out.get("new_instance_id", target_inst)
+    if shape.get("type") == "tube":
+        from labeling.centerline import update_centerlines
+        # merged_from re-capture correctness is the caller's contract: the spec
+        # requires the request to carry the union of the absorbed instances'
+        # paths, so their points land in idx above before we drop their entries.
+        update_centerlines(seg.session_dir, instance_id, target_class,
+                           shape["paths"], merged_from)
+    body = _serialize_apply(out)
+    body["instance_id"] = int(instance_id)
+    return body
+
+
+@router.post("/api/segment/apply-shape")
+def apply_shape(req: ApplyShapeRequest):
+    """Generic shape-based label apply: resolve `req.shape` (tube or obb) to
+    full-res point indices and reassign them to (target_class, target_inst)."""
+    seg = _require_seg()
+    try:
+        target_class = _coerce_class_id(req.target_class)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    try:
+        return _apply_shape_core(seg, req.shape, req.target_inst,
+                                 target_class, req.merged_from)
+    except ValueError as e:            # unknown shape type
+        raise HTTPException(400, str(e))
+
+
 @router.post("/api/segment/centerline-apply")
 def centerline_apply(req: CenterlineApplyRequest):
     """Label all full-res points within the tube(s) around the given
     centerline paths. Multiple paths in one call = one (merged) instance.
     See docs/superpowers/specs/2026-06-04-centerline-pipe-labeling-design.md."""
-    from labeling.centerline import tube_indices, update_centerlines
     seg = _require_seg()
     if seg.session_dir is None:
         raise HTTPException(409, "centerline labeling requires an active session")
@@ -100,22 +145,9 @@ def centerline_apply(req: CenterlineApplyRequest):
     except ValueError as e:
         raise HTTPException(400, str(e))
     paths = [p.model_dump() for p in req.paths]
-    idx = tube_indices(np.asarray(seg.positions), paths)
-    if idx.size == 0:
-        # Same key-absence contract as _serialize_apply on an empty delta.
-        return {"op": "centerline", "n_affected": 0, "dirty": bool(seg.dirty)}
-    out = seg.apply_reassign(idx, target_inst=req.target_inst, target_class=target_class)
-    # new_instance_id is only present on fresh allocation (target_inst < 0);
-    # on re-apply the requested id is reused.
-    instance_id = out.get("new_instance_id", req.target_inst)
-    # merged_from re-capture correctness is the caller's contract: the spec
-    # requires the request to carry the union of the absorbed instances'
-    # paths, so their points land in idx above before we drop their entries.
-    update_centerlines(seg.session_dir, instance_id, target_class, paths,
-                       req.merged_from)
-    body = _serialize_apply(out)
-    body["instance_id"] = int(instance_id)
-    return body
+    shape = {"type": "tube", "paths": paths}
+    return _apply_shape_core(seg, shape, req.target_inst, target_class,
+                             req.merged_from)
 
 @router.get("/api/segment/centerlines")
 def get_centerlines():

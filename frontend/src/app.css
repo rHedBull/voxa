@@ -269,6 +269,12 @@ kbd {
 .cam-btn.active { color: var(--accent); background: var(--accent-bg); }
 
 /* ── Tool rail ──────────────────────────────────────────────── */
+.tool-rail {
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--hud-bg); backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border); border-radius: 7px;
+}
 .vp-toolbar {
   position: absolute; top: 56px; left: 12px;
   display: flex; flex-direction: column; gap: 2px; padding: 4px;
@@ -288,6 +294,9 @@ kbd {
 .theme-light .tool-btn:hover { background: rgba(0,0,0,0.04); }
 .tool-btn.active {
   background: var(--accent-bg); color: var(--accent);
+}
+.tool-btn.disabled, .tool-btn:disabled {
+  opacity: 0.4; cursor: not-allowed; pointer-events: none;
 }
 .tool-ico { font-size: 14px; }
 .tool-hk { color: var(--text-faint); font-family: 'JetBrains Mono', monospace; font-size: 10px; }
@@ -482,6 +491,9 @@ kbd {
 }
 .inst-filter-clear:hover { color: var(--text); background: rgba(255,255,255,0.06); }
 .theme-light .inst-filter-clear:hover { background: rgba(0,0,0,0.05); }
+
+.inst-status-toggle { margin: 0 4px 6px; }
+.inst-status-toggle button { font-size: 11px; padding: 4px 0; }
 
 
 .class-row {
@@ -941,6 +953,20 @@ kbd {
    the list internally instead of capping it at a fixed height. */
 .preseg-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .preseg-panel .inst-list { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* Contextual tool-options panel — swaps per activeTool in the left rail. */
+.tool-options { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 10px; }
+.tool-opt-toggle { display: flex; gap: 4px; margin-bottom: 8px; }
+.tool-opt-toggle button {
+  flex: 1; padding: 6px 0; border-radius: 4px; border: 1px solid var(--border, #2a2d34);
+  background: transparent; color: var(--text-dim, #8a8f99); cursor: pointer;
+}
+.tool-opt-toggle button.active { color: var(--text, #d8dadf); border-color: var(--accent, #5b8def); }
+.tool-opt-check {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+  font-size: 12px; color: var(--text-dim, #8a8f99); cursor: pointer;
+}
+.tool-opt-hint { font-size: 12px; color: var(--text-dim, #8a8f99); }
 
 /* Spinner shown in the presegment popover while a request is in flight. */
 .preseg-spinner {
