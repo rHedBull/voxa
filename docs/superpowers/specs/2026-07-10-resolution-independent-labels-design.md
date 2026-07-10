@@ -272,3 +272,9 @@ A single export entrypoint, mirroring the Edit full-density export:
 - **Permanently `scan.ply`-capped scans** (no raw lineage): `water_pump_navvis_3m`,
   `water_pump_navvis_500k`, `bim_industrial_mep_matterport`. Regime B is
   unavailable for these until/unless a raw source is registered.
+- **Sub-cm preseg boundary accuracy** is a future *labeling-resolution* effort
+  (raise the `scan.ply` / `MAX_LABEL_POINTS` density at annotation time), not a
+  materialization change. The NN-approximate preseg seam (~one labeling-cloud
+  sample spacing, ~±1 cm at 3M) is **accepted** for this design; the target
+  export resolution does not affect it. Volumetric (box/tube) boundaries are
+  already exact and are the intended lever where crisp edges matter now.
