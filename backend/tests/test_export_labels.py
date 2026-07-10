@@ -1,9 +1,15 @@
 """TDD for ExportLabelsRequest schema + validate_export_request (export-wizard Phase B, Task 1)."""
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
 from app.schemas import ExportLabelsRequest
-from labeling.export_pipeline import validate_export_request
+from labeling.export_pipeline import (
+    apply_filters_remap,
+    build_taxonomy,
+    count_absent_instances,
+    validate_export_request,
+)
 
 
 def _base_req(**overrides):
@@ -96,3 +102,101 @@ def test_raw_unavailable():
     req = _base_req(resolution={"kind": "raw"})
     errors = validate_export_request(req, n_scan=1000, palette_ids={0, 1, 2, 3}, raw_available=False)
     assert any("raw" in e.lower() for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: build_taxonomy / apply_filters_remap / count_absent_instances
+# ---------------------------------------------------------------------------
+
+_PALETTE = [
+    {"class_id": 0, "label": "unlabeled", "color": "#000"},
+    {"class_id": 1, "label": "pipe", "color": "#111"},
+    {"class_id": 2, "label": "tank", "color": "#222"},
+]
+
+
+def test_confirmed_only_zeros_unconfirmed_and_keeps_absent_as_confirmed():
+    class_ids = np.array([1, 1, 2, 2], dtype=np.int64)
+    instance_ids = np.array([10, 10, 20, 30], dtype=np.int64)
+    # inst 10 unconfirmed -> zeroed; inst 20 confirmed -> kept;
+    # inst 30 absent from the confirmed map -> treated as confirmed, kept.
+    confirmed_by_inst = {10: False, 20: True}
+    req = _base_req(confirmed_only=True)
+    src_to_tgt = {0: 0, 1: 1, 2: 2}
+    out_cls, out_inst = apply_filters_remap(class_ids, instance_ids, confirmed_by_inst, req, src_to_tgt)
+    assert list(out_cls) == [-1, -1, 2, 2]
+    assert list(out_inst) == list(instance_ids)
+
+
+def test_exclude_zeros_class_not_in_include_classes():
+    class_ids = np.array([0, 1, 2], dtype=np.int64)
+    instance_ids = np.array([1, 2, 3], dtype=np.int64)
+    req = _base_req(include_classes=[1, 2])
+    src_to_tgt = {0: 0, 1: 1, 2: 2}
+    out_cls, out_inst = apply_filters_remap(class_ids, instance_ids, {}, req, src_to_tgt)
+    assert list(out_cls) == [-1, 1, 2]
+    assert list(out_inst) == list(instance_ids)
+
+
+def test_exclude_precedes_remap_excluded_class_never_remapped():
+    # class 1 excluded via include_classes; also in a remap from-set targeting 9.
+    class_ids = np.array([1, 2], dtype=np.int64)
+    instance_ids = np.array([1, 2], dtype=np.int64)
+    req = _base_req(
+        include_classes=[2],
+        remap=[{"from": [1], "to": {"id": 9, "label": "merged", "color": "#fff"}}],
+    )
+    src_to_tgt = {0: 0, 1: 9, 2: 2}
+    out_cls, out_inst = apply_filters_remap(class_ids, instance_ids, {}, req, src_to_tgt)
+    # class 1 excluded first -> -1, remap never sees it (would otherwise be 9).
+    assert list(out_cls) == [-1, 2]
+
+
+def test_remap_merges_two_source_classes_into_one_target():
+    req = _base_req(
+        remap=[{"from": [1, 2], "to": {"id": 9, "label": "merged", "color": "#fff"}}],
+    )
+    taxonomy, src_to_tgt = build_taxonomy(_PALETTE, req)
+    assert src_to_tgt[1] == 9
+    assert src_to_tgt[2] == 9
+    assert taxonomy[9] == {"label": "merged", "color": "#fff"}
+
+    class_ids = np.array([1, 2, 0], dtype=np.int64)
+    instance_ids = np.array([1, 2, 3], dtype=np.int64)
+    out_cls, out_inst = apply_filters_remap(class_ids, instance_ids, {}, req, src_to_tgt)
+    assert list(out_cls) == [9, 9, 0]
+    assert list(out_inst) == list(instance_ids)
+
+
+def test_taxonomy_is_palette_driven_pass_through_class_present_even_if_absent_from_data():
+    req = _base_req()
+    taxonomy, src_to_tgt = build_taxonomy(_PALETTE, req)
+    # class 2 is never remapped/excluded -> must appear in taxonomy regardless
+    # of whether any point currently carries it.
+    assert 2 in taxonomy
+    assert taxonomy[2] == {"label": "tank", "color": "#222"}
+    assert src_to_tgt[2] == 2
+
+
+def test_excluded_class_absent_from_taxonomy():
+    req = _base_req(include_classes=[0, 1])
+    taxonomy, src_to_tgt = build_taxonomy(_PALETTE, req)
+    assert 2 not in taxonomy
+
+
+def test_count_absent_instances_counts_distinct_not_points():
+    work_inst = np.array([10, 10, 10, 20, -1, -1, 30], dtype=np.int64)
+    confirmed_by_inst = {20: True}
+    # 10 and 30 are absent from confirmed_by_inst; -1 doesn't count.
+    n = count_absent_instances(work_inst, confirmed_by_inst)
+    assert n == 2
+
+
+def test_empty_after_filters_yields_all_negative_one_no_error():
+    class_ids = np.array([1, 1, 2], dtype=np.int64)
+    instance_ids = np.array([1, 1, 2], dtype=np.int64)
+    req = _base_req(include_classes=[])
+    src_to_tgt = {0: 0, 1: 1, 2: 2}
+    out_cls, out_inst = apply_filters_remap(class_ids, instance_ids, {}, req, src_to_tgt)
+    assert list(out_cls) == [-1, -1, -1]
+    assert list(out_inst) == list(instance_ids)
