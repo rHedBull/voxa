@@ -106,7 +106,9 @@ Extend the instance doc (`instances_gt.json`, `Cuboid` in `app/schemas.py`):
   piece the naive design wrongly omitted. Do *not* derive `seq` from
   `instance_id`: merges (Draw `M`), preseg-promoted instances, and legacy
   instances loaded from disk can have non-monotonic or reused ids. Persist the
-  counter in the session.
+  counter in the session. **Backfill:** already-saved sessions have instances with
+  no `seq`; on first load under this feature, assign `seq` by existing instance
+  order (a one-time migration) so the materializer always has an ordering.
 
 Shapes are stored in the **display/recentered frame** (the frame the user drew
 them in), consistent with `centerlines.json` today.
@@ -148,6 +150,11 @@ target point `p`, collect candidates:
     the box competes at full strength for its own interior.
   - `O` volumetric **and** `p ∉ shape(O)` ⇒ the **leak** case: discard `O` and
     re-query the nearest **non-volumetric** point for the baseline candidate.
+    (Answering "nearest non-volumetric point" needs a *second* KD-tree over the
+    non-volumetric subset, or k-NN-and-filter on the all-points tree — build both
+    structures once.)
+  - A `−1` (background) nearest owner yields **no** baseline candidate — it never
+    competes, so it can never out-rank a real instance.
 - **Winner = the max-`seq` candidate.** No candidate ⇒ background (−1).
 
 The point of building the tree over *all* points and gating the baseline (rather
@@ -171,9 +178,10 @@ any density; non-volumetric (preseg/legacy) boundaries are **NN-approximate** to
 ~`scan.ply` sample spacing (a few cm) — no ground truth exists to do better;
 precedence among all instances follows the persisted `seq`. Regime A is exact.
 
-Complexity: one KD-tree over the non-volumetric `scan.ply` subset + one query per
-target point, plus O(target · #volumes) cheap point-in-shape tests. Deterministic;
-the target→(labels) result is cacheable per (scan, target variant).
+Complexity: two KD-trees over `scan.ply` (all points, and the non-volumetric
+subset for leak re-queries) + one query per target point, plus O(target ·
+#volumes) cheap point-in-shape tests. Deterministic; the target→(labels) result
+is cacheable per (scan, target variant).
 
 ### 4. Raw resolution + frame alignment (prerequisite)
 
