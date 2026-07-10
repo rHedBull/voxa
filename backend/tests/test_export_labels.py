@@ -360,3 +360,45 @@ def test_build_manifest_p50_p90_rounding():
     assert manifest["accuracy"]["sample_spacing_p50_m"] == 0.0123
     assert manifest["accuracy"]["sample_spacing_p90_m"] == 0.9877  # rounds up
     assert manifest["accuracy"]["semantic_boundary_uncertainty_m"] == 0.9877
+
+
+# ---------------------------------------------------------------------------
+# Task 4: labeled binary PLY writer (decomposed header/body for streaming)
+# ---------------------------------------------------------------------------
+
+
+def test_ply_labeled_round_trip_and_streaming_assembly():
+    import numpy as np
+    from app.core import _ply_labeled_bytes, _ply_labeled_header, _ply_labeled_chunk_bytes
+    n = 5
+    xyz = np.arange(n*3, dtype=np.float32).reshape(n, 3)
+    rgb = (np.arange(n*3, dtype=np.uint8) % 200).reshape(n, 3)
+    cls = np.array([-1, 0, 1, 2, 7], dtype=np.int8)
+    inst = np.array([-1, 10, 11, 12, 40], dtype=np.int32)
+    blob = _ply_labeled_bytes(xyz, rgb, cls, inst)
+    # header advertises the right count + label props
+    head = blob.split(b"end_header\n")[0].decode("ascii")
+    assert "element vertex 5" in head
+    assert "class_id" in head and "instance_id" in head
+    # streaming assembly is byte-identical to the one-shot
+    assert blob == _ply_labeled_header(n, True) + _ply_labeled_chunk_bytes(xyz, rgb, cls, inst)
+    # parse the binary body and read back class_id / instance_id (int32)
+    body = blob.split(b"end_header\n", 1)[1]
+    dt = np.dtype([("xyz","<f4",3),("rgb","u1",3),("class_id","<i4"),("instance_id","<i4")])
+    rec = np.frombuffer(body, dtype=dt)
+    assert np.array_equal(rec["class_id"], cls.astype(np.int32))
+    assert np.array_equal(rec["instance_id"], inst.astype(np.int32))
+    assert np.array_equal(rec["xyz"], xyz)
+
+def test_ply_labeled_no_color():
+    import numpy as np
+    from app.core import _ply_labeled_bytes
+    n = 3
+    xyz = np.zeros((n,3), np.float32); cls = np.zeros(n, np.int8); inst = np.zeros(n, np.int32)
+    blob = _ply_labeled_bytes(xyz, None, cls, inst)
+    head = blob.split(b"end_header\n")[0].decode("ascii")
+    assert "red" not in head  # no color props
+    body = blob.split(b"end_header\n",1)[1]
+    dt = np.dtype([("xyz","<f4",3),("class_id","<i4"),("instance_id","<i4")])
+    rec = np.frombuffer(body, dtype=dt)
+    assert len(rec) == n

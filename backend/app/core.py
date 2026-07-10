@@ -405,6 +405,49 @@ def _ply_response_bytes(xyz: np.ndarray, rgb: Optional[np.ndarray]) -> bytes:
         body = xyz_f32.tobytes()
     return header + body
 
+def _ply_labeled_header(n: int, has_color: bool) -> bytes:
+    return (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        + ("property uchar red\nproperty uchar green\nproperty uchar blue\n" if has_color else "")
+        + "property int class_id\n"
+        "property int instance_id\n"
+        "end_header\n"
+    ).encode("ascii")
+
+def _ply_labeled_chunk_bytes(xyz: np.ndarray, rgb: Optional[np.ndarray],
+                              class_ids: np.ndarray, instance_ids: np.ndarray) -> bytes:
+    """Encode one chunk's worth of xyz + optional rgb + class_id/instance_id as
+    binary PLY body (no header) — reused by both the one-shot writer and the
+    streaming exporter (which appends chunks then prepends the header once the
+    total count is known)."""
+    n = int(len(xyz))
+    has_color = rgb is not None
+    fields = [("xyz", "<f4", 3)]
+    if has_color:
+        fields.append(("rgb", "u1", 3))
+    fields += [("class_id", "<i4"), ("instance_id", "<i4")]
+    dt = np.dtype(fields)
+    rec = np.empty(n, dtype=dt)
+    rec["xyz"] = xyz.astype("<f4", copy=False)
+    if has_color:
+        rec["rgb"] = rgb.astype(np.uint8, copy=False)
+    rec["class_id"] = class_ids.astype(np.int32, copy=False)
+    rec["instance_id"] = instance_ids.astype(np.int32, copy=False)
+    return rec.tobytes()
+
+def _ply_labeled_bytes(xyz: np.ndarray, rgb: Optional[np.ndarray],
+                        class_ids: np.ndarray, instance_ids: np.ndarray) -> bytes:
+    """One-shot labeled binary PLY writer = header + single chunk body."""
+    return (
+        _ply_labeled_header(len(xyz), rgb is not None)
+        + _ply_labeled_chunk_bytes(xyz, rgb, class_ids, instance_ids)
+    )
+
 def _stream_laz_keep(src_path: Path, ops: list, scene_is_z_up: bool,
                      offset: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
     """Walk the LAZ at native density, applying the box-op chain in display
