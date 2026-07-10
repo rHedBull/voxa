@@ -335,6 +335,13 @@ def test_materialize_scan_regime_returns_defensive_copy():
     assert ctx.work_inst[0] != 999
 
 
+def test_materialize_raw_without_raw_path_raises_clearly():
+    import pytest
+    ctx = _simple_ctx()  # raw_path=None
+    with pytest.raises(ValueError, match="raw_path is None"):
+        materialize(ctx, {"kind": "raw"})
+
+
 def test_materialize_subsample_returns_exact_count():
     ctx = _simple_ctx()
     k = 10

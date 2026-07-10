@@ -152,7 +152,12 @@ def replay_labels(index: ReplayIndex, target_pos):
         # caller from the instance doc); a missing id is a caller bug -> KeyError.
         _, winner_inst = max(candidates, key=lambda c: c[0])
         target_inst[p_idx] = winner_inst
-        target_cls[p_idx] = index.inst_class_id[winner_inst]
+        try:
+            target_cls[p_idx] = index.inst_class_id[winner_inst]
+        except KeyError as e:
+            raise KeyError(f"inst_class_id has no class for winning instance "
+                           f"{winner_inst}; the caller must map every "
+                           f"instance_id in work_inst/volumes") from e
 
     return target_cls, target_inst
 
@@ -232,7 +237,16 @@ def materialize(ctx: MaterializeCtx, resolution: dict):
         # points. positions/colors are read-only for the PLY, so left as-is.
         class_ids = class_ids.copy()
         instance_ids = instance_ids.copy()
+        # NOTE for Phase B: only class_ids/instance_ids are copy-safe. In the
+        # identity branch, positions/colors are still the live ctx arrays by
+        # reference — a consumer must NOT mutate them in place.
     elif kind == "raw":
+        if ctx.raw_path is None:
+            # Defense-in-depth: Phase B gates this on `raw_source_available`,
+            # but never trust the caller wired the gate (or that the file
+            # survived between load and export). Fail loudly, not with a
+            # confusing laspy "None" path error.
+            raise ValueError("materialize: raw resolution requested but ctx.raw_path is None")
         index = build_replay_index(
             ctx.scan_pos, ctx.work_inst, ctx.volumes, ctx.seq_by_inst, ctx.inst_class_id)
         pos_chunks, rgb_chunks, cls_chunks, inst_chunks = [], [], [], []
