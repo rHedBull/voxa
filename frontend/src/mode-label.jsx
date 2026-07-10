@@ -13,6 +13,7 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
 import DrawMode from './draw-mode.jsx';
 import SessionPicker from './session-picker.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
+import { TOOLS, toolAvailable, defaultTool } from './label-tools.js';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -63,7 +64,20 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
-  const activeTool = 'cuboid';
+  const [activeTool, setActiveTool] = useStateLabel(() =>
+    defaultTool({ segState, isAnnotated }));
+  // Presegment "rapid" = the old fast-labeling queue.
+  const [presegRapid, setPresegRapid] = useStateLabel(false);
+
+  // Derived legacy flags — keep the existing body working during the refactor.
+  const fastMode = activeTool === 'presegment' && presegRapid;
+  const drawMode = activeTool === 'draw';
+
+  // Per-tool auto-confirm (added here to avoid a forward reference in Tasks 8/9;
+  // threaded into apply paths in Task 10).
+  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false });
+  const autoConfirmFor = (tool) =>
+    tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
   // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
   // run — wildly different hues per segment make the grouping legible.
   const [colorMode] = useStateLabel('class');
@@ -86,9 +100,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Draw labels pipes/tanks via centerline tubes. Declared here because the
   // selection-overlay effect needs fastMode for the orange highlight. Queue/
   // handlers live further down (they need promotedSegIds + confirmSegmentSelection).
-  const [subMode, setSubMode] = useStateLabel(null); // null | 'fast' | 'draw' — at most one Label sub-mode active
-  const fastMode = subMode === 'fast';
-  const drawMode = subMode === 'draw';
   const [fastPos, setFastPos] = useStateLabel(0);
   const [fastPendingCls, setFastPendingCls] = useStateLabel(null);
   // 3D box-select: a transformable OBB the user drags via the existing
@@ -121,6 +132,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       setActiveClass(classes[0].id);
     }
   }, [classes, activeClass]);
+
+  // Never leave an unavailable tool active (e.g. after switching to a scene
+  // with no segState or a non-annotated scan).
+  useEffectLabel(() => {
+    if (!toolAvailable(activeTool, { segState, isAnnotated })) {
+      setActiveTool(defaultTool({ segState, isAnnotated }));
+    }
+  }, [segState, isAnnotated, activeTool]);
 
   // Yellow overlay for selected presegments. Recompute the per-subrow
   // mask whenever the selection or the underlying instance assignment
@@ -941,7 +960,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Hotkeys: 0–9 assign class, ⌫ delete, A add, F frame, ⌘S save.
   // In walk mode the viewer owns WASD/QE; bail on those keys here so we
   // don't double-fire (e.g. 'A' is both walk-left and add-cuboid).
-  // Gated on activeTool === 'cuboid' so Pick/Brush tools own their own hotkeys.
+  // Gated on activeTool === 'box' so Pick/Brush tools own their own hotkeys.
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
@@ -959,7 +978,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           // the new (unconfirmed) pointset instead of falling back on the
           // activeClass. The picker has its own keydown handler.
           setClassPickerOpen(true);
-        } else if (activeTool === 'cuboid') {
+        } else if (activeTool === 'box') {
           toggleConfirmSelected();
         }
         return;
@@ -1007,7 +1026,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         classes={classes}
         onStep={fastStep}
         onPickClass={setFastPendingCls}
-        onExit={() => setSubMode(null)}
+        onExit={() => setPresegRapid(false)}
       />
       {fastMode && (
         <FastLabelHUD queue={fastQueue} pos={fastIdx} classes={classes} />
@@ -1073,7 +1092,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             className={'tool-btn' + (fastMode ? ' active' : '')}
             style={{ margin: '10px 0 0', width: '100%', justifyContent: 'center',
                      borderColor: fastMode ? '#ffa500' : undefined }}
-            onClick={() => { setFastPos(0); setSubMode((m) => m === 'fast' ? null : 'fast'); }}
+            onClick={() => { setFastPos(0); setActiveTool('presegment'); setPresegRapid((v) => !v); }}
             title="Step through presegments largest-first; number key + Enter labels and confirms each">
             ⚡ {fastMode ? 'Exit fast labeling' : 'Fast labeling'}
           </button>
@@ -1083,7 +1102,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             className={'tool-btn' + (drawMode ? ' active' : '')}
             style={{ margin: '6px 0 0', width: '100%', justifyContent: 'center',
                      borderColor: drawMode ? '#4fc3f7' : undefined }}
-            onClick={() => setSubMode((m) => m === 'draw' ? null : 'draw')}
+            onClick={() => setActiveTool((t) => t === 'draw' ? 'presegment' : 'draw')}
             title="Draw centerline paths to label pipes and tanks within a tube radius">
             ✏ {drawMode ? 'Exit Draw mode' : 'Draw mode'}
           </button>
@@ -1093,7 +1112,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             viewerRef={viewerRef}
             classes={classes}
             setSegState={setSegState}
-            onExit={() => setSubMode(null)}
+            onExit={() => setActiveTool('presegment')}
             pointSize={pointSize}
             setPointSize={setPointSize}
             defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
@@ -1130,7 +1149,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           pointSize={pointSize}
           diffMask={diffMask}
           showDiff={showDiff}
-          transformMode={selBox ? (transformMode || 'translate') : (activeTool === 'cuboid' && !isLocked ? transformMode : null)}
+          transformMode={selBox ? (transformMode || 'translate') : (activeTool === 'box' && !isLocked ? transformMode : null)}
           onCuboidTransform={onCuboidTransform}
           highlightCuboid={highlightCuboid}
           selectionMask={selectionMask}
@@ -1190,7 +1209,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         </div>
 
         <ViewportToolbar side="left">
-          {activeTool === 'cuboid' && (
+          {activeTool === 'box' && (
             <>
               {(!isLocked || !!selBox) && (
                 <>
