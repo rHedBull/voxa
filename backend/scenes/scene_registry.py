@@ -88,7 +88,9 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
         if sj.exists():
             raw_by_id = {e["source_id"]: e["path"]
                          for e in json.loads(sj.read_text()).get("sources", [])}
-    except Exception:  # noqa: BLE001 — raw lineage is best-effort; never break discovery
+    except Exception as e:  # noqa: BLE001 — raw lineage is best-effort; never break discovery
+        logging.warning("raw lineage disabled: failed to read %s: %s",
+                        lidar_root / "raw" / "sources.json", e)
         raw_by_id = {}
     out: list[SceneSource] = []
     for sd in sorted(root.iterdir()):
