@@ -1,5 +1,6 @@
 import numpy as np
 from labeling.shapes import obb_indices
+from labeling.shapes import shape_indices
 
 
 def test_obb_axis_aligned_selects_interior():
@@ -25,3 +26,26 @@ def test_obb_rotated_matches_local_frame():
                "rotation": [0.0, 0.0, np.pi / 4]}
     assert obb_indices(pts, inside).tolist() == [0]
     assert obb_indices(pts, outside).tolist() == []
+
+
+def test_shape_indices_obb_dispatch():
+    pts = np.array([0.9, 0.0, 0.0], dtype=np.float32)
+    shape = {"type": "obb", "center": [0.9, 0.0, 0.0],
+             "size": [1.0, 1.0, 1.0], "rotation": [0.0, 0.0, 0.0]}
+    assert shape_indices(pts, shape).tolist() == [0]
+
+
+def test_shape_indices_tube_dispatch_matches_tube_indices():
+    from labeling.centerline import tube_indices
+    pts = np.array([[0, 0, 0], [10, 0, 0]], dtype=np.float32).reshape(-1)
+    paths = [{"points": [[0, 0, 0], [1, 0, 0]], "radius": 0.5, "smooth": False}]
+    shape = {"type": "tube", "paths": paths}
+    np.testing.assert_array_equal(
+        shape_indices(pts, shape),
+        tube_indices(np.asarray(pts, dtype=np.float32).reshape(-1, 3), paths))
+
+
+def test_shape_indices_unknown_type_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        shape_indices(np.zeros(3, dtype=np.float32), {"type": "blob"})

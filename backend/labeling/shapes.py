@@ -36,3 +36,16 @@ def obb_indices(positions: np.ndarray, box: dict) -> np.ndarray:
     lz = rel @ np.asarray(ax2)
     inside = (np.abs(lx) <= hx) & (np.abs(ly) <= hy) & (np.abs(lz) <= hz)
     return np.nonzero(inside)[0].astype(np.int32)
+
+
+def shape_indices(positions: np.ndarray, shape: dict) -> np.ndarray:
+    """Resolve any shape descriptor to the int32 indices of the full-res points
+    it contains. Dispatches on shape['type']."""
+    kind = shape.get("type")
+    if kind == "obb":
+        return obb_indices(positions, shape)
+    if kind == "tube":
+        from labeling.centerline import tube_indices
+        pts = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+        return tube_indices(pts, shape["paths"])
+    raise ValueError(f"unknown shape type: {kind!r}")
