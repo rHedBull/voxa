@@ -98,8 +98,9 @@ def replay_labels(index: ReplayIndex, target_pos):
     target_pos = np.asarray(target_pos, dtype=np.float32).reshape(-1, 3)
     n = len(target_pos)
 
-    # One mask per volume, precomputed once for the whole call.
-    vol_masks = []
+    # One boolean mask per volume over the whole target cloud (vectorized),
+    # keyed by instance_id for O(1) baseline lookup in the loop below.
+    mask_by_inst = {}
     for v in index.volumes:
         mask = np.zeros(n, dtype=bool)
         if v["kind"] == "obb":
@@ -109,49 +110,46 @@ def replay_labels(index: ReplayIndex, target_pos):
         else:
             raise ValueError(f"unknown volume kind: {v['kind']!r}")
         mask[idx] = True
-        vol_masks.append(mask)
+        mask_by_inst[v["instance_id"]] = mask
+
+    # Hoist every KD-tree query out of the per-point loop into one batched C
+    # call each — regime B replays this over up to ~156M raw points per chunk.
+    owner_all = index.work_inst[index.tree_all.query(target_pos)[1]]
+    if index.tree_nonvol is not None:
+        nonvol_owner_all = index.work_inst[
+            index.nonvol_idx[index.tree_nonvol.query(target_pos)[1]]]
+    else:
+        nonvol_owner_all = None
 
     target_cls = np.full(n, -1, dtype=np.int8)
     target_inst = np.full(n, -1, dtype=np.int32)
 
     def seq_of(inst_id):
-        return index.seq_by_inst.get(inst_id)
+        # Missing seq -> -inf: pre-feature/imported labels with no recorded
+        # apply-order lose every tie to an explicitly re-applied instance.
+        s = index.seq_by_inst.get(inst_id)
+        return s if s is not None else float("-inf")
 
     for p_idx in range(n):
-        p = target_pos[p_idx]
-        candidates = []  # list of (seq_or_neg_inf, instance_id)
-
-        for v, mask in zip(index.volumes, vol_masks):
+        candidates = []  # (seq, instance_id)
+        for iid, mask in mask_by_inst.items():
             if mask[p_idx]:
-                s = seq_of(v["instance_id"])
-                candidates.append((s if s is not None else float("-inf"), v["instance_id"]))
+                candidates.append((seq_of(iid), iid))
 
-        # Baseline via nearest scan.ply sample.
-        _, s_idx = index.tree_all.query(p)
-        oi = int(index.work_inst[s_idx])
-        baseline_inst = None
-        if oi in index.vol_ids:
-            vol = next(v for v in index.volumes if v["instance_id"] == oi)
-            vmask = vol_masks[index.volumes.index(vol)]
-            if not vmask[p_idx]:
-                # Leak: nearest sample belongs to a volume that doesn't
-                # actually cover p -> re-query the non-volumetric tree.
-                if index.tree_nonvol is not None:
-                    _, nn_idx = index.tree_nonvol.query(p)
-                    baseline_inst = int(index.work_inst[index.nonvol_idx[nn_idx]])
-                # else: no baseline candidate.
-            else:
-                baseline_inst = oi
+        oi = int(owner_all[p_idx])
+        if oi in index.vol_ids and not mask_by_inst[oi][p_idx]:
+            # Leak: nearest sample belongs to a volume that doesn't actually
+            # cover p -> fall back to the nearest non-volumetric sample.
+            baseline_inst = int(nonvol_owner_all[p_idx]) if nonvol_owner_all is not None else -1
         else:
             baseline_inst = oi
-
-        if baseline_inst is not None and baseline_inst != -1:
-            s = seq_of(baseline_inst)
-            candidates.append((s if s is not None else float("-inf"), baseline_inst))
+        if baseline_inst != -1:
+            candidates.append((seq_of(baseline_inst), baseline_inst))
 
         if not candidates:
             continue
-
+        # inst_class_id must cover every winning instance_id (built by the
+        # caller from the instance doc); a missing id is a caller bug -> KeyError.
         _, winner_inst = max(candidates, key=lambda c: c[0])
         target_inst[p_idx] = winner_inst
         target_cls[p_idx] = index.inst_class_id[winner_inst]
