@@ -10,6 +10,22 @@ from app.core import *  # noqa: F401,F403
 router = APIRouter()
 
 
+def _ensure_seq(instances):
+    """Stamp a stable monotonic apply-order `seq` on any instance missing one.
+
+    Existing seqs are preserved; missing ones are filled after the current max,
+    in list order (which is apply order — the frontend appends new instances).
+    Idempotent: re-running never changes an already-stamped instance. Mutates
+    the Cuboid objects in place. See the resolution-independent-labels spec §2.
+    """
+    present = [c.seq for c in instances if c.seq is not None]
+    nxt = (max(present) + 1) if present else 0
+    for c in instances:
+        if c.seq is None:
+            c.seq = nxt
+            nxt += 1
+
+
 @router.get("/api/annotations/{kind}/{scene:path}", response_model=AnnotationDoc)
 def get_annotation(scene: str, kind: str, session_id: str | None = None):
     p = _annotation_path(scene, kind, session_id)
@@ -17,10 +33,12 @@ def get_annotation(scene: str, kind: str, session_id: str | None = None):
         return AnnotationDoc(scene=scene, kind=kind, instances=[])
     with p.open() as f:
         data = json.load(f)
+    insts = [Cuboid(**c) for c in data.get("instances", [])]
+    _ensure_seq(insts)
     return AnnotationDoc(
         scene=scene,
         kind=kind,
-        instances=[Cuboid(**c) for c in data.get("instances", [])],
+        instances=insts,
         meta=data.get("meta", {}),
     )
 
@@ -29,6 +47,7 @@ def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest,
                    session_id: str | None = None):
     p = _annotation_path(scene, kind, session_id)
     p.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_seq(doc.instances)
     body = {
         "scene": scene,
         "kind": kind,
