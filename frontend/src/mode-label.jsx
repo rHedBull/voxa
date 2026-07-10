@@ -7,14 +7,14 @@ import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
-import { PresegmentList, focusSegment } from './segment-tools.jsx';
+import { focusSegment } from './segment-tools.jsx';
 import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
-import DrawMode from './draw-mode.jsx';
 import SessionPicker from './session-picker.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 import { TOOLS, toolAvailable, defaultTool } from './label-tools.js';
 import ToolRail from './tool-rail.jsx';
+import ToolOptions from './tool-options.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -1088,50 +1088,16 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           })}
         </div>
 
-        {segState && (
-          <button
-            className={'tool-btn' + (fastMode ? ' active' : '')}
-            style={{ margin: '10px 0 0', width: '100%', justifyContent: 'center',
-                     borderColor: fastMode ? '#ffa500' : undefined }}
-            onClick={() => { setFastPos(0); setActiveTool('presegment'); setPresegRapid((v) => !v); }}
-            title="Step through presegments largest-first; number key + Enter labels and confirms each">
-            ⚡ {fastMode ? 'Exit fast labeling' : 'Fast labeling'}
-          </button>
-        )}
-        {segState && isAnnotated && (
-          <button
-            className={'tool-btn' + (drawMode ? ' active' : '')}
-            style={{ margin: '6px 0 0', width: '100%', justifyContent: 'center',
-                     borderColor: drawMode ? '#4fc3f7' : undefined }}
-            onClick={() => setActiveTool((t) => t === 'draw' ? 'presegment' : 'draw')}
-            title="Draw centerline paths to label pipes and tanks within a tube radius">
-            ✏ {drawMode ? 'Exit Draw mode' : 'Draw mode'}
-          </button>
-        )}
-        {drawMode && (
-          <DrawMode
-            viewerRef={viewerRef}
-            classes={classes}
-            setSegState={setSegState}
-            onExit={() => setActiveTool('presegment')}
-            pointSize={pointSize}
-            setPointSize={setPointSize}
-            defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
-            onClassChange={(cid) => {
-              const cls = classes.find((c) => c.class_id === cid);
-              if (cls) setActiveClass(cls.id);
-            }}
-            onApplied={onDrawApplied}
-          />
-        )}
-        <PresegmentList
-          segState={segState}
-          setSegState={setSegState}
-          classes={classes}
-          viewerRef={viewerRef}
-          cloud={cloud}
-          excludeSegIds={promotedSegIds}
-        />
+        <ToolOptions
+          activeTool={activeTool}
+          presegRapid={presegRapid} setPresegRapid={setPresegRapid} setFastPos={setFastPos}
+          autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm}
+          segState={segState} setSegState={setSegState} classes={classes}
+          viewerRef={viewerRef} cloud={cloud} promotedSegIds={promotedSegIds}
+          pointSize={pointSize} setPointSize={setPointSize}
+          activeClass={activeClass} setActiveClass={setActiveClass}
+          onExit={() => setActiveTool('presegment')}
+          onDrawApplied={onDrawApplied} />
       </aside>
 
       {/* Center: viewport */}
