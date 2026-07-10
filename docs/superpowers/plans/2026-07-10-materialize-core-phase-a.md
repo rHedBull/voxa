@@ -48,25 +48,26 @@ Write `backend/tests/test_load_raw_source.py`. Use the existing annotated-scene 
 - [ ] **Step 2: Run → fails** (`raw_source_available` not a field yet). `.venv/bin/pytest backend/tests/test_load_raw_source.py -v`
 
 - [ ] **Step 3: Implement.**
-  - In `scene_registry.py`, after the existing `meta.source_laz` lookup, if `source_laz_path` is still `None`, try the registry:
+  - **Hoist a single `raw_by_id` map BEFORE the `for sd in ...` loop** in `_discover_annotated` (`scene_registry.py:79`). Do **not** call `scan_schema.Registry.load(lidar_root)` per scan — it re-walks and re-parses every scan's `meta.json` (`registry.py:50-55` → `_load_scans`), making discovery O(N²). We only need `source_id → path`, so read `raw/sources.json` once:
+    ```python
+    # once, before the per-scan loop:
+    raw_by_id = {}
+    try:
+        sj = lidar_root / "raw" / "sources.json"
+        if sj.exists():
+            raw_by_id = {e["source_id"]: e["path"]
+                         for e in json.loads(sj.read_text()).get("sources", [])}
+    except Exception:  # noqa: BLE001 — raw lineage is best-effort; never break discovery
+        raw_by_id = {}
+    ```
+  - Then, in the per-scan block, after the existing `meta.source_laz` lookup, if `source_laz_path` is still `None`:
     ```python
     if source_laz_path is None:
-        try:
-            from scan_schema import Registry  # VCS dep already in requirements
-            deriv = (meta.get("derivation") or {})
-            root = (deriv.get("root") or {})
-            sid = root.get("source_id")
-            if sid and lidar_root:
-                reg = Registry.load(lidar_root)          # reads raw/sources.json
-                entry = reg.root(sid)
-                if entry:
-                    cand = lidar_root / entry.path       # "raw/<file>.laz"
-                    if cand.exists():
-                        source_laz_path = str(cand)
-        except Exception:  # noqa: BLE001 — raw lineage is best-effort; never break discovery
-            pass
+        sid = ((meta.get("derivation") or {}).get("root") or {}).get("source_id")
+        rel = raw_by_id.get(sid) if sid else None            # "raw/<file>.laz"
+        if rel and (lidar_root / rel).exists():
+            source_laz_path = str(lidar_root / rel)
     ```
-    (Keep it defensive: a registry error must not break scene discovery.)
   - `schemas.py`: add to `LoadResponse` → `raw_source_available: bool = False`.
   - `load.py`: set `raw_source_available = bool(src.extras.get("source_laz_path"))` and pass it into the `LoadResponse(...)`.
 
@@ -198,25 +199,32 @@ Note: instances with `seq is None` shouldn't occur post-Phase-1 (stamped on save
 
 The heart. Pure function: given `scan.ply` positions + its working `(class_ids, instance_ids)`, the volumes (Task 3) + an instance→seq map, and a **target cloud** (already in the display frame), return target `(class_ids, instance_ids)`.
 
-- [ ] **Step 1: Failing tests** — encode the spec's cases with tiny synthetic clouds so they're unambiguous:
+- [ ] **Step 1: Failing tests** — encode the spec's SIX required Regime-B cases (spec §Testing lines 275-285) with tiny synthetic clouds so they're unambiguous:
   - **two overlapping boxes, dense interior** (`seq_B>seq_A`): a target point inside both → instance B.
-  - **box interior defended vs higher-`seq` adjacent preseg**: preseg `P` (`seq_P>seq_V`) occupies scan.ply points *next to* box `V`; a target point deep inside `V` (nearest scan.ply sample is V-owned) → `V`, not `P`.
+  - **box interior defended vs higher-`seq` adjacent preseg**: preseg `P` (`seq_P>seq_V`) occupies scan.ply points *next to* box `V` (P does NOT cover V's interior); a target point deep inside `V` (nearest sample is V-owned) → `V`, not `P`.
+  - **reassigned point inside a box** (distinct from the above — spec's required case): a preseg `P` that *does* cover interior points of box `V` with `seq_P > seq_V` → those interior points materialize to `P`. This is the case a "box interiors always win" bug would fail while the defended-interior test alone passes.
   - **exclusion**: a target point just *outside* box `V` whose nearest sample is a V-edge point → the surrounding preseg wall, never background.
   - **legacy cuboid → NN**: a `kind:'cuboid'` instance is not a volume; its region transfers by NN only.
   - **multi-path tube**: a target point within `radius` of either path of a 2-path tube instance → that instance.
   Build each as ~10–50 point synthetic `scan.ply` + explicit shapes; assert exact target labels.
 
 - [ ] **Step 2: Run → fails.**
-- [ ] **Step 3: Implement** `replay_labels(scan_pos, work_cls, work_inst, volumes, seq_by_inst, target_pos)`:
-  - Precompute per-volume membership testers reusing existing code: OBB → `shapes.obb_indices(target_pos, shape)` gives indices of target points inside; tube → `centerline.tube_indices(target_pos, paths)`. Convert each to a boolean mask over target points. Record `(mask, instance_id, seq)` per volume.
-  - `vol_owned` = boolean over `scan.ply` points whose `work_inst` belongs to a volumetric instance (`instance_id ∈ {v.instance_id}`).
+- [ ] **Step 3: Implement — split scan-side precompute (reusable across chunks) from the per-target rule.**
+
+  `build_replay_index(scan_pos, work_inst, volumes, inst_class_id) → index` builds everything that depends only on `scan.ply` (so Task 5 builds it ONCE, not per chunk):
+  - `vol_ids = {v["instance_id"] for v in volumes}`; `vol_owned` = boolean over `scan.ply` where `work_inst ∈ vol_ids`.
   - `tree_all = cKDTree(scan_pos)`; `nonvol_idx = np.where(~vol_owned)[0]`; `tree_nonvol = cKDTree(scan_pos[nonvol_idx])`.
-  - For each target point (vectorize where practical):
-    - baseline: nearest via `tree_all` → owner sample `s`; if `s` is vol-owned by volume `O` and target point ∉ `shape(O)` → re-query `tree_nonvol` for the baseline owner; else baseline = `s`. Baseline candidate = `(inst_at(baseline), seq_of(that inst))`; a `-1` class at baseline contributes no candidate.
-    - volume candidates: for each volume mask that includes this point → `(v.instance_id, v.seq)`.
-    - winner = candidate with max `seq` (treat `seq is None` as `-inf`); class = the working class of the winning instance (look up via a precomputed `inst_id -> class_id` map built from the working arrays), or `-1` if no candidate.
+  - store `work_inst`, `volumes`, `seq_by_inst`, and the **class map** (see below).
+  - **Class map is `inst_class_id`, passed in — do NOT reconstruct it from `work_cls`.** A small Box OBB can own *zero* `scan.ply` points yet be the winning volume for raw points in Regime B; a working-array-derived map would have no entry for it → KeyError / silent wrong class, breaking the "volumetric boundaries exact" guarantee. `inst_class_id: dict[int,int]` maps `instance_id → numeric class_id`, built by Task 7/Phase-B from the instance doc (`inst["cls"]` string → palette `class_id`) plus, for instances absent from the doc, the class read off `work_cls` at any point they own. Task 4's tests construct `inst_class_id` explicitly.
+
+  `replay_labels(index, target_pos) → (target_cls, target_inst)`:
+  - Per volume: boolean mask over `target_pos` via `shapes.obb_indices(target_pos, shape)` (OBB) or `centerline.tube_indices(target_pos, paths)` (tube).
+  - `d_all, i_all = index.tree_all.query(target_pos)` → nearest sample owner per target point.
+  - For each target point (a readable Python loop is fine for correctness; vectorize later only if measured too slow):
+    - **baseline:** owner `s = i_all[p]`; `oi = work_inst[s]`. If `s` is vol-owned (its `oi` is a volume) AND the point ∉ that volume's target mask → re-query `index.tree_nonvol` for the nearest non-volumetric sample and use *its* owner. Baseline candidate `(inst, seq)`; a `-1` owner class contributes **no** candidate.
+    - **volume candidates:** every volume whose target mask includes `p` → `(v.instance_id, v.seq)`.
+    - **winner = max `seq`** (treat `seq is None` as `-inf` so a real instance always wins); its class = `index.class_map[winner_inst]`; no candidate → `class=-1, inst=-1`.
   - Return `(target_cls, target_inst)`.
-  - **Vectorization note:** implement correctly first (a Python loop over target points is fine for the unit tests); a follow-up may vectorize the common branches. Keep the loop readable and matching the spec's rule exactly.
 
 - [ ] **Step 4: Run → passes** (all spec cases green).
 - [ ] **Step 5: Commit.** `feat(materialize): regime B max-seq replay rule (interior defense + NN baseline)`
@@ -229,15 +237,14 @@ The heart. Pure function: given `scan.ply` positions + its working `(class_ids, 
 
 Wire a raw LAZ (source frame, Z-up/UTM) through frame alignment into `replay_labels`, in chunks so a 156M cloud never loads whole.
 
-- [ ] **Step 1: Failing test** — using a small existing LAZ fixture (see `backend/tests/` LAZ fixtures used by `test_export_ply_endpoint.py` / `load_laz`), materialize onto the raw cloud: assert output length == raw point count, and that points geometrically inside a defined OBB get that instance's label. Keep the fixture tiny.
+- [ ] **Step 1: Failing test** — build a tiny synthetic LAS/LAZ in a tmp path using the `laspy.LasHeader`/`LasData` builder pattern already in `backend/tests/test_lidar_io.py:82-90` (there is **no** LAZ fixture in `test_export_ply_endpoint.py` — do not cite it). Materialize onto that raw cloud: assert output length == raw point count, and that points geometrically inside a defined OBB get that instance's label.
 
 - [ ] **Step 2: Run → fails.**
-- [ ] **Step 3: Implement** `materialize_raw(scan_pos, work_cls, work_inst, volumes, seq_by_inst, raw_path, scene_is_z_up, offset, chunk=1_000_000)` — a generator (or accumulator) that:
-  - reads the raw LAZ in chunks (reuse `lidar_io.load_laz`/its chunk iterator),
+- [ ] **Step 3: Implement** `materialize_raw(index, raw_path, scene_is_z_up, offset, chunk=1_000_000)` — a **generator** that:
+  - reads the raw LAZ in chunks via `scenes.lidar_io._laz_chunk_iter(raw_path)` (the private chunk primitive already used by `core.py:408 _stream_laz_keep`; note `load_laz` does *not* yield chunks — it fully assembles a subsampled cloud, so it is the wrong tool here),
   - maps each chunk's xyz into the display frame via `core._to_display_frame(xyz, scene_is_z_up, offset)`,
-  - runs `replay_labels(scan_pos, work_cls, work_inst, volumes, seq_by_inst, chunk_display_xyz)`,
-  - yields `(chunk_xyz_source_or_display, chunk_rgb, chunk_cls, chunk_inst)` per chunk (the writer in Phase B decides the output frame — default: the display frame, matching how the viewer/edit-export operate).
-  Build the two KD-trees once (outside the chunk loop) and pass them in, or memoize — do NOT rebuild per chunk.
+  - runs `replay_labels(index, chunk_display_xyz)` — **`index` is built ONCE by the caller** (`build_replay_index`, Task 4) and reused every chunk; the two `scan.ply` KD-trees are never rebuilt per chunk,
+  - yields `(chunk_xyz_display, chunk_rgb, chunk_cls, chunk_inst)` per chunk (display frame — matching the viewer/edit-export convention; Phase B's writer streams these to disk without accumulating).
 
 - [ ] **Step 4: Run → passes.** **Step 5: Commit.** `feat(materialize): regime B raw-LAZ streaming through the replay`
 
@@ -277,13 +284,14 @@ def raw_sample_spacing(scan_pos, sample=100_000, seed=0):
 
 Tie it together into the single entry point Phase B will call.
 
-- [ ] **Step 1: Failing tests** — `materialize(ctx, {"kind":"scan"})` returns the working arrays at scan density with accuracy present; `{"kind":"subsample","n":k}` (k<len) returns k points; `{"kind":"raw"}` (small LAZ fixture) returns raw-length arrays. `ctx` is a small dataclass/dict carrying `scan_pos, colors, work_cls, work_inst, volumes, seq_by_inst, raw_path, scene_is_z_up, offset`.
+- [ ] **Step 1: Failing tests** — `materialize(ctx, {"kind":"scan"})` returns the working arrays at scan density with accuracy present; `{"kind":"subsample","n":k}` (k<len) returns k points; `{"kind":"raw"}` (small LAZ fixture) returns raw-length arrays. `ctx` is a small dataclass/dict carrying `scan_pos, colors, work_cls, work_inst, volumes, seq_by_inst, inst_class_id, raw_path, scene_is_z_up, offset` (note `inst_class_id`: the `instance_id → numeric class_id` map — see Task 4 #2).
 - [ ] **Step 2: Run → fails.**
 - [ ] **Step 3: Implement** `materialize(ctx, resolution)`:
   - `kind in ("scan","subsample")` → `materialize_downsample(...)` (regime A). `n = len(scan_pos)` for `"scan"`, else `resolution["n"]` (validated ≤ len upstream).
-  - `kind == "raw"` → assemble from `materialize_raw(...)` chunks.
+  - `kind == "raw"` → build the index once (`build_replay_index(ctx.scan_pos, ctx.work_inst, ctx.volumes, ctx.inst_class_id)`), then **concatenate** `materialize_raw(index, ...)` chunks into one return tuple.
+    **This assembling wrapper is a convenience/small-cloud/test entry point only.** For a real 156M raw cloud it would hold the whole ~GB result in memory — exactly what chunking avoids. **Phase B's export endpoint must consume `materialize_raw(index, ...)`'s generator directly, streaming each chunk to the PLY temp file, and must NOT call `materialize(kind="raw")`.** State this in the docstring.
   - Always attach `accuracy = raw_sample_spacing(ctx.scan_pos)` (p50/p90) to the returned meta.
-  - Return `(positions, colors, class_ids, instance_ids, meta)` where `meta` includes `accuracy` and the target point count. (The `ctx` is assembled by Phase B from `_state` + the session's working arrays + `instances_gt.json` + `centerlines.json`; Phase A only defines the function contract and unit-tests it with synthetic `ctx`.)
+  - Return `(positions, colors, class_ids, instance_ids, meta)` where `meta` includes `accuracy` and the target point count. (The `ctx` is assembled by Phase B from `_state` + the session's working arrays + `instances_gt.json` + `centerlines.json`; the `inst_class_id` map is built there from the instance doc's `cls` strings via the class palette. Phase A only defines the contract and unit-tests it with synthetic `ctx`.)
 - [ ] **Step 4: Run → passes.** Full suite `.venv/bin/pytest backend/tests/ -q -p no:warnings`.
 - [ ] **Step 5: Commit.** `feat(materialize): top-level materialize() dispatcher (regime A/B + accuracy)`
 
