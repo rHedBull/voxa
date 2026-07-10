@@ -67,6 +67,7 @@ class LoadResponse(BaseModel):
     seg_sizes: Optional[str] = None          # b64 Float32 (N×3) — bbox extents
     session_id: Optional[str] = None         # active session resolved on load (annotated tier)
     sessions: list[dict] = []                # SessionInfo dicts for the session picker
+    raw_source_available: bool = False       # true if a full-density raw cloud resolved (source_laz or lineage)
 
 class LoadRegionRequest(BaseModel):
     aabb_min: list[float]    # in loaded frame (post recenter)
