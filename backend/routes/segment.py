@@ -92,6 +92,10 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     full-res point indices, reassign them, and run the per-shape structure
     persist hook (tube -> update_centerlines; obb -> none)."""
     from labeling.shapes import shape_indices
+    # Guard the tube session requirement BEFORE mutating working arrays, so a
+    # session-less tube apply 409s cleanly instead of leaving partial state.
+    if shape.get("type") == "tube" and seg.session_dir is None:
+        raise HTTPException(409, "centerline labeling requires an active session")
     idx = shape_indices(np.asarray(seg.positions), shape)
     if idx.size == 0:
         # Same key-absence contract as _serialize_apply on an empty delta.
@@ -101,8 +105,6 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     # on re-apply the requested id is reused.
     instance_id = out.get("new_instance_id", target_inst)
     if shape.get("type") == "tube":
-        if seg.session_dir is None:
-            raise HTTPException(409, "centerline labeling requires an active session")
         from labeling.centerline import update_centerlines
         # merged_from re-capture correctness is the caller's contract: the spec
         # requires the request to carry the union of the absorbed instances'

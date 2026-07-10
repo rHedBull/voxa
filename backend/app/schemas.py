@@ -91,7 +91,7 @@ class Cuboid(BaseModel):
     size: Optional[list[float]] = None     # [w,h,d]; null for pointset
     rotation: list[float] = [0.0, 0.0, 0.0]   # euler xyz radians
     conf: float = 1.0
-    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'preseg' | 'recommendation'
+    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'preseg' | 'box' | 'draw' | 'recommendation'
     confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
     kind: str = "cuboid"     # 'cuboid' | 'pointset'
     segId: Optional[int] = None  # set for pointset (and preseg-promoted) instances; per-point membership key in segState.instanceFull

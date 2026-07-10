@@ -8,9 +8,11 @@ export const TOOLS = [
 ];
 
 export function toolAvailable(id, { segState, isAnnotated }) {
-  if (id === 'presegment') return !!segState;
   if (id === 'draw') return !!segState && !!isAnnotated;
-  return true; // box always available (works on raw clouds)
+  // Every tool applies through the segment session (apply-shape / reassign),
+  // which only exists on annotated-tier scans — so all three need segState.
+  // Box works without presegments, but still requires a session.
+  return !!segState;
 }
 
 export function defaultTool(ctx) {

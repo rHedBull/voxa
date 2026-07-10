@@ -109,6 +109,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     }
   }, [segState, isAnnotated, activeTool]);
 
+  // The box-select gizmo belongs to the Box tool only; leaving Box must clear it
+  // so a stale box + gizmo can't render over / hijack Presegment or Draw.
+  useEffectLabel(() => {
+    if (activeTool !== 'box') setSelBox(null);
+  }, [activeTool]);
+
   // Yellow overlay for selected presegments. Recompute the per-subrow
   // mask whenever the selection or the underlying instance assignment
   // changes, then push it to the viewer's segSelection buffer.
