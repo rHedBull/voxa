@@ -917,13 +917,19 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         }
         return;
       }
-      // Below here: Box-tool gizmo/selection interactions only.
-      if (activeTool !== 'box') return;
+      // Frame + delete work on any selected instance, in any tool (the help
+      // text advertises them as tool-agnostic).
+      if (e.key === 'f' || e.key === 'F') {
+        if (selected) focusInstance(selected);
+        return;
+      }
       if (e.key === 'Backspace' || e.key === 'Delete') {
         if (selected && !isLocked) { e.preventDefault(); deleteSelected(); }
-      } else if (e.key === 'f' || e.key === 'F') {
-        if (selected) focusInstance(selected);
-      } else if ((!isLocked || !!selBox) && (e.key === 'g' || e.key === 'G')) {
+        return;
+      }
+      // Below here: Box-tool gizmo interactions only (G/R/Y transform selBox).
+      if (activeTool !== 'box') return;
+      if ((!isLocked || !!selBox) && (e.key === 'g' || e.key === 'G')) {
         setTransformMode('translate');
       } else if ((!isLocked || !!selBox) && (e.key === 'r' || e.key === 'R')) {
         setTransformMode('rotate');
