@@ -199,37 +199,64 @@ git commit -m "feat(backend): add shape_indices dispatch (tube + obb)"
 
 - [ ] **Step 1: Write the failing test**
 
+Use the SAME fixtures as `test_centerline_endpoints.py`: `client_with_loaded_annotated_scene` (an active session with the synthetic `annotated/demo` cloud loaded) and `scan_dir_for_loaded_scene`. There is **no** `client_with_session` fixture — do not invent one. The scene's exact coords are unknown in-test, so (as the centerline tests do with a giant tube) use a **huge OBB that swallows the whole cloud** to guarantee a non-empty result, and a **far-away OBB** for the empty case.
+
 ```python
 # backend/tests/test_apply_shape.py
-# Follow the setup pattern in test_centerline_endpoints.py to get an active
-# segment session with a known full-res cloud loaded (reuse its fixtures).
-import numpy as np
-from fastapi.testclient import TestClient
+"""Tests for the generic /api/segment/apply-shape endpoint."""
+from __future__ import annotations
 
 
-def test_apply_shape_obb_reassigns_interior(client_with_session):
-    client, seg_positions = client_with_session  # fixture: known cloud + session
-    # Box covering a known interior region of seg_positions.
+def _obb_body(**over):
     body = {
-        "shape": {"type": "obb", "center": [1.0, 1.0, 1.0],
-                  "size": [0.5, 0.5, 0.5], "rotation": [0.0, 0.0, 0.0]},
-        "target_inst": -1, "target_class": 3,
+        "shape": {"type": "obb", "center": [0.0, 0.0, 0.0],
+                  "size": [1e7, 1e7, 1e7], "rotation": [0.0, 0.0, 0.0]},
+        "target_class": "pipe", "target_inst": -1, "merged_from": [],
     }
-    r = client.post("/api/segment/apply-shape", json=body)
+    body.update(over)
+    return body
+
+
+def test_apply_shape_obb_reassigns_and_allocates(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/apply-shape", json=_obb_body())
     assert r.status_code == 200
-    data = r.json()
-    assert data["n_affected"] >= 1
-    assert "instance_id" in data
+    j = r.json()
+    assert j["n_affected"] > 0
+    assert j["instance_id"] == j["new_instance_id"]
 
 
-def test_apply_shape_unknown_type_400(client_with_session):
-    client, _ = client_with_session
+def test_apply_shape_obb_far_away_is_empty(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/apply-shape", json=_obb_body(
+        shape={"type": "obb", "center": [9e6, 9e6, 9e6],
+               "size": [0.01, 0.01, 0.01], "rotation": [0.0, 0.0, 0.0]}))
+    assert r.status_code == 200
+    assert r.json()["n_affected"] == 0
+
+
+def test_apply_shape_tube_parity_with_centerline_apply(client_with_loaded_annotated_scene):
+    # tube shape must match the legacy centerline-apply on identical input.
+    client = client_with_loaded_annotated_scene
+    paths = [{"points": [[-1e5, -1e5, -1e5], [1e5, 1e5, 1e5]],
+              "radius": 1e6, "smooth": False}]
+    r1 = client.post("/api/segment/apply-shape",
+                     json={"shape": {"type": "tube", "paths": paths},
+                           "target_class": "pipe", "target_inst": -1,
+                           "merged_from": []})
+    client.post("/api/segment/undo")  # revert before the second apply
+    r2 = client.post("/api/segment/centerline-apply",
+                     json={"paths": paths, "target_class": "pipe",
+                           "target_inst": -1, "merged_from": []})
+    assert r1.json()["n_affected"] == r2.json()["n_affected"]
+
+
+def test_apply_shape_unknown_type_400(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/apply-shape",
-                    json={"shape": {"type": "blob"}, "target_class": 3})
+                    json={"shape": {"type": "blob"}, "target_class": "pipe"})
     assert r.status_code == 400
 ```
-
-Also add a parity assertion to `test_centerline_endpoints.py` (or a new test) that `apply-shape` with a `tube` shape returns the same `n_affected` as `centerline-apply` on the same paths.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -336,15 +363,28 @@ async applyShape({ shape, targetClass, targetInst = -1, mergedFrom = [] }) {
                            target_inst: targetInst, merged_from: mergedFrom }),
   });
   if (!r.ok) throw new Error(`applyShape failed: ${r.status} ${await r.text()}`);
-  return r.json();
+  // CRITICAL: decode like segApply/centerlineApply do. The wire format is
+  // base64 (_serialize_apply → indices/after_class/after_instance strings +
+  // instance_id). _decodeApplyResponse (api.js:258) yields the camelCase
+  // decoded arrays every consumer expects: indices (Int32Array), afterClass,
+  // afterInstance, newInstanceId. Also surface the endpoint's instance_id as
+  // instanceId (what DrawMode + applyBox read).
+  const j = await r.json();
+  return { ..._decodeApplyResponse(j), instanceId: j.instance_id ?? null };
 },
 
 // Reimplement the existing centerlineApply as a tube-shaped apply-shape call.
+// (Note: this bypasses CenterlineApplyRequest's Pydantic validation — ≥2 pts,
+// radius>0 — which the kept /centerline-apply route still enforces. tube_indices
+// tolerates degenerate paths (empty result), so a malformed path now no-ops
+// instead of 422. Acceptable because DrawMode guards its input; noted for parity.)
 async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [] }) {
   return this.applyShape({
     shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom });
 },
 ```
+
+Confirm `_decodeApplyResponse` is defined/in-scope in `api.js` (it is, ~:258, used by `segApply`/`centerlineApply`).
 
 - [ ] **Step 2: Verify build** — Run: `cd frontend && npx vite build` (or rely on `npm run dev`); Expected: no errors.
 
@@ -456,6 +496,12 @@ const [presegRapid, setPresegRapid] = useStateLabel(false);
 // Derived legacy flags — keep the existing body working during the refactor.
 const fastMode = activeTool === 'presegment' && presegRapid;
 const drawMode = activeTool === 'draw';
+
+// Per-tool auto-confirm (introduced here, before Task 8/9 reference it, to
+// avoid a forward reference). Threaded into the apply paths in Task 10.
+const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false });
+const autoConfirmFor = (tool) =>
+  tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
 ```
 
 Add the import at top: `import { TOOLS, toolAvailable, defaultTool } from './label-tools.js';`
@@ -476,6 +522,8 @@ Replace the old `setSubMode(...)` calls (left-rail buttons at `:1076`, `:1086`; 
 - `onExit` handlers → `setPresegRapid(false)` (fast) / `setActiveTool('presegment')` (draw)
 
 The `activeTool === 'cuboid'` guards at `:962`, `:967`, `:1133`, `:1193` will now never match (there is no `'cuboid'` tool). That is expected — those cuboid-only paths are removed in Task 11. For THIS task, replace `activeTool === 'cuboid'` with a temporary `activeTool === 'box'` so the gizmo/hotkeys keep working until Box is properly built, keeping the app functional between commits.
+
+(Known transient between Tasks 6–11: `F`-frame and class-hotkeys only fire in Box mode during this window. Presegment apply is unaffected — Ctrl+Enter is gated on `segState.selection.size` at `:957`, not `activeTool`. Task 11 rewrites the handler and closes the gap.)
 
 - [ ] **Step 2: Verify build + existing tests**
 
@@ -501,6 +549,8 @@ git commit -m "refactor(frontend): activeTool state replaces cuboid const + subM
 
 - [ ] **Step 1: Implement the component**
 
+**Note:** `ToolButton` (viewport-atoms.jsx:9) has no `disabled` prop, and passing `onClick={undefined}` still renders a focusable, enabled-looking button. So add a `disabled` prop to `ToolButton` (small, additive: `disabled` → `disabled` attr + a `.disabled` class, and skip `onClick`) and use it here.
+
 ```jsx
 // frontend/src/tool-rail.jsx
 import { TOOLS, toolAvailable } from './label-tools.js';
@@ -516,7 +566,8 @@ export default function ToolRail({ activeTool, onSelect, ctx }) {
           <ToolButton key={t.id} mini icon={t.icon}
             label={ok ? t.label : `${t.label} (unavailable for this scan)`}
             active={activeTool === t.id}
-            onClick={ok ? () => onSelect(t.id) : undefined} />
+            disabled={!ok}
+            onClick={() => onSelect(t.id)} />
         );
       })}
     </div>
@@ -534,7 +585,7 @@ Render it in `.vp-hud-top` (left `hud-group`, before Points-left chip):
 </div>
 ```
 
-Add minimal CSS for `.tool-rail` (flex row, small gap) to the existing stylesheet used by `.vp-hud-top` — match sibling `.hud-group` styling. Disabled tools: dim via the absent `onClick` (ToolButton renders inert) or add a `.disabled` style.
+Add CSS for `.tool-rail` (flex row, small gap) and `.tool-btn.disabled` (dimmed, `pointer-events:none`) to **`frontend/src/app.css`** (the stylesheet holding `.vp-hud-top` / `.tool-btn` / `.hud-group`). Match sibling `.hud-group` styling.
 
 - [ ] **Step 2: Verify** — `npx vite build`; then `npm run dev` and confirm the rail renders with 3 icons and switching updates `activeTool` (Draw/Preseg disabled on a raw scan).
 
@@ -571,7 +622,7 @@ export default function ToolOptions(props) {
 }
 ```
 
-`PresegOptions` renders the `manual/rapid` toggle (drives `presegRapid`), the `auto-confirm` toggle, and `<PresegmentList ... excludeSegIds={promotedSegIds} />`. `DrawOptions` renders `<DrawMode .../>` (props exactly as passed today at `:1091–1105`) plus the `auto-confirm` toggle. Thread `autoConfirm`/`setAutoConfirm` from `mode-label` (per-tool map, see Task 11).
+`PresegOptions` renders the `manual/rapid` toggle (drives `presegRapid`), the `auto-confirm` toggle, and `<PresegmentList ... excludeSegIds={promotedSegIds} />`. `DrawOptions` renders `<DrawMode .../>` (props exactly as passed today at `:1091–1105`) plus the `auto-confirm` toggle. Thread `autoConfirm`/`setAutoConfirm`/`autoConfirmFor` from `mode-label` (defined in Task 6; toggles wired in Task 10).
 
 - [ ] **Step 2: Wire into left rail** — replace the Fast/Draw buttons + inline `<DrawMode>` + `<PresegmentList>` (`:1071–1114`) with `<ToolOptions .../>`. Remove the now-unused `⚡`/`✏` left-rail buttons (tool switching is the rail now).
 
@@ -610,7 +661,7 @@ const applyBox = useCallbackLabel(async (clsDef) => {
       targetClass: targetCls.class_id ?? targetCls.id,
     });
   } catch (err) { console.error('box apply failed:', err); return; }
-  const segId = Number.isFinite(r.instance_id) ? r.instance_id : -1;
+  const segId = Number.isFinite(r.instanceId) ? r.instanceId : -1;  // decoded field
   if (segId >= 0) {
     onChange([...instances, {
       id: newId(), segId, kind: 'pointset', cls: targetCls.id,
@@ -651,15 +702,9 @@ git commit -m "feat(frontend): Box tool applies OBB via apply-shape → pointset
 **Files:**
 - Modify: `frontend/src/mode-label.jsx` (`confirmSegmentSelection :769`, `onDrawApplied :828`, `fastConfirm :907`)
 
-**Design note:** One `autoConfirm` map keyed by tool. `autoConfirmFor(tool)` reads it with defaults: `presegment` follows `presegRapid` (rapid → true), `box`/`draw` default false. Route every instance-creation through the flag instead of hard-coded `confirmed:true`.
+**Design note:** The `autoConfirm` map + `autoConfirmFor` helper were added in Task 6. This task only *threads them into the apply paths* (replacing hard-coded `confirmed:true`) and wires the per-tool toggles in the options panels.
 
-- [ ] **Step 1: Add state + helper**
-
-```jsx
-const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false });
-const autoConfirmFor = (tool) =>
-  tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
-```
+- [ ] **Step 1: Wire the per-tool toggles** — each tool's options panel (PresegOptions/DrawOptions/BoxOptions from Task 8/9) renders an `auto-confirm on apply` checkbox bound to `autoConfirm[tool]` via `setAutoConfirm((m) => ({ ...m, [tool]: v }))`.
 
 - [ ] **Step 2: Thread into apply paths**
   - `confirmSegmentSelection`: default `opts.confirmed` from `autoConfirmFor('presegment')` when called from the preseg apply (keep the explicit `{confirmed:true}` only from `fastConfirm`, or better: `fastConfirm` passes nothing and relies on `presegRapid`).
