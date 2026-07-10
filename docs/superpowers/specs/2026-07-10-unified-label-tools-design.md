@@ -64,8 +64,28 @@ next apply will label). This deletes the `subMode` split and the hard-coded
 - **Box** — draw an oriented box and Move/Rotate/Scale it to enclose points. On
   apply, the enclosed points become the point-group and **the box outline
   vanishes** — it is a transient selection gizmo, not a persisted annotation.
+  This is distinct from both existing "box" paths: it is **not** `addCuboid`
+  (the `A` key, which creates a geometric `kind:'cuboid'` and encloses no points),
+  and **not** `confirmBoxSelect` (the box-select toolbar, which toggles whole
+  presegments by centroid). Box here labels the **actual points inside the OBB**
+  via the existing `pointsInsideOBBLabel` helper (`mode-label.jsx:30–59`), so it
+  works on raw / preseg-less clouds where there are no segments to select.
 - **Draw** — draw centerline paths; the backend extracts full-res points within a
   per-path tube radius. Behavior otherwise as today.
+
+**Tool gating.** The rail always shows all three tools, but tools unavailable for
+the current scan are **disabled** (not hidden), with a tooltip: **Presegment** is
+disabled when there is no `segState` / no presegments; **Draw** is disabled on
+non-annotated (legacy-tier) scans, as today (`mode-label.jsx:1081`). **Box** is
+always available — it needs neither presegments nor an annotated scan — so it is
+the default tool on a raw/preseg-less cloud.
+
+Because Box (and, later, Beam) label explicit point indices rather than segment
+ids, `confirmSegmentSelection` — which today derives its indices from
+`segState.selection` (segment ids, `mode-label.jsx:776`) — gains an
+**explicit-point-indices code path**. This is a frontend-only change:
+`segApply('reassign')` already accepts an arbitrary `indices` array
+(`routes/segment.py:25`, `api.js:149`), so no backend work is required.
 
 ### Output type: pointset only
 
@@ -74,8 +94,12 @@ geometric annotation type is no longer *created*:
 
 - **Legacy `cuboid` instances** in already-saved sessions still render and can be
   selected, confirmed, and deleted, but are **display-only legacy** — the Box tool
-  no longer produces them. No auto-conversion (old boxes never stored their
-  enclosed points, so there is nothing to migrate them into).
+  no longer produces them. They render **read-only with no gizmo**; the
+  Move/Rotate/Scale gizmo, per-cuboid Auto-fit, and densify controls (today gated
+  on `activeTool === 'cuboid'` in the floating toolbar, `mode-label.jsx:1193–1222`)
+  are **dropped for them** — those controls do not get re-homed. No auto-conversion
+  (old boxes never stored their enclosed points, so there is nothing to migrate
+  them into).
 - Compare is already per-point, so retiring cuboids removes an annotation type
   that Compare never scored anyway.
 
@@ -135,9 +159,18 @@ select points
   When off, it lands **unconfirmed** and is confirmed as a separate step.
 - Confirmed instances behave exactly as today: locked (read-only, no gizmo/rename/
   reclass/delete), and their points hidden when the "N done" toggle is on.
-- Box and Draw are re-routed from their current hard-coded `confirmed:true` to this
-  shared path, honoring their `auto-confirm` toggle (defaulting off, so they now
-  land unconfirmed unless the user opts in).
+- **Draw** (and the **Fast**/rapid path) are re-routed from their current
+  hard-coded `confirmed:true` (`mode-label.jsx:845`, `:911`) to this shared path,
+  honoring their `auto-confirm` toggle. **Box** is re-routed from producing a
+  geometric cuboid (`addCuboid`) to producing an unconfirmed pointset. All three
+  default `auto-confirm` off (rapid preseg defaults on), so they now land
+  unconfirmed unless the user opts in.
+- **Applying via a class hotkey is new behavior.** Today a class hotkey with a
+  selection only sets the active class / reclasses a selected cuboid
+  (`mode-label.jsx:969–973`); it does not apply. That handler changes so that,
+  when a tool selection is active, pressing a class hotkey applies+labels the
+  current selection (honoring `auto-confirm`). Ctrl+Enter → class picker remains
+  the explicit path.
 
 ## Persisted structure (Draw, and later Beam)
 
