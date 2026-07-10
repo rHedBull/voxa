@@ -25,8 +25,11 @@ def collect_volumes(instances, centerlines):
     out = []
     for inst in instances:
         src = inst.get("source")
+        if src not in ("box", "draw") or inst.get("segId") is None:
+            continue
         seq = inst.get("seq")
-        iid = inst.get("segId")
+        iid = int(inst["segId"])  # symmetric int key with paths_by_inst; the seq
+        # map + KD-tree replay (Task 4) key off this same instance_id
         if src == "box" and inst.get("center") and inst.get("size"):
             out.append({"kind": "obb", "instance_id": iid, "seq": seq,
                         "shape": {"center": inst["center"], "size": inst["size"],
