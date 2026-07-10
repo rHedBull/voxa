@@ -64,13 +64,16 @@ class ExportLabelsRequest(BaseModel):
 
 **Files:** Modify `backend/labeling/export_pipeline.py`; Test `backend/tests/test_export_labels.py`.
 
-`apply_filters_remap(class_ids, instance_ids, confirmed_by_inst, class_id_by_inst, req) -> (out_cls, out_inst, taxonomy, absent_count)`. Order = spec §2 (confirmed-only → include/exclude → remap → drop applied by the caller). Semantics:
-- **confirmed-only:** points whose `instance_id`'s `confirmed` flag is False → `class_id = -1`. Instances absent from `confirmed_by_inst` are treated as confirmed; count them → `absent_count`.
+`apply_filters_remap(class_ids, instance_ids, confirmed_by_inst, req, taxonomy) -> (out_cls, out_inst)`. **Chunk-safe:** operates on ONE array (or raw chunk) and returns only the transformed arrays — no aggregate counts (those would double-count across raw chunks). Order = spec §2 (confirmed-only → include/exclude → remap; `drop_unlabeled` applied by the caller). Semantics:
+- **confirmed-only:** points whose `instance_id`'s `confirmed` flag is False → `class_id = -1`. Instances absent from `confirmed_by_inst` are treated as confirmed (not zeroed).
 - **include/exclude:** points whose (pre-remap) `class_id ∉ include_classes` → `-1` (skip if `include_classes` is None).
-- **remap:** map surviving source `class_id`s → target ids per `req.remap` (each `from` collapses to `to.id`; unmapped kept classes pass through). Build `taxonomy` = `{target_id: {label, color}}` from the remap targets + the pass-through palette entries.
-- Return the point count that would remain after an optional `drop_unlabeled` as part of the caller's job (Task 6 drops), but compute `taxonomy`/`absent_count` here.
+- **remap:** map surviving source `class_id`s → target ids per `req.remap` (each `from` collapses to `to.id`; unmapped kept classes pass through). Uses the precomputed `src_to_tgt` mapping derived from `taxonomy` (built once — see below), so the mapping is identical across all chunks.
 
-- [ ] **Step 1: Failing tests** (each a small synthetic array): confirmed-only zeros an unconfirmed instance's points; exclude zeros a class; **precedence** — a class both excluded and in a remap `from` is `-1` (exclude wins); remap-merge maps two source classes to one `to.id` in BOTH the array and `taxonomy` while `instance_ids` are UNCHANGED; `absent_count` counts instances missing from `confirmed_by_inst`; empty-after-filters yields all `-1` without error.
+Two separate pure helpers (computed ONCE, globally — never per-chunk):
+- `build_taxonomy(palette, req) -> (taxonomy, src_to_tgt)`: `taxonomy = {target_id: {label, color}}` built **from the class palette + `req.remap` targets** (palette-driven, NOT `np.unique(class_ids)`-driven, so pass-through classes never present in a given array/chunk still appear). `src_to_tgt` maps every source class_id → its target id.
+- `count_absent_instances(work_inst, confirmed_by_inst) -> int`: the number of DISTINCT instance ids present in the full `work_inst` but missing from `confirmed_by_inst`. Computed once from the session arrays, independent of resolution/chunking.
+
+- [ ] **Step 1: Failing tests** (each a small synthetic array): confirmed-only zeros an unconfirmed instance's points; exclude zeros a class; **precedence** — a class both excluded and in a remap `from` is `-1` (exclude wins); remap-merge maps two source classes to one `to.id` in BOTH the array and `taxonomy` while `instance_ids` are UNCHANGED; **pass-through taxonomy** — palette {0,1,2}, array contains only {0,1}, assert `taxonomy` STILL has an entry for class 2 (palette-driven, not data-driven); `count_absent_instances` returns the DISTINCT count (an instance spanning many points counts once); empty-after-filters yields all `-1` without error.
 - [ ] **Steps 2-5:** Run→fail; implement; run→pass; commit `feat(export): confirmed/include/remap filter pipeline`.
 
 ---
@@ -89,9 +92,14 @@ class ExportLabelsRequest(BaseModel):
 
 **Files:** Modify `backend/app/core.py`; Test `backend/tests/test_export_labels.py` (or `test_smoke`/existing ply test).
 
-Add `_ply_labeled_bytes(xyz, rgb, class_ids, instance_ids) -> bytes` (or extend `_ply_response_bytes` with optional label arrays) writing a binary-little-endian PLY with vertex props `x y z` (f32), `red green blue` (uchar), `class_id` (int32), `instance_id` (int32). Mirror the structured-dtype approach already in `_ply_response_bytes` (core.py:383).
+Add THREE decomposed helpers (so both the regime-A one-shot writer and Task 6's streaming path — which must write the body before it knows the final vertex count — reuse them):
+- `_ply_labeled_header(n, has_color) -> bytes` — the ASCII header for `n` vertices with props `x y z` (f32), optional `red green blue` (uchar), `class_id` (int32), `instance_id` (int32).
+- `_ply_labeled_chunk_bytes(xyz, rgb, class_ids, instance_ids) -> bytes` — the binary BODY for one array/chunk (structured-dtype approach, mirroring `_ply_response_bytes`, core.py:383), NO header.
+- `_ply_labeled_bytes(xyz, rgb, class_ids, instance_ids) -> bytes` = `_ply_labeled_header(len(xyz), rgb is not None) + _ply_labeled_chunk_bytes(...)` — the one-shot writer for regime A.
 
-- [ ] **Step 1: Failing test** — round-trip: write N points with known class/instance, parse the PLY header (property list) + read back the class_id/instance_id columns, assert equality. (Use `plyfile` if available, else parse the known binary layout.)
+Task 6's raw path: write `_ply_labeled_chunk_bytes` per chunk to a body temp file while counting kept points, then assemble the final PLY = `_ply_labeled_header(total, has_color)` + the body temp's contents.
+
+- [ ] **Step 1: Failing test** — round-trip `_ply_labeled_bytes`: write N points with known class/instance, parse the PLY header (property list) + read back the class_id/instance_id columns, assert equality; AND assert `_ply_labeled_bytes == _ply_labeled_header(...) + _ply_labeled_chunk_bytes(...)` (so the streaming assembly is byte-identical to the one-shot). (Use `plyfile` if available, else parse the known binary layout.)
 - [ ] **Steps 2-5:** implement; commit `feat(export): binary PLY writer with class_id/instance_id`.
 
 ---
@@ -101,9 +109,14 @@ Add `_ply_labeled_bytes(xyz, rgb, class_ids, instance_ids) -> bytes` (or extend 
 **Files:** Modify `backend/routes/export.py`; Test `backend/tests/test_export_labels.py`.
 
 `_build_materialize_ctx(scene, session_id) -> (MaterializeCtx, instances, confirmed_by_inst, class_id_by_inst)` from `_state` + session files:
-- guard `_state["scene"] == scene` and `_state["session_id"] == session_id` (else 409); **snapshot** the needed `_state` fields into locals now (survive a concurrent `/api/load`).
+- guard `_state["scene"] == scene` and `_state["session_id"] == session_id` (else 409, mirroring `edit_export_ply`'s `req.scene != scene` check at `backend/routes/export.py:27`); **snapshot** the needed `_state` fields into locals now (survive a concurrent `/api/load`).
 - `seg = _state["seg"]`; `pc = _state["pc"]`; `src = _state["source"]`.
-- `instances = json.load(_annotation_path(scene, "gt", session_id))["instances"]` (or `[]`).
+- **Read instances with an existence guard** (a blank session has no `instances_gt.json` yet — mirror `compare.py:get_annotation` at `routes/compare.py:29-33`, which returns `[]` when the file is absent). `_annotation_path(...)` returns a `Path`, so:
+  ```python
+  p = _annotation_path(scene, "gt", session_id)
+  instances = json.loads(p.read_text()).get("instances", []) if p.exists() else []
+  ```
+  (Do NOT `json.load(_annotation_path(...))` — that passes a `Path`, not a file object, and crashes on a blank session.)
 - `centerlines = load_centerlines(seg.session_dir)`; `volumes = collect_volumes(instances, centerlines)`.
 - `class_id_by_inst = {int(i["segId"]): _cls_string_to_num(i["cls"]) for i in instances if i.get("segId") is not None}`; for instances not in the doc but present in `seg.instance_ids`, fill `inst_class_id` from `seg.class_ids` at a point they own (so `replay_labels` never KeyErrors — Phase A's contract). `seq_by_inst = {int(i["segId"]): i.get("seq") for ...}`. `confirmed_by_inst = {int(i["segId"]): bool(i.get("confirmed")) for ...}`.
 - `_cls_string_to_num` uses the classes.yaml name→id map (core.py ~304) / `_coerce_class_id`.
@@ -120,17 +133,30 @@ Add `_ply_labeled_bytes(xyz, rgb, class_ids, instance_ids) -> bytes` (or extend 
 
 Handler:
 1. `validate_export_request(...)` → 422 on errors. Guard scene/session (Task 5).
-2. Build ctx (Task 5). Compute `p50, p90 = raw_sample_spacing(ctx.scan_pos)`.
-3. Produce per-point `(positions, colors, class_ids, instance_ids)`:
-   - `scan`/`subsample` → `materialize(ctx, resolution)` (in-memory; regime A).
-   - `raw` → **stream**: `index = build_replay_index(...)`; write the PLY **body** to a temp file chunk-by-chunk from `materialize_raw(index, ...)`, applying `apply_filters_remap` (+ drop) per chunk and counting kept points; then write the final PLY = header(count) + body (a temp-body + prepend-header assembly, since the binary PLY header needs the vertex count and streamed/filtered counts aren't known upfront). For `scan`/`subsample`, filter+drop in one shot then `_ply_labeled_bytes`.
-4. `build_manifest(...)` with `exported_at` stamped here.
+2. Build ctx (Task 5). Compute `p50, p90 = raw_sample_spacing(ctx.scan_pos)`. Build the **global** `(taxonomy, src_to_tgt) = build_taxonomy(palette, req)` and `absent_count = count_absent_instances(ctx.work_inst, confirmed_by_inst)` ONCE here (never per-chunk — see Task 2).
+3. Produce the labeled PLY:
+   - `scan`/`subsample` → `materialize(ctx, resolution)` (in-memory; regime A) → `apply_filters_remap(...)` once → optional drop_unlabeled → `_ply_labeled_bytes(...)`.
+   - `raw` → **stream**: `index = build_replay_index(...)`; for each `(xyz, rgb, cls, inst)` from `materialize_raw(index, ...)`, run `apply_filters_remap(cls, inst, confirmed_by_inst, req, taxonomy)` (+ drop_unlabeled → mask out `-1` points and their xyz/rgb), append `_ply_labeled_chunk_bytes(...)` to a **body temp file**, and accumulate the kept-point count. After the loop, the final PLY = `_ply_labeled_header(total_count, has_color)` + the body temp's bytes. (The binary header needs the vertex count, which filtering/streaming doesn't know upfront — hence body-temp-then-prepend-header.)
+4. `build_manifest(taxonomy, p50, p90, ..., filters={...}, absent_count=absent_count, exported_at=<stamped here>)`.
 5. Write PLY + manifest.json into a **zip temp file** (`ZIP_STORED` or `ZIP_DEFLATED` level 1). Return `FileResponse(zip_path, filename="scan_labeled_<kind>.zip", background=BackgroundTask(unlink))`.
 6. **`try/finally`** unlinks the temp PLY/body/zip on ANY exception (BackgroundTask only fires on success). Write temps under a dedicated dir.
 
 - [ ] **Step 1: Failing tests** — an annotated fixture at `resolution=scan`: response is a valid zip containing `scan_labeled.ply` + `manifest.json`; PLY vertex count == scan.ply count; manifest classes/accuracy present. A `confirmed_only`/exclude/remap case: labels reflect the filter in the PLY. A `raw` case with a small linked-raw fixture: streams and produces raw-count vertices. Scene/session-mismatch → 409. An empty-after-filters export → valid (0-labeled) zip, no 500.
 - [ ] **Steps 2-5:** implement; commit `feat(export): POST /api/labels/export (materialize+filter+remap → zip)`.
 - Register the route if `routes/export.py`'s router isn't already mounted for this path (it is — `/api/edit/export-ply` lives here).
+
+---
+
+### Task 6b: `GET /api/labels/accuracy` (Review-step p90)
+
+**Files:** Modify `backend/routes/export.py`; Test `backend/tests/test_export_labels.py`.
+
+A small read-only endpoint the wizard's Review step calls to show the real p50/p90 for the loaded scan.
+
+- [ ] **Step 1: Failing test** — `GET /api/labels/accuracy?scene=<id>&session_id=<id>` on a loaded fixture returns `{"p50":.., "p90":..}` with `p90 >= p50 >= 0` matching `raw_sample_spacing(ctx.scan_pos)` on the fixture; scene/session mismatch or no scene loaded → 409.
+- [ ] **Step 2: Run → fails.**
+- [ ] **Step 3: Implement** — same scene/session guard as the export endpoint; `p50, p90 = raw_sample_spacing(_state["pc"].points)`; return `{"p50": p50, "p90": p90}`.
+- [ ] **Steps 4-5:** Run → pass; commit `feat(export): GET /api/labels/accuracy for the wizard Review step`.
 
 ---
 
@@ -148,7 +174,7 @@ Pure fns (testable without DOM): `remapToTaxonomy(classes, remapRows, includeSet
 
 **Files:** Create `frontend/src/export-wizard.jsx`; Modify `frontend/src/api.js` (`exportLabels(cfg)` → POST, receive blob).
 
-3-step modal (Resolution → Classes → Review) per spec §1: resolution radios with point estimate + raw-disabled-when-`!rawSourceAvailable` + multi-GB warning; confirmed-only toggle + include/exclude list + merge/rename rows (a class in a merge row is disabled in the exclude list and vice versa); Review shows the target taxonomy + the p90 accuracy line (rendered from a preview `raw_sample_spacing`? — no: show the value returned by a first export or a cheap `/api/config`-style call; simplest v1: show the accuracy from the manifest *after* export is not possible pre-download, so render the estimate text without a number, OR add a tiny `GET /api/labels/accuracy?scene&session` that returns p50/p90 — RECOMMENDED: add that 5-line GET so the Review step shows the real p90). Export → `api.exportLabels(cfg)` → `blob` → `URL.createObjectURL` → `<a download>` → revoke. Busy state; surface 422/409 inline (not `alert`).
+3-step modal (Resolution → Classes → Review) per spec §1: resolution radios with point estimate + raw-disabled-when-`!rawSourceAvailable` + multi-GB warning; confirmed-only toggle + include/exclude list + merge/rename rows (a class in a merge row is disabled in the exclude list and vice versa); Review shows the target taxonomy + the p90 accuracy line, fetched from `GET /api/labels/accuracy` (built in Task 6b) so the real computed p90 is shown (never a hardcoded literal — spec §4). Export → `api.exportLabels(cfg)` → `blob` → `URL.createObjectURL` → `<a download>` → revoke. Busy state; surface 422/409 inline (not `alert`).
 
 - [ ] **Step 1:** Implement the modal + `exportLabels`. (No FE component-test infra; the reducer/estimate logic is already unit-tested in Task 7.)
 - [ ] **Step 2:** `npm run build` clean.
@@ -159,7 +185,7 @@ Pure fns (testable without DOM): `remapToTaxonomy(classes, remapRows, includeSet
 
 ### Task 9: Export button + accuracy GET (wire-up)
 
-**Files:** Modify `frontend/src/mode-label.jsx` (Export button in the header near Save; opens the wizard, passes `cloud.rawSourceAvailable` + scene/session); `backend/routes/export.py` (the small `GET /api/labels/accuracy` from Task 8 if taken); `frontend/src/api.js` map `rawSourceAvailable`.
+**Files:** Modify `frontend/src/mode-label.jsx` (Export button in the header near Save; opens the wizard, passes `cloud.rawSourceAvailable` + scene/session); `frontend/src/api.js` map `rawSourceAvailable` + add `getAccuracy(scene, session)` calling the Task-6b endpoint.
 
 - [ ] **Steps 1-5:** Button gated on an active session; opens wizard; `api.js` maps `raw_source_available → rawSourceAvailable` in `decodeLoadResponse`. Build + browser-verify the button appears and opens the wizard. Commit `feat(export): Export button in Label header`.
 
