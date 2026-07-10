@@ -822,7 +822,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         color: targetCls.color,
         source: 'preseg',
         // Fast labeling promotes + confirms in one step (no review pass).
-        confirmed: !!opts?.confirmed,
+        confirmed: !!(opts?.confirmed ?? autoConfirmFor('presegment')),
       };
       onChange([...instances, newInst]);
     }
@@ -836,7 +836,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       });
       return { ...next, selection: new Set() };
     });
-  }, [segState, activeClassDef, instances, counts, onChange, setSegState]);
+  }, [segState, activeClassDef, instances, counts, onChange, setSegState, autoConfirm, presegRapid]);
 
   // Box tool apply: send the OBB to the backend, which labels every FULL-RES
   // point inside it (never a client-side subsample test) and returns a delta.
@@ -909,11 +909,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         label: `${cls.label} #${instanceId}`,
         color: cls.color,
         source: 'draw',
-        confirmed: true,
+        confirmed: autoConfirmFor('draw'),
       }];
     instancesRef.current = next;
     onChange(next);
-  }, [classes, onChange]);
+  }, [classes, onChange, autoConfirm, presegRapid]);
 
   const toggleConfirmSelected = useCallbackLabel(() => {
     if (!selectedId) return;
