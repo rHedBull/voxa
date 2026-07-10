@@ -1,18 +1,23 @@
 # Resolution-independent labels (volumetric saving + materialize-at-any-density)
 
 **Date:** 2026-07-10
-**Status:** Approved (spec-review passed, 3 iterations).
+**Status:** Approved (spec-review passed, 3 iterations). Phase 1 SHIPPED to main.
+Phase 2 **materialize core (§3–§4) IMPLEMENTED** in
+`backend/labeling/materialize.py` (see
+`docs/superpowers/plans/2026-07-10-materialize-core-phase-a.md`); the export
+endpoint (§5) is delivered by the export-wizard spec's Phase B, still pending.
 
 **Implementation split into two phases:**
-- **Phase 1 — saving (this change).** Capture the resolution-independent
+- **Phase 1 — saving (SHIPPED to main).** Capture the resolution-independent
   primitives *at labeling time*, since they are otherwise lost: persist the Box
   OBB (`source=='box'`), keep the Draw tube (already persisted), and stamp an
   explicit monotonic `seq` apply-order on every instance (+ backfill for existing
   sessions). Small, additive, low-risk; no consumer yet.
-- **Phase 2 — export / materialize (deferred).** The materialize algorithm (§3),
-  the raw-cloud resolution + frame alignment (§4), and the export endpoint (§5)
-  are designed here but **not built now**. §3 is specified only to *prove Phase-1
-  storage is sufficient* (it is why `seq` is required — verified in review).
+- **Phase 2 — export / materialize.** The materialize algorithm (§3) + raw-cloud
+  resolution + frame alignment (§4) are now **built** as the callable
+  `materialize()` core (`backend/labeling/materialize.py`, regime A index /
+  regime B replay, + `raw_source_available` on `LoadResponse`). The export
+  endpoint (§5) is Phase B of the export-wizard spec, not yet built.
 
 The rest of this document is the full design; Phase-2 sections are tagged
 **[Phase 2 — deferred]**.
