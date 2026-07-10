@@ -435,3 +435,186 @@ def test_build_materialize_ctx_scene_mismatch_raises_409(client_with_annotated_s
     with pytest.raises(HTTPException) as exc_info:
         _build_materialize_ctx("wrong-scene", session_id)
     assert exc_info.value.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Task 6: POST /api/labels/export
+# ---------------------------------------------------------------------------
+
+import io
+import zipfile
+
+_PLY_LABELED_DTYPE = np.dtype([
+    ("xyz", "<f4", 3), ("rgb", "u1", 3), ("class_id", "<i4"), ("instance_id", "<i4"),
+])
+
+
+def _unzip_export(content: bytes):
+    zf = zipfile.ZipFile(io.BytesIO(content))
+    assert set(zf.namelist()) == {"scan_labeled.ply", "manifest.json"}
+    ply_bytes = zf.read("scan_labeled.ply")
+    manifest = json.loads(zf.read("manifest.json"))
+    return ply_bytes, manifest
+
+
+def _parse_labeled_ply(ply_bytes: bytes):
+    head, body = ply_bytes.split(b"end_header\n", 1)
+    head = head.decode("ascii")
+    n = int([ln for ln in head.splitlines() if ln.startswith("element vertex")][0].split()[-1])
+    rec = np.frombuffer(body, dtype=_PLY_LABELED_DTYPE)
+    assert len(rec) == n
+    return n, rec
+
+
+def _load_demo(client, scene_id, session_id):
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 100})
+    assert r.status_code == 200
+
+
+def test_export_labels_scan_resolution_roundtrip(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+    })
+    assert r.status_code == 200, r.text
+    ply_bytes, manifest = _unzip_export(r.content)
+    n, rec = _parse_labeled_ply(ply_bytes)
+    assert n == 8  # demo scan.ply has 8 points
+    assert manifest["accuracy"]["sample_spacing_p90_m"] >= manifest["accuracy"]["sample_spacing_p50_m"]
+    assert manifest["resolution"]["kind"] == "scan"
+    assert manifest["resolution"]["points"] == 8
+
+
+def test_export_labels_include_classes_excludes(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    # demo working classes seeded from preseg summary: seg0->0 (pipe), seg1->1
+    # (tank), seg2/seg3->2 (equipment). Keep only class 0.
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "include_classes": [0],
+    })
+    assert r.status_code == 200, r.text
+    ply_bytes, manifest = _unzip_export(r.content)
+    _, rec = _parse_labeled_ply(ply_bytes)
+    present = set(int(c) for c in rec["class_id"])
+    assert present.issubset({-1, 0})
+    assert 1 not in present and 2 not in present
+    assert set(manifest["classes"].keys()) == {"0"}
+
+
+def test_export_labels_remap_merges_classes(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "remap": [{"from": [1, 2], "to": {"id": 20, "label": "merged", "color": "#abcabc"}}],
+    })
+    assert r.status_code == 200, r.text
+    ply_bytes, manifest = _unzip_export(r.content)
+    _, rec = _parse_labeled_ply(ply_bytes)
+    present = set(int(c) for c in rec["class_id"])
+    assert 1 not in present and 2 not in present
+    assert 20 in present
+    assert manifest["classes"]["20"] == {"label": "merged", "color": "#abcabc"}
+
+
+def test_export_labels_confirmed_only_zeros_unconfirmed(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    instances = [
+        {"id": "i0", "cls": "pipe", "kind": "pointset", "segId": 0, "confirmed": True},
+        {"id": "i1", "cls": "tank", "kind": "pointset", "segId": 1, "confirmed": False},
+        {"id": "i2", "cls": "equipment", "kind": "pointset", "segId": 2, "confirmed": True},
+        {"id": "i3", "cls": "equipment", "kind": "pointset", "segId": 3, "confirmed": False},
+    ]
+    r = client.put(
+        f"/api/annotations/gt/{scene_id}?session_id={session_id}",
+        json={"scene": scene_id, "kind": "gt", "instances": instances, "meta": {}},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "confirmed_only": True,
+    })
+    assert r.status_code == 200, r.text
+    ply_bytes, manifest = _unzip_export(r.content)
+    _, rec = _parse_labeled_ply(ply_bytes)
+    # instance 1 (all its points) should be zeroed (unconfirmed).
+    inst_arr = rec["instance_id"]
+    cls_arr = rec["class_id"]
+    unconfirmed_mask = np.isin(inst_arr, [1, 3])
+    assert np.all(cls_arr[unconfirmed_mask] == -1)
+    confirmed_mask = np.isin(inst_arr, [0, 2])
+    assert np.all(cls_arr[confirmed_mask] != -1)
+    assert manifest["filters"]["confirmed_only"] is True
+
+
+def test_export_labels_scene_session_mismatch_409(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": "annotated/wrong", "session_id": session_id,
+        "resolution": {"kind": "scan"},
+    })
+    assert r.status_code == 409
+
+
+def test_export_labels_empty_after_filters_no_500(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "include_classes": [],
+    })
+    assert r.status_code == 200, r.text
+    ply_bytes, manifest = _unzip_export(r.content)
+    n, rec = _parse_labeled_ply(ply_bytes)
+    assert n == 8
+    assert np.all(rec["class_id"] == -1)
+
+
+def test_export_labels_empty_after_filters_drop_unlabeled_zero_vertex(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "include_classes": [],
+        "drop_unlabeled": True,
+    })
+    assert r.status_code == 200, r.text
+    ply_bytes, manifest = _unzip_export(r.content)
+    n, rec = _parse_labeled_ply(ply_bytes)
+    assert n == 0
+    assert manifest["resolution"]["points"] == 0
+
+
+def test_export_labels_raw_unavailable_422(client_with_annotated_scene):
+    # The synthesized demo fixture has no linked raw LAZ/LAS source
+    # (scene_registry never sets extras["source_laz_path"] for it), so
+    # resolution.kind="raw" must be rejected by validate_export_request
+    # rather than exercised end-to-end here. Regime B streaming itself is
+    # covered by materialize.py's own tests.
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "raw"},
+    })
+    assert r.status_code == 422

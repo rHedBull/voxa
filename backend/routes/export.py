@@ -2,14 +2,35 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.constants import *  # noqa: F401,F403
 from app.schemas import *  # noqa: F401,F403
 from app.core import *  # noqa: F401,F403
-from labeling.materialize import MaterializeCtx, collect_volumes
+from labeling.materialize import (
+    MaterializeCtx,
+    collect_volumes,
+    build_replay_index,
+    materialize_downsample,
+    materialize_raw,
+    raw_sample_spacing,
+)
 from labeling.centerline import load_centerlines
+from labeling.export_pipeline import (
+    apply_filters_remap,
+    build_manifest,
+    build_taxonomy,
+    count_absent_instances,
+    validate_export_request,
+)
 
 router = APIRouter()
 
@@ -138,3 +159,98 @@ def edit_export_ply(req: ExportPlyRequest) -> Response:
 
     return Response(content=_ply_response_bytes(kept_xyz, kept_rgb),
                     media_type="application/octet-stream")
+
+
+@router.post("/api/labels/export")
+def export_labels(req: ExportLabelsRequest) -> Response:
+    """Export the active session's labels at any of scan/subsample/raw
+    density as a zip of (scan_labeled.ply, manifest.json).
+
+    Orchestrates the already-tested Phase B pieces (_build_materialize_ctx,
+    validate_export_request, build_taxonomy/apply_filters_remap, the
+    materialize_* helpers, and the _ply_labeled_* PLY writer) — this
+    endpoint stays thin: no filtering/remap/materialize logic lives here.
+    """
+    from routes.meta import get_config
+
+    config = get_config()
+    palette = [{"class_id": c.class_id, "label": c.label, "color": c.color}
+               for c in config.classes]
+    palette_ids = {c.class_id for c in config.classes}
+
+    ctx, instances, confirmed_by_inst, _class_id_by_inst = _build_materialize_ctx(
+        req.scene, req.session_id)
+
+    errs = validate_export_request(
+        req, n_scan=len(ctx.scan_pos), palette_ids=palette_ids,
+        raw_available=bool(ctx.raw_path))
+    if errs:
+        raise HTTPException(422, {"errors": errs})
+
+    p50, p90 = raw_sample_spacing(ctx.scan_pos)
+    taxonomy, src_to_tgt = build_taxonomy(palette, req)
+    absent = count_absent_instances(ctx.work_inst, confirmed_by_inst)
+
+    tmpdir = tempfile.mkdtemp(prefix="voxa_export_")
+    try:
+        ply_path = Path(tmpdir) / "scan_labeled.ply"
+
+        if req.resolution.kind in ("scan", "subsample"):
+            n = len(ctx.scan_pos) if req.resolution.kind == "scan" else req.resolution.n
+            pos, col, cls, inst = materialize_downsample(
+                ctx.scan_pos, ctx.colors, ctx.work_cls, ctx.work_inst, n)
+            # materialize_downsample's identity branch (n >= N) returns the
+            # live working arrays by reference — copy before mutating.
+            cls = cls.copy()
+            inst = inst.copy()
+            out_cls, out_inst = apply_filters_remap(cls, inst, confirmed_by_inst, req, src_to_tgt)
+            if req.drop_unlabeled:
+                keep = out_cls >= 0
+                pos, col, out_cls, out_inst = pos[keep], col[keep], out_cls[keep], out_inst[keep]
+            ply_path.write_bytes(_ply_labeled_bytes(pos, col, out_cls, out_inst))
+            total = len(pos)
+
+        elif req.resolution.kind == "raw":
+            index = build_replay_index(
+                ctx.scan_pos, ctx.work_inst, ctx.volumes, ctx.seq_by_inst, ctx.inst_class_id)
+            body_path = Path(tmpdir) / "body.bin"
+            total = 0
+            with body_path.open("wb") as body:
+                for xyz, rgb, cls, inst in materialize_raw(
+                        index, ctx.raw_path, ctx.scene_is_z_up, ctx.offset):
+                    oc, oi = apply_filters_remap(cls, inst, confirmed_by_inst, req, src_to_tgt)
+                    rgb_use = rgb if rgb is not None else np.zeros((len(xyz), 3), np.uint8)
+                    if req.drop_unlabeled:
+                        keep = oc >= 0
+                        xyz, rgb_use, oc, oi = xyz[keep], rgb_use[keep], oc[keep], oi[keep]
+                    body.write(_ply_labeled_chunk_bytes(xyz, rgb_use, oc, oi))
+                    total += len(xyz)
+            with ply_path.open("wb") as out:
+                out.write(_ply_labeled_header(total, has_color=True))
+                with body_path.open("rb") as body:
+                    shutil.copyfileobj(body, out)
+            body_path.unlink()
+
+        else:
+            raise HTTPException(422, f"unknown resolution.kind: {req.resolution.kind!r}")
+
+        manifest = build_manifest(
+            taxonomy, p50, p90, scan=req.scene, session=req.session_id,
+            resolution={"kind": req.resolution.kind}, points=total,
+            confirmed_only=req.confirmed_only, include_classes=req.include_classes,
+            drop_unlabeled=req.drop_unlabeled, absent_count=absent,
+            exported_at=datetime.now(timezone.utc).isoformat(),
+            labeling_points=len(ctx.scan_pos))
+
+        zip_path = Path(tmpdir) / "export.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+            zf.write(ply_path, "scan_labeled.ply")
+            zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+    except Exception:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
+
+    return FileResponse(
+        zip_path, media_type="application/zip",
+        filename=f"scan_labeled_{req.resolution.kind}.zip",
+        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True))
