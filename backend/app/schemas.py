@@ -213,10 +213,15 @@ class CreateSessionRequest(BaseModel):
 class RenameSessionRequest(BaseModel):
     name: str
 
+class RemapTarget(BaseModel):
+    id: int
+    label: str
+    color: str
+
 class RemapRule(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     from_: list[int] = Field(alias="from")
-    to: dict   # {id:int, label:str, color:str}
+    to: RemapTarget
 
 class ExportResolution(BaseModel):
     kind: str            # "scan" | "subsample" | "raw"

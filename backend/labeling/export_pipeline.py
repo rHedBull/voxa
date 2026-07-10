@@ -5,7 +5,7 @@ raises 422 with the returned error list when it's non-empty.
 """
 from __future__ import annotations
 
-from app.schemas import ExportLabelsRequest
+from app.schemas import ExportLabelsRequest, RemapTarget
 
 
 def validate_export_request(
@@ -18,7 +18,7 @@ def validate_export_request(
 
     # from ids must exist in the source palette; from sets must not overlap.
     seen_from: dict[int, int] = {}   # source class id -> rule index
-    to_by_id: dict[int, dict] = {}   # to.id -> {id,label,color} of first rule seen
+    to_by_id: dict[int, RemapTarget] = {}   # to.id -> RemapTarget of first rule seen
     consumed: set[int] = set()       # source class ids consumed by some `from`
 
     for rule_idx, rule in enumerate(req.remap):
@@ -33,10 +33,10 @@ def validate_export_request(
                 seen_from[src_id] = rule_idx
             consumed.add(src_id)
 
-        to_id = rule.to.get("id")
+        to_id = rule.to.id
         if to_id in to_by_id:
             prev = to_by_id[to_id]
-            if prev.get("label") != rule.to.get("label") or prev.get("color") != rule.to.get("color"):
+            if prev.label != rule.to.label or prev.color != rule.to.color:
                 errors.append(
                     f"multiple remap rules target class id {to_id} with different label/color"
                 )

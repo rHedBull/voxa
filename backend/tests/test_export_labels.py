@@ -1,4 +1,7 @@
 """TDD for ExportLabelsRequest schema + validate_export_request (export-wizard Phase B, Task 1)."""
+import pytest
+from pydantic import ValidationError
+
 from app.schemas import ExportLabelsRequest
 from labeling.export_pipeline import validate_export_request
 
@@ -25,7 +28,19 @@ def test_parses_from_alias():
         "remap": [{"from": [1, 2], "to": {"id": 9, "label": "merged", "color": "#fff"}}],
     })
     assert req.remap[0].from_ == [1, 2]
-    assert req.remap[0].to == {"id": 9, "label": "merged", "color": "#fff"}
+    assert req.remap[0].to.id == 9
+    assert req.remap[0].to.label == "merged"
+    assert req.remap[0].to.color == "#fff"
+
+
+def test_remap_missing_to_id_rejected_at_parse():
+    with pytest.raises(ValidationError):
+        ExportLabelsRequest(**{
+            "scene": "annotated/foo",
+            "session_id": "s1",
+            "resolution": {"kind": "scan"},
+            "remap": [{"from": [1], "to": {"label": "a", "color": "#fff"}}],
+        })
 
 
 def test_valid_request_has_no_errors():
