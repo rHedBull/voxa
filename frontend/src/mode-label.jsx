@@ -56,6 +56,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const [transformMode, setTransformMode] = useStateLabel('translate');
   // Free-text filter for the instance list (matches label + class name).
   const [instFilter, setInstFilter] = useStateLabel('');
+  const [instStatus, setInstStatus] = useStateLabel('all');
   // Which instance row is currently expanded for inline edit.
   const [editingId, setEditingId] = useStateLabel(null);
   // When true, points inside any confirmed cuboid are hidden from the main
@@ -506,8 +507,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const filteredInstances = useMemoLabel(() => {
     const q = instFilter.trim().toLowerCase();
-    if (!q) return instances;
     return instances.filter((inst) => {
+      if (instStatus === 'unconfirmed' && inst.confirmed) return false;
+      if (instStatus === 'confirmed' && !inst.confirmed) return false;
+      if (!q) return true;
       const cls = classes.find((c) => c.id === inst.cls);
       return (
         (inst.label || '').toLowerCase().includes(q) ||
@@ -515,7 +518,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         (inst.id || '').toLowerCase().includes(q)
       );
     });
-  }, [instances, classes, instFilter]);
+  }, [instances, classes, instFilter, instStatus]);
 
   const helpSections = useMemoLabel(() => ([
     {
@@ -1147,7 +1150,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               </button>
             )}
             <span className="badge-soft">
-              {instFilter ? `${filteredInstances.length} / ${instances.length}` : instances.length}
+              {(instFilter || instStatus !== 'all')
+                ? `${filteredInstances.length} / ${instances.length}`
+                : instances.length}
             </span>
           </div>
         </div>
@@ -1161,6 +1166,20 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               onClick={() => setInstFilter('')}
               title="Clear filter">×</button>
           )}
+        </div>
+        <div className="tool-opt-toggle inst-status-toggle">
+          <button
+            className={instStatus === 'all' ? 'active' : ''}
+            onClick={() => setInstStatus('all')}
+          >all</button>
+          <button
+            className={instStatus === 'unconfirmed' ? 'active' : ''}
+            onClick={() => setInstStatus('unconfirmed')}
+          >unconfirmed</button>
+          <button
+            className={instStatus === 'confirmed' ? 'active' : ''}
+            onClick={() => setInstStatus('confirmed')}
+          >confirmed</button>
         </div>
         <div className="inst-list">
           {instances.length === 0 && (

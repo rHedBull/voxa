@@ -492,6 +492,9 @@ kbd {
 .inst-filter-clear:hover { color: var(--text); background: rgba(255,255,255,0.06); }
 .theme-light .inst-filter-clear:hover { background: rgba(0,0,0,0.05); }
 
+.inst-status-toggle { margin: 0 4px 6px; }
+.inst-status-toggle button { font-size: 11px; padding: 4px 0; }
+
 
 .class-row {
   display: grid; grid-template-columns: 8px 1fr auto auto auto;
