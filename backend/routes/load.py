@@ -219,9 +219,7 @@ def load_region(req: LoadRegionRequest):
     # cuboid we pop full density from the source LAZ that the PLY was sampled
     # from — so labeling is in the dense substrate, not the navigation proxy.
     laz_path: Optional[Path] = None
-    if src.tier in ("decimated", "raw") and src.source_format == "laz":
-        laz_path = src.source_path
-    elif src.tier == "annotated":
+    if src.tier == "annotated":
         slp = src.extras.get("source_laz_path")
         if slp:
             laz_path = Path(slp)

@@ -10,7 +10,7 @@ from app.constants import MAX_POINTS_DEFAULT
 
 class SceneInfo(BaseModel):
     id: str                      # tier-prefixed
-    tier: str                    # 'legacy' | 'annotated' | 'decimated' | 'raw'
+    tier: str                    # 'legacy' | 'annotated'
     name: str
     has_source: bool
     source_format: Optional[str]   # 'ply' | 'glb' | 'laz'

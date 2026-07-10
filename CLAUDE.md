@@ -37,7 +37,7 @@ npx vitest run src/api.test.js      # single frontend test (run from ./frontend 
 
 - `VOXA_PORT`, `VOXA_HOST` — backend bind (defaults `127.0.0.1:8765`)
 - `VOXA_DATA_DIR` — overrides `./data` for scenes + annotations
-- `VOXA_LIDAR_ROOT` — root of the canonical lidar archive (default `/home/hendrik/coding/engine/data/lidar`). Adds `annotated/`, `ply_viewer/`, `laz/` scenes to the picker; set to a missing path to disable.
+- `VOXA_LIDAR_ROOT` — root of the canonical lidar archive (default `/home/hendrik/coding/engine/data/lidar`). Adds `annotated/` scenes to the picker; set to a missing path to disable.
 - `VOXA_CONFIG` — path to a `classes.yaml` (default `config/classes.yaml`)
 - `VOXA_MAX_POINTS` — server-side subsample cap (default `1000000`)
 - `VOXA_RELOAD=1` — enable uvicorn `--reload` (off by default to avoid hitting the system inotify limit)
@@ -47,14 +47,14 @@ npx vitest run src/api.test.js      # single frontend test (run from ./frontend 
 
 **Backend** (`backend/`, FastAPI, served by `uvicorn main:app`):
 - `main.py` — assembles the FastAPI app and registers routers from `backend/routes/*.py`. HTTP endpoints live in `routes/{load,segment,sessions,compare,export,meta}.py`; Pydantic schemas in `app/schemas.py`; in-memory `_state` + helpers (`_recenter`, `_resume_session`, …) in `app/core.py`. Compare scoring is per-point (class agreement, per-class IoU/P/R, confusion matrix); there is no longer any cuboid-based IoU diff.
-- `scene_registry.py` — multi-root scene discovery. Returns `SceneSource` for each tier (`legacy` / `annotated` / `decimated` / `raw`). Scene IDs are tier-prefixed (`annotated/munich_water_pump`); bare legacy names still resolve.
+- `scene_registry.py` — multi-root scene discovery. Returns `SceneSource` for each tier (`legacy` / `annotated`). Scene IDs are tier-prefixed (`annotated/munich_water_pump`); bare legacy names still resolve.
 - `lidar_io.py` — `load_annotated` (SCHEMA-conformant v2 scans; reads working arrays from `sessions/<id>/`) and `load_laz` (chunked, stride-sampled via `laspy[lazrs]`). Auto-recenter for float32 stability lives in `app/core.py::_recenter`.
 - `point_cloud.py`, `supervoxels.py`, `clustering.py`, `fitting.py` — carried over from the old `3d-labeler`. Only the PLY/GLB loader and a small `auto-fit` (snap a cuboid to points inside an AABB) are wired into the current frontend; the supervoxel / cluster / RANSAC modules are present for future use but not exposed via routes.
 - Static frontend is mounted at `/` **only if `dist/` exists**, so `/api/*` always wins. In dev mode (`dist/` absent) the FastAPI process is API-only and Vite owns the UI.
 
 **Frontend** (`frontend/src/`, Vite + React 18 + Three.js, no TypeScript):
 - `main.jsx` mounts `<App>` plus `<Agentation>` (in-app feedback toolbar from the `agentation` package).
-- `App.jsx` is the shell: owns `scenes / activeScene / cloud / classes / gtInstances / predInstances` state, fetches config + scenes once, then re-loads cloud + GT + predictions whenever `activeScene` changes. It dispatches to one of three mode components and handles `⌘S/Ctrl+S` save.
+- `App.jsx` is the shell: owns `scenes / activeScene / cloud / classes / gtInstances / predInstances` state, fetches config + scenes once, then re-loads cloud + GT + predictions whenever `activeScene` changes. It dispatches to one of three mode components and handles `⌘S/Ctrl+S` save. The `ScenePicker` surfaces **annotated scenes plus the `legacy/test_scene` sandbox** — all other legacy scenes are filtered out of the picker UI (the backend still discovers/resolves them for internal guards). When no scene is selected the default falls back to `legacy/test_scene`, then the first scene.
 - `mode-inspect.jsx`, `mode-label.jsx`, `mode-compare.jsx` — feature surfaces. They share `viewer.jsx` (the Three.js viewport with `attachOrbit` and `attachWalk` camera schemes; `navMode` is lifted to `App` so it persists across mode switches) and the small atoms in `viewport-atoms.jsx`.
 - `api.js` is the only place that talks to `/api/*`. Point cloud `positions`/`colors` come over the wire as base64-encoded `Float32Array` payloads — decode via `b64ToFloat32`.
 - `tweaks-panel.jsx` is a generic tweak-host (theme/mode controls). It implements an external "edit mode" host protocol via `postMessage` (`__activate_edit_mode` / `__edit_mode_set_keys` / etc.) — do not delete those listeners without checking the Agentation integration.

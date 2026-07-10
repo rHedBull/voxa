@@ -1,16 +1,13 @@
 """Multi-root scene discovery for Voxa.
 
-Voxa scenes can come from four roots:
+Voxa scenes come from two roots:
 
   legacy     voxa/data/scenes/<name>/source.{ply,glb}
   annotated  $VOXA_LIDAR_ROOT/annotated/<name>/source/scan.ply (+ labels/, meta.json)
-  decimated  $VOXA_LIDAR_ROOT/ply_viewer/<name>.ply
-  raw        $VOXA_LIDAR_ROOT/laz/<name>.laz
 
-Scene IDs are tier-prefixed ('annotated/munich_water_pump') so that the same
-filename living in two tiers (e.g. 'Factory-large' in laz/ and ply_viewer/)
-doesn't collide. A bare legacy name still resolves for backward compatibility
-with the v1 endpoints and existing tests.
+Scene IDs are tier-prefixed ('annotated/munich_water_pump'). A bare legacy name
+still resolves for backward compatibility with the v1 endpoints and existing
+tests.
 """
 
 from __future__ import annotations
@@ -27,7 +24,7 @@ from scan_schema.layout import ScanLayout
 from scan_schema.metadata import check_meta
 
 
-VALID_TIERS = ("legacy", "annotated", "decimated", "raw")
+VALID_TIERS = ("legacy", "annotated")
 TIER_ORDER = {t: i for i, t in enumerate(VALID_TIERS)}
 
 
@@ -153,43 +150,12 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
     return out
 
 
-def _discover_decimated(lidar_root: Path) -> list[SceneSource]:
-    root = lidar_root / "ply_viewer"
-    if not root.is_dir():
-        return []
-    out: list[SceneSource] = []
-    for p in sorted(root.glob("*.ply")):
-        out.append(SceneSource(
-            tier="decimated", name=p.stem,
-            source_path=p, source_format="ply",
-            has_labels=False, has_intensity=False,
-        ))
-    return out
-
-
-def _discover_raw(lidar_root: Path) -> list[SceneSource]:
-    root = lidar_root / "raw"
-    if not root.is_dir():
-        return []
-    out: list[SceneSource] = []
-    # Some lidar archives drop .las next to .laz; discover() re-sorts by name.
-    for p in sorted([*root.glob("*.laz"), *root.glob("*.las")]):
-        out.append(SceneSource(
-            tier="raw", name=p.stem,
-            source_path=p, source_format="laz",
-            has_labels=False, has_intensity=True,
-        ))
-    return out
-
-
 def discover(data_dir: Path, lidar_root: Optional[Path]) -> list[SceneSource]:
     """Discover all scenes across all configured roots."""
     scenes: list[SceneSource] = []
     scenes.extend(_discover_legacy(data_dir))
     if lidar_root and lidar_root.is_dir():
         scenes.extend(_discover_annotated(lidar_root))
-        scenes.extend(_discover_decimated(lidar_root))
-        scenes.extend(_discover_raw(lidar_root))
     scenes.sort(key=lambda s: (TIER_ORDER.get(s.tier, 99), s.name.lower()))
     return scenes
 

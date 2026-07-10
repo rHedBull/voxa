@@ -1,4 +1,4 @@
-"""Scene discovery + resolution across legacy / annotated / decimated / raw roots."""
+"""Scene discovery + resolution across legacy / annotated roots."""
 
 from __future__ import annotations
 
@@ -44,12 +44,6 @@ def lidar_root(tmp_path):
     # annotated scenes
     _make_annotated(root / "annotated" / "munich_water_pump", with_labels=True)
     _make_annotated(root / "annotated" / "factory_large", with_labels=False)
-    # decimated PLYs
-    _write_tiny_ply(root / "ply_viewer" / "Construction-site-sample-data.ply")
-    _write_tiny_ply(root / "ply_viewer" / "Factory-large.ply")
-    # raw LAZ — just an empty placeholder file; load_laz isn't called here
-    (root / "raw").mkdir(parents=True, exist_ok=True)
-    (root / "raw" / "Factory-large.laz").write_bytes(b"placeholder")
     # classes.json
     (root / "classes.json").write_text(json.dumps({
         "version": 1, "unlabeled_id": -1,
@@ -76,23 +70,15 @@ def test_discover_finds_all_tiers(voxa_data, lidar_root):
     assert "legacy/test_scene" in by_id
     assert "annotated/munich_water_pump" in by_id
     assert "annotated/factory_large" in by_id
-    assert "decimated/Construction-site-sample-data" in by_id
-    assert "decimated/Factory-large" in by_id
-    assert "raw/Factory-large" in by_id
+    # Only legacy + annotated tiers are discovered.
+    assert {s.tier for s in scenes} == {"legacy", "annotated"}
 
 
 def test_discover_sorting_legacy_first_then_tier_name(voxa_data, lidar_root):
     scenes = discover(voxa_data, lidar_root)
     tiers = [s.tier for s in scenes]
-    # Legacy comes first, then annotated, decimated, raw.
-    assert tiers == sorted(tiers, key=lambda t: ("legacy annotated decimated raw".split()).index(t))
-
-
-def test_discover_collision_factory_large_in_two_tiers(voxa_data, lidar_root):
-    scenes = discover(voxa_data, lidar_root)
-    matches = [s for s in scenes if s.name == "Factory-large"]
-    assert len(matches) == 2
-    assert {m.tier for m in matches} == {"decimated", "raw"}
+    # Legacy comes first, then annotated.
+    assert tiers == sorted(tiers, key=lambda t: ("legacy annotated".split()).index(t))
 
 
 def test_annotated_has_labels_flag_only_when_arrays_present(voxa_data, lidar_root):
@@ -116,16 +102,6 @@ def test_resolve_unknown_raises_keyerror(voxa_data, lidar_root):
         resolve("annotated/does_not_exist", voxa_data, lidar_root)
     with pytest.raises(KeyError):
         resolve("does_not_exist", voxa_data, lidar_root)
-
-
-def test_resolve_collision_prefers_tier_prefixed(voxa_data, lidar_root):
-    # Both decimated/Factory-large and raw/Factory-large exist; bare 'Factory-large'
-    # is allowed to fall through to *any* match (current contract: legacy first,
-    # then any tier). Asserting the tier-prefixed forms succeed independently is
-    # the contract that actually matters.
-    a = resolve("decimated/Factory-large", voxa_data, lidar_root)
-    b = resolve("raw/Factory-large", voxa_data, lidar_root)
-    assert a.tier == "decimated" and b.tier == "raw"
 
 
 def test_discover_no_lidar_root_returns_only_legacy(voxa_data):

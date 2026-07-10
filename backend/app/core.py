@@ -18,7 +18,7 @@ from fastapi import HTTPException, Response
 from fastapi.responses import FileResponse
 
 from scenes.lidar_io import (
-    LabelArrays, load_annotated, load_laz, load_laz_region, z_up_to_y_up_xyz,
+    LabelArrays, load_annotated, load_laz_region, z_up_to_y_up_xyz,
     _laz_rgb_to_uint8,
 )
 from scenes.point_cloud import PointCloud, load_glb, load_ply
@@ -182,7 +182,6 @@ def _scene_is_z_up(src: SceneSource) -> bool:
     """Decide whether the scene's source frame is Z-up (surveying / LAS).
 
     - legacy: author-defined, treated as Y-up.
-    - decimated, raw: pulled from LAZ, always Z-up.
     - annotated: depends on what the PLY was sampled from.
       `meta.json::source_mesh` (a glTF) → Y-up.
       `meta.json::source_laz` → Z-up.
@@ -190,8 +189,6 @@ def _scene_is_z_up(src: SceneSource) -> bool:
     """
     if src.tier == "legacy":
         return False
-    if src.tier in ("decimated", "raw"):
-        return True
     return bool(src.extras.get("is_z_up", True))
 
 def _load_scene_source(src: SceneSource, max_points: int):
@@ -211,11 +208,7 @@ def _load_scene_source(src: SceneSource, max_points: int):
         return (a.pc, None, a.intensity, a.labels, palette, a.n_classes, a.n_instances,
                 n_labeled, bool(a.is_from_prelabel), None)
 
-    if src.tier == "raw":
-        pc, intensity, n_source_total = load_laz(src.source_path, max_points=max(max_points, 50_000))
-        return (pc, None, intensity, None, None, None, None, None, False, n_source_total)
-
-    # legacy + decimated → reuse the existing loaders
+    # legacy → reuse the existing PLY/GLB loaders
     if src.source_format == "glb":
         pc, mesh = load_glb(src.source_path, num_samples=max(max_points, 50_000))
         return (pc, mesh, None, None, None, None, None, None, False, None)

@@ -43,7 +43,7 @@ def test_sessions_list_non_annotated_returns_409(client):
     # fixture, so a made-up legacy id exercises the resolve step (404); the
     # tier-409 branch is covered implicitly by every annotated-tier test
     # passing through the same helper.
-    r = client.get("/api/scenes/decimated/some_scene/sessions")
+    r = client.get("/api/scenes/legacy/some_scene/sessions")
     assert r.status_code in (404, 409)
 
 

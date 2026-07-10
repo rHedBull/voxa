@@ -111,6 +111,10 @@ function MainApp() {
       setScenes(s);
       setActiveScene((cur) => {
         if (cur && s.some((x) => (x.id || x.name) === cur)) return cur;
+        // Nothing selected → fall back to the test_scene sandbox (hidden from
+        // the picker, which shows annotated scenes only); then first scene.
+        const sandbox = s.find((x) => (x.id || x.name) === 'legacy/test_scene');
+        if (sandbox) return sandbox.id || sandbox.name;
         return s[0]?.id || s[0]?.name || null;
       });
     });
@@ -759,21 +763,21 @@ function MainApp() {
 const TIER_LABEL = {
   legacy:    'Legacy (voxa/data/scenes)',
   annotated: 'Annotated (lidar/annotated)',
-  decimated: 'Decimated (lidar/ply_viewer)',
-  raw:       'Raw LAZ (lidar/laz)',
 };
 const TIER_DOT = {
   legacy:    '#6b7280',
   annotated: '#10b981',
-  decimated: '#5b8def',
-  raw:       '#f5a524',
 };
 
 function ScenePicker({ scenes, activeScene, onPick, onClose }) {
+  // The picker surfaces annotated scenes plus the test_scene sandbox; the other
+  // legacy scenes are backend-only (resolvable for internal guards, not listed).
+  const visible = scenes.filter((s) =>
+    (s.tier || 'legacy') !== 'legacy' || (s.id || s.name) === 'legacy/test_scene');
   // Group by tier (preserve the order returned by the backend).
   const groups = [];
   const seen = new Map();
-  for (const s of scenes) {
+  for (const s of visible) {
     const tier = s.tier || 'legacy';
     if (!seen.has(tier)) {
       const g = { tier, items: [] };
@@ -788,9 +792,9 @@ function ScenePicker({ scenes, activeScene, onPick, onClose }) {
       <div className="scene-picker-card" onClick={(e) => e.stopPropagation()}>
         <div className="side-hd">
           <span>Scenes</span>
-          <span className="badge-soft">{scenes.length}</span>
+          <span className="badge-soft">{visible.length}</span>
         </div>
-        {scenes.length === 0 && (
+        {visible.length === 0 && (
           <div className="sugg-empty">
             No scenes found. Drop a folder under <span className="mono">data/scenes/&lt;name&gt;/source.ply</span>,
             or set <span className="mono">VOXA_LIDAR_ROOT</span> to your lidar archive.
