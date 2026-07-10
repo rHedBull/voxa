@@ -211,7 +211,7 @@ The heart. Pure function: given `scan.ply` positions + its working `(class_ids, 
 - [ ] **Step 2: Run → fails.**
 - [ ] **Step 3: Implement — split scan-side precompute (reusable across chunks) from the per-target rule.**
 
-  `build_replay_index(scan_pos, work_inst, volumes, inst_class_id) → index` builds everything that depends only on `scan.ply` (so Task 5 builds it ONCE, not per chunk):
+  `build_replay_index(scan_pos, work_inst, volumes, seq_by_inst, inst_class_id) → index` builds everything that depends only on `scan.ply` (so Task 5 builds it ONCE, not per chunk):
   - `vol_ids = {v["instance_id"] for v in volumes}`; `vol_owned` = boolean over `scan.ply` where `work_inst ∈ vol_ids`.
   - `tree_all = cKDTree(scan_pos)`; `nonvol_idx = np.where(~vol_owned)[0]`; `tree_nonvol = cKDTree(scan_pos[nonvol_idx])`.
   - store `work_inst`, `volumes`, `seq_by_inst`, and the **class map** (see below).
@@ -288,7 +288,7 @@ Tie it together into the single entry point Phase B will call.
 - [ ] **Step 2: Run → fails.**
 - [ ] **Step 3: Implement** `materialize(ctx, resolution)`:
   - `kind in ("scan","subsample")` → `materialize_downsample(...)` (regime A). `n = len(scan_pos)` for `"scan"`, else `resolution["n"]` (validated ≤ len upstream).
-  - `kind == "raw"` → build the index once (`build_replay_index(ctx.scan_pos, ctx.work_inst, ctx.volumes, ctx.inst_class_id)`), then **concatenate** `materialize_raw(index, ...)` chunks into one return tuple.
+  - `kind == "raw"` → build the index once (`build_replay_index(ctx.scan_pos, ctx.work_inst, ctx.volumes, ctx.seq_by_inst, ctx.inst_class_id)`), then **concatenate** `materialize_raw(index, ...)` chunks into one return tuple.
     **This assembling wrapper is a convenience/small-cloud/test entry point only.** For a real 156M raw cloud it would hold the whole ~GB result in memory — exactly what chunking avoids. **Phase B's export endpoint must consume `materialize_raw(index, ...)`'s generator directly, streaming each chunk to the PLY temp file, and must NOT call `materialize(kind="raw")`.** State this in the docstring.
   - Always attach `accuracy = raw_sample_spacing(ctx.scan_pos)` (p50/p90) to the returned meta.
   - Return `(positions, colors, class_ids, instance_ids, meta)` where `meta` includes `accuracy` and the target point count. (The `ctx` is assembled by Phase B from `_state` + the session's working arrays + `instances_gt.json` + `centerlines.json`; the `inst_class_id` map is built there from the instance doc's `cls` strings via the class palette. Phase A only defines the contract and unit-tests it with synthetic `ctx`.)
