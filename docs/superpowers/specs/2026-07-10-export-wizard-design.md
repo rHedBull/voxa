@@ -187,7 +187,9 @@ the export resolution — surfaced both in the wizard Review step and in
   **semantic (preseg/legacy) labels only**; **box/pipe (volumetric) labels are
   exact** at any density; and export resolution does **not** improve it. The
   wizard line: *"Semantic boundary accuracy ±~2 cm (set by labeling density;
-  unchanged by export resolution). Box/pipe boundaries: exact."*
+  unchanged by export resolution). Box/pipe boundaries: exact."* — the "±~2 cm"
+  is **illustrative**; render the actual computed p90 for the loaded scan, never a
+  hardcoded literal.
 
 ### 5. Zip streaming + large-file safety
 
