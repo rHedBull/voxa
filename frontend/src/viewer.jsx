@@ -1413,10 +1413,12 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       : new Set(instances.map((i) => i.id));
     instances.forEach((inst) => {
       if (!visible.has(inst.id)) return;
-      // Pointset instances carry no cuboid (size/center are null); skip
-      // them in the cuboid renderer. The mesh-companion window receives
-      // raw gtInstances and so hits this path with mixed kinds.
-      if (!inst.size || !inst.center) return;
+      // Pointset instances are display-only in the cuboid renderer, even when
+      // they carry a persisted OBB (Box-tool selection volume now stores
+      // center/size/rotation). Gate on kind, not on null center/size — the
+      // mesh-companion window receives raw gtInstances and hits this path with
+      // mixed kinds.
+      if (inst.kind === 'pointset' || !inst.size || !inst.center) return;
       const isHi = inst.id === highlightedId || inst.id === selectedId;
       const box = new THREE.BoxGeometry(...inst.size);
       const edges = new THREE.EdgesGeometry(box);
