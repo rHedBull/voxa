@@ -26,40 +26,6 @@ function formatPointCount(n) {
 const LABEL_SEL_BOX_ID = '__label_sel_box__';
 const LABEL_SEL_BOX_COLOR = '#ffd24a';
 
-// Mirrors mode-edit.jsx::pointsInsideOBB — kept local to avoid refactoring
-// that file while voxa is live. Returns Uint32Array of subRow indices into
-// `positions` whose points lie inside the oriented box.
-function pointsInsideOBBLabel(positions, box) {
-  const [cx, cy, cz] = box.center;
-  const [sx, sy, sz] = box.size;
-  const [rx, ry, rz] = box.rotation;
-  const hx = sx / 2, hy = sy / 2, hz = sz / 2;
-  const cxR = Math.cos(rx), sxR = Math.sin(rx);
-  const cyR = Math.cos(ry), syR = Math.sin(ry);
-  const czR = Math.cos(rz), szR = Math.sin(rz);
-  const m00 = cyR * czR;
-  const m01 = sxR * syR * czR - cxR * szR;
-  const m02 = cxR * syR * czR + sxR * szR;
-  const m10 = cyR * szR;
-  const m11 = sxR * syR * szR + cxR * czR;
-  const m12 = cxR * syR * szR - sxR * czR;
-  const m20 = -syR;
-  const m21 = sxR * cyR;
-  const m22 = cxR * cyR;
-  const out = [];
-  const N = positions.length / 3;
-  for (let i = 0; i < N; i++) {
-    const px = positions[3 * i]     - cx;
-    const py = positions[3 * i + 1] - cy;
-    const pz = positions[3 * i + 2] - cz;
-    const lx = m00 * px + m10 * py + m20 * pz;
-    const ly = m01 * px + m11 * py + m21 * pz;
-    const lz = m02 * px + m12 * py + m22 * pz;
-    if (lx >= -hx && lx <= hx && ly >= -hy && ly <= hy && lz >= -hz && lz <= hz) out.push(i);
-  }
-  return out;
-}
-
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession, sessionLoading }) {
   const meshPopupRef = useRefLabel(null);
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
@@ -238,85 +204,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     });
   }, [cloudBBox]);
 
-  // Per-segment centroid memo. Sums positions per segment id and divides by
-  // count → one centroid per preseg. Recomputed only when the cloud or the
-  // segment assignment changes (not on selBox movement).
-  const segCentroids = useMemoLabel(() => {
-    if (!cloud?.positions || !segState?.instanceFull) return null;
-    const positions = cloud.positions;
-    const inst = segState.instanceFull;
-    const subIdx = cloud.subsampleIdx;
-    const subN = positions.length / 3;
-    // First pass: find max segment id so we can size the accumulators.
-    let maxId = -1;
-    for (let p = 0; p < subN; p++) {
-      const f = subIdx ? subIdx[p] : p;
-      const id = inst[f];
-      if (id > maxId) maxId = id;
-    }
-    if (maxId < 0) return null;
-    const n = maxId + 1;
-    const sx = new Float64Array(n);
-    const sy = new Float64Array(n);
-    const sz = new Float64Array(n);
-    const cnt = new Uint32Array(n);
-    for (let p = 0; p < subN; p++) {
-      const x = positions[3 * p];
-      // NaN sentinels (used by hideConfirmedPoints) get rejected here.
-      if (!Number.isFinite(x)) continue;
-      const f = subIdx ? subIdx[p] : p;
-      const id = inst[f];
-      if (id < 0) continue;
-      sx[id] += x;
-      sy[id] += positions[3 * p + 1];
-      sz[id] += positions[3 * p + 2];
-      cnt[id] += 1;
-    }
-    const cents = new Float32Array(n * 3);
-    for (let id = 0; id < n; id++) {
-      if (cnt[id] === 0) {
-        // mark inactive with NaN so the OBB test rejects it
-        cents[3 * id] = NaN; cents[3 * id + 1] = NaN; cents[3 * id + 2] = NaN;
-      } else {
-        cents[3 * id] = sx[id] / cnt[id];
-        cents[3 * id + 1] = sy[id] / cnt[id];
-        cents[3 * id + 2] = sz[id] / cnt[id];
-      }
-    }
-    return cents;
-  }, [cloud, segState?.instanceFull]);
-
-  // Commit: select every preseg whose CENTROID falls inside the box. Centroid
-  // test matches the visual mental model "is this segment in the box" much
-  // better than the any-point test (a 100k-point segment poking one point
-  // into the box no longer drags the whole segment in).
-  const confirmBoxSelect = useCallbackLabel(() => {
-    if (!selBox || !segCentroids) return;
-    const inSet = pointsInsideOBBLabel(segCentroids, selBox);
-    if (inSet.length === 0) { setSelBox(null); return; }
-    setSegState((s) => {
-      if (!s) return s;
-      const next = new Set(s.selection);
-      for (const segId of inSet) {
-        next.has(segId) ? next.delete(segId) : next.add(segId);
-      }
-      return { ...s, selection: next };
-    });
-    setSelBox(null);
-  }, [selBox, segCentroids, setSegState]);
-
-  // Esc cancels; Enter commits. Skip when typing into an input.
+  // Esc cancels the box-select. (Enter no longer centroid-selects — the Box
+  // tool supersedes that gesture; apply is Ctrl+Enter or a class hotkey.)
   useEffectLabel(() => {
     if (!selBox) return;
     const onKey = (e) => {
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       if (e.key === 'Escape') { e.preventDefault(); setSelBox(null); }
-      else if (e.key === 'Enter') { e.preventDefault(); confirmBoxSelect(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selBox, confirmBoxSelect]);
+  }, [selBox]);
 
   // Only the selected cuboid renders in the viewer — keeps the scene readable
   // when there are dozens/hundreds of prelabel instances. Hidden classes still
@@ -620,15 +519,17 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const helpSections = useMemoLabel(() => ([
     {
-      title: 'Cuboid',
+      title: 'Tools',
       items: [
-        { keys: ['A'], desc: 'Add cuboid for active class' },
-        { keys: ['G'], desc: 'Move (translate gizmo)' },
-        { keys: ['R'], desc: 'Rotate gizmo' },
-        { keys: ['Y'], desc: 'Scale gizmo' },
+        { keys: ['Rail'], desc: 'Switch Presegment / Box / Draw' },
+        { keys: ['Ctrl', '↵'], desc: 'Apply selection (pick class)' },
+        { keys: ['0–9'], desc: 'Apply selection with that class' },
+        { keys: ['✓'], desc: 'Confirm instance (row button)' },
+        { keys: ['G'], desc: 'Move box (translate gizmo)' },
+        { keys: ['R'], desc: 'Rotate box' },
+        { keys: ['Y'], desc: 'Scale box' },
         { keys: ['F'], desc: 'Frame selection' },
         { keys: ['⌫'], desc: 'Delete selected' },
-        { keys: ['Ctrl', '↵'], desc: 'Confirm selected (hides interior pts)' },
         { keys: ['⌘', 'S'], desc: 'Save annotations' },
       ],
     },
@@ -678,40 +579,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       n.has(cls) ? n.delete(cls) : n.add(cls);
       return n;
     });
-  };
-
-  // Add a cuboid centered on the loaded scene's bbox center, sized as a small
-  // cube. The user then nudges it via the inspector or auto-fit.
-  const addCuboid = useCallbackLabel(async () => {
-    if (!cloudBBox || !activeClassDef) return;
-    const cx = (cloudBBox.min[0] + cloudBBox.max[0]) / 2;
-    const cy = (cloudBBox.min[1] + cloudBBox.max[1]) / 2;
-    const cz = (cloudBBox.min[2] + cloudBBox.max[2]) / 2;
-    const ext = Math.max(
-      cloudBBox.max[0] - cloudBBox.min[0],
-      cloudBBox.max[1] - cloudBBox.min[1],
-      cloudBBox.max[2] - cloudBBox.min[2],
-    );
-    const s = Math.max(0.05, ext * 0.1);
-    const inst = {
-      id: newId(),
-      cls: activeClassDef.id,
-      label: `${activeClassDef.label} ${(counts[activeClassDef.id] || 0) + 1}`,
-      color: activeClassDef.color,
-      center: [cx, cy, cz],
-      size: [s, s, s],
-      rotation: [0, 0, 0],
-      conf: 1.0,
-      source: 'manual',
-    };
-    const next = [...instances, inst];
-    onChange(next);
-    setSelectedId(inst.id);
-  }, [activeClassDef, instances, cloudBBox, counts, onChange]);
-
-  const updateSelected = (patch) => {
-    const next = instances.map((i) => i.id === selectedId ? { ...i, ...patch } : i);
-    onChange(next);
   };
 
   const updateInstance = (id, patch) => {
@@ -995,78 +862,79 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     setSelectedId(null);
   };
 
-  const autoFitSelected = async () => {
-    if (!selected) return;
-    const half = selected.size.map((v) => v / 2);
-    const cmin = [selected.center[0] - half[0], selected.center[1] - half[1], selected.center[2] - half[2]];
-    const cmax = [selected.center[0] + half[0], selected.center[1] + half[1], selected.center[2] + half[2]];
-    const fitted = await VoxaAPI.autoFit(cmin, cmax, selected.cls,
-      activeClassDef?.color || selected.color, selected.label);
-    updateSelected({ center: fitted.center, size: fitted.size });
-  };
+  // Snap the box-select OBB to the points inside its AABB (rotation ignored,
+  // matching the old cuboid auto-fit). Drives the Box tool's Auto-fit button.
+  const autoFitBox = useCallbackLabel(async () => {
+    if (!selBox) return;
+    const half = selBox.size.map((v) => v / 2);
+    const cmin = [selBox.center[0] - half[0], selBox.center[1] - half[1], selBox.center[2] - half[2]];
+    const cmax = [selBox.center[0] + half[0], selBox.center[1] + half[1], selBox.center[2] + half[2]];
+    const fitted = await VoxaAPI.autoFit(cmin, cmax, activeClass,
+      activeClassDef?.color, 'box-select');
+    setSelBox((b) => (b ? { ...b, center: fitted.center, size: fitted.size } : b));
+  }, [selBox, activeClass, activeClassDef]);
 
-  // Hotkeys: 0–9 assign class, ⌫ delete, A add, F frame, ⌘S save.
-  // In walk mode the viewer owns WASD/QE; bail on those keys here so we
-  // don't double-fire (e.g. 'A' is both walk-left and add-cuboid).
-  // Gated on activeTool === 'box' so Pick/Brush tools own their own hotkeys.
+  // Hotkeys: class key applies/labels the active selection, ⌫ delete, F frame,
+  // G/R/Y transform the box, ⌘S save. In walk mode the viewer owns WASD/QE.
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-      // Fast labeling / Draw sub-modes own the keyboard while active; keep
-      // the regular Label hotkeys (add cuboid, densify, frame, …) out of the
-      // way. DrawMode's DrawKeys runs in capture phase like FastLabelKeys.
+      // Fast labeling / Draw sub-modes own the keyboard while active.
+      // DrawMode's DrawKeys runs in capture phase like FastLabelKeys.
       if (fastMode || drawMode) return;
-      // Ctrl/Cmd+Enter is tool-agnostic: with a presegment selection it
-      // collapses the selection into a new instance; otherwise it toggles
-      // the confirmed flag on the active cuboid (the legacy behaviour).
+      // Ctrl/Cmd+Enter is tool-agnostic: with a tool selection it opens the
+      // class picker to apply; otherwise (Box tool) it toggles the confirmed
+      // flag on the selected instance.
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         if ((segState && segState.selection.size > 0) || (activeTool === 'box' && selBox)) {
-          // Open the class picker so the user can quick-pick the class for
-          // the new (unconfirmed) pointset instead of falling back on the
-          // activeClass. In Box mode this routes to applyBox; otherwise to
-          // confirmSegmentSelection. The picker has its own keydown handler.
+          // Open the class picker so the user can quick-pick the class for the
+          // new (unconfirmed) pointset. In Box mode this routes to applyBox;
+          // otherwise to confirmSegmentSelection.
           setClassPickerOpen(true);
         } else if (activeTool === 'box') {
           toggleConfirmSelected();
         }
         return;
       }
-      if (activeTool !== 'box') return;
+      // In walk mode the viewer owns WASD/QE — bail on those keys so we don't
+      // double-fire (several classes also bind w/e/r/q as hotkeys).
       if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
+      // Class hotkey. Runs before the Box-only gate so it works for a preseg
+      // selection in any tool. With an active tool selection it applies+labels
+      // (honoring auto-confirm inside confirmSegmentSelection / applyBox);
+      // with no selection it just sets the active class.
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
-        setActiveClass(cls.id);
-        // Class change is an edit — block it for confirmed instances.
-        if (selected && !isLocked) updateSelected({ cls: cls.id, color: cls.color });
-      } else if (e.key === 'Backspace' || e.key === 'Delete') {
-        if (selected && !isLocked) { e.preventDefault(); deleteSelected(); }
-      } else if (e.key === 'a' || e.key === 'A') {
-        addCuboid();
-      } else if (e.key === 'f' || e.key === 'F') {
-        if (selected) {
-          viewerRef.current?.frame(
-            new THREE.Vector3(...selected.center),
-            Math.max(...selected.size) / 2,
-          );
+        if (segState && segState.selection.size > 0) {
+          e.preventDefault();
+          confirmSegmentSelection(cls);
+        } else if (activeTool === 'box' && selBox) {
+          e.preventDefault();
+          applyBox(cls);
+        } else {
+          setActiveClass(cls.id);
         }
+        return;
+      }
+      // Below here: Box-tool gizmo/selection interactions only.
+      if (activeTool !== 'box') return;
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        if (selected && !isLocked) { e.preventDefault(); deleteSelected(); }
+      } else if (e.key === 'f' || e.key === 'F') {
+        if (selected) focusInstance(selected);
       } else if ((!isLocked || !!selBox) && (e.key === 'g' || e.key === 'G')) {
         setTransformMode('translate');
       } else if ((!isLocked || !!selBox) && (e.key === 'r' || e.key === 'R')) {
         setTransformMode('rotate');
       } else if ((!isLocked || !!selBox) && (e.key === 'y' || e.key === 'Y')) {
         setTransformMode('scale');
-      } else if (e.key === 'd' || e.key === 'D') {
-        // Densify: pop full-density LAZ points inside the selected cuboid.
-        // Manual trigger so we don't refetch on every gizmo drag tick. The
-        // overlay auto-clears when the box moves or the cuboid is deselected.
-        if (selected) setDenseTrigger((t) => t + 1);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, fastMode, drawMode]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, applyBox, fastMode, drawMode]);
 
   return (
     <div className="mode-root label">
@@ -1148,6 +1016,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onExit={() => setActiveTool('presegment')}
           onDrawApplied={onDrawApplied}
           hasBox={!!selBox} onDrawBox={toggleBoxSelect}
+          transformMode={transformMode} setTransformMode={setTransformMode}
+          onAutoFit={autoFitBox}
           onApply={() => setClassPickerOpen(true)} />
       </aside>
 
@@ -1167,7 +1037,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           pointSize={pointSize}
           diffMask={diffMask}
           showDiff={showDiff}
-          transformMode={selBox ? (transformMode || 'translate') : (activeTool === 'box' && !isLocked ? transformMode : null)}
+          transformMode={selBox ? (transformMode || 'translate') : null}
           onCuboidTransform={onCuboidTransform}
           highlightCuboid={highlightCuboid}
           selectionMask={selectionMask}
@@ -1231,36 +1101,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         </div>
 
         <ViewportToolbar side="left">
-          {activeTool === 'box' && (
-            <>
-              {(!isLocked || !!selBox) && (
-                <>
-                  <ToolButton mini icon="⇄" label="Move (G)"
-                    onClick={() => setTransformMode('translate')}
-                    active={transformMode === 'translate'} />
-                  <ToolButton mini icon="↻" label="Rotate (R)"
-                    onClick={() => setTransformMode('rotate')}
-                    active={transformMode === 'rotate'} />
-                  <ToolButton mini icon="⇲" label="Scale (Y)"
-                    onClick={() => setTransformMode('scale')}
-                    active={transformMode === 'scale'} />
-                </>
-              )}
-              {selected && (
-                <>
-                  <div className="tool-sep" />
-                  <ToolButton mini icon="◎" label="Focus selection (F)"
-                    onClick={() => focusInstance(selected)} />
-                  {!isLocked && (
-                    <>
-                      <ToolButton mini icon="✦" label="Auto-fit selection" onClick={autoFitSelected} />
-                      <ToolButton mini icon="⌫" label="Delete selection" onClick={deleteSelected} />
-                    </>
-                  )}
-                </>
-              )}
-            </>
-          )}
           {segState?.isFromPrelabel && (
             <ToolButton mini
               icon="Δ"
@@ -1268,23 +1108,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               onClick={() => setShowDiff((v) => !v)}
               active={showDiff}
             />
-          )}
-          {segState && !drawMode && (
-            <>
-              <ToolButton mini
-                icon="◫"
-                label={selBox ? 'Cancel box (Esc)' : 'Box-select segments'}
-                onClick={toggleBoxSelect}
-                active={!!selBox}
-              />
-              {selBox && (
-                <ToolButton mini
-                  icon="✓"
-                  label="Confirm box (Enter)"
-                  onClick={confirmBoxSelect}
-                />
-              )}
-            </>
           )}
           <ToolButton mini icon="↺" label="Reset cam" onClick={() => viewerRef.current?.preset('iso')} />
         </ViewportToolbar>
@@ -1335,7 +1158,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         </div>
         <div className="inst-list">
           {instances.length === 0 && (
-            <div className="sugg-empty">No instances yet. Press <kbd>A</kbd> to add.</div>
+            <div className="sugg-empty">No instances yet. Pick a tool, select points, and apply.</div>
           )}
           {instances.length > 0 && filteredInstances.length === 0 && (
             <div className="sugg-empty">No matches for "{instFilter}".</div>

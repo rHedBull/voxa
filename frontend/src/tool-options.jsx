@@ -67,14 +67,30 @@ function DrawOptions({
   );
 }
 
-function BoxOptions({ autoConfirm, setAutoConfirm, hasBox, onDrawBox, onApply }) {
+function BoxOptions({
+  autoConfirm, setAutoConfirm, hasBox, onDrawBox, onApply,
+  transformMode, setTransformMode, onAutoFit,
+}) {
   return (
     <div className="tool-options tool-options-box">
       {hasBox ? (
-        <div className="tool-opt-toggle">
-          <button onClick={onDrawBox}>Clear box</button>
-          <button className="active" onClick={onApply}>Apply (Ctrl+Enter)</button>
-        </div>
+        <>
+          <div className="tool-opt-toggle">
+            <button onClick={onDrawBox}>Clear box</button>
+            <button className="active" onClick={onApply}>Apply (Ctrl+Enter)</button>
+          </div>
+          <div className="tool-opt-toggle">
+            <button className={transformMode === 'translate' ? 'active' : ''}
+              onClick={() => setTransformMode('translate')}>Move (G)</button>
+            <button className={transformMode === 'rotate' ? 'active' : ''}
+              onClick={() => setTransformMode('rotate')}>Rotate (R)</button>
+            <button className={transformMode === 'scale' ? 'active' : ''}
+              onClick={() => setTransformMode('scale')}>Scale (Y)</button>
+          </div>
+          <div className="tool-opt-toggle">
+            <button onClick={onAutoFit}>Auto-fit box</button>
+          </div>
+        </>
       ) : (
         <>
           <div className="tool-opt-toggle">
