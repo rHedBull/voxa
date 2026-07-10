@@ -1,7 +1,7 @@
 # Resolution-independent labels (volumetric saving + materialize-at-any-density)
 
 **Date:** 2026-07-10
-**Status:** Draft — under spec review
+**Status:** Draft — under spec review (rev 2, addresses reviewer blockers)
 
 ## Problem
 
@@ -19,12 +19,11 @@ and today there is none.
 
 Two facts discovered during brainstorming shape the design:
 
-1. **The raw full-density clouds exist for (almost) every scan.** They live in
+1. **The raw full-density clouds exist for most scans.** They live in
    `<lidar_root>/raw/*.laz` (7.6M–156M points), registered in
-   `<lidar_root>/raw/sources.json` with fingerprints, and each annotated scan's
-   `meta.json::derivation.root.source_id` points back to its raw source.
-   `scan.ply` is a recentered downsample of that raw (the recenter offset is
-   recorded in the scan's `derivation` / `sample_param`).
+   `<lidar_root>/raw/sources.json` with fingerprints, and most annotated scans'
+   `meta.json::derivation.root.source_id` points back to their raw source.
+   `scan.ply` is a recentered downsample of that raw.
 2. **Reconstructing an exact `scan.ply`↔raw index map by re-running the
    downsample is not viable and not needed.** The scans use three different
    sample methods (`random` seeded, `uniform`, `voxel_down_sample`); 7 of 10 use
@@ -45,18 +44,20 @@ Per-point labels + instances remain the **final output** — this is about
 ### Scope (decided during brainstorming)
 
 - **Annotated tier only.** Legacy scans have no raw lineage.
-- **Volume-based sources rasterize exactly; preseg transfers by NN.** Box and
-  Draw are pure geometric membership (see below), so storing their volume and
-  re-rasterizing at any density is lossless. Presegment is an arbitrary point
-  cluster with no primitive → nearest-neighbor transfer, which we accept.
-- **`scan.ply`'s working array is the precedence oracle** — no apply-order
-  metadata is stored or replayed (see §2).
+- **Volume-based sources rasterize exactly; preseg + legacy transfer by NN.**
+  Box and Draw are pure geometric membership (see below), so storing their volume
+  and re-rasterizing at any density is lossless. Presegment is an arbitrary point
+  cluster with no primitive, and legacy cuboids are display-only → both go by
+  nearest-neighbor transfer.
+- **We must persist apply-order** (revised — see §2). The earlier assumption that
+  the working array alone encodes recoverable precedence is false for dense
+  points in volume-overlap regions; a per-instance order rank is required.
 - **Degrade gracefully when no raw is linked.** Materialization above
-  `scan.ply` density is simply unavailable for that scan (as with the existing
-  Edit "Full density" checkbox); down-sampling from `scan.ply` always works.
+  `scan.ply` density is simply unavailable for that scan; down-sampling from
+  `scan.ply` always works.
 - **Out of scope:** a live "volumes are the source of truth while editing"
   rewrite of the apply pipeline. The working array stays the live store; volumes
-  are stored *alongside* it and consumed at materialize time only.
+  + order are stored *alongside* it and consumed at materialize time only.
 
 ## Background: why Box/Draw are lossless as volumes, preseg is not
 
@@ -64,152 +65,186 @@ Per-point labels + instances remain the **final output** — this is about
   per-point refinement. At `scan.ply` resolution the box is *already* a blunt
   volume-membership label. Storing the OBB and rasterizing it at 30M points is
   the identical semantics with more points — nothing to lose.
-- **Draw (pipe/tank)** — `centerlines.json` already persists, per instance,
-  `{class_id, instance_id, points:[[x,y,z]…], radius, smooth}`: a swept-sphere
-  (capsule chain). Point-in-tube is a distance test; exact at any density.
+- **Draw (pipe/tank)** — `centerlines.json` already persists, per `instance_id`,
+  one or more paths `{class_id, instance_id, points:[[x,y,z]…], radius, smooth}`
+  (branches/merges mean one instance can own several paths —
+  `centerline.py::update_centerlines` appends per instance, and `tube_indices`
+  takes the path *list*). Point-in-tube is a distance test; exact at any density.
 - **Presegment** — `kind:"pointset", segId:<n>` rows are arbitrary clusters from
-  a precomputed segmentation. No box/tube captures them without loss → NN only.
+  a precomputed segmentation. No box/tube captures them without loss → NN.
+- **Legacy `kind:"cuboid"`** — display-only per CLAUDE.md; the box need not
+  tightly bound its labeled points, so it must **not** be treated as a volume →
+  NN.
+
+The volume test is therefore keyed on **`source`**, not on the presence of
+`center/size`: an instance is a volume iff `source=='box'` (OBB from
+`center/size/rotation`) or `source=='draw'` (tube from `centerlines.json`).
+Everything else — `preseg`, `manual`, `fit`, legacy `cuboid` — materializes by NN.
 
 Box is the one tool that *could* be volumetric but currently discards its OBB on
 apply (CLAUDE.md: "the box vanishes and its enclosed points become a pointset").
 This design **re-persists the box OBB** — as the selection volume that *is* the
-label, not as a display cuboid with a gizmo. The `Cuboid` schema still carries
-`center/size/rotation` (currently `null` on pointsets), so storage is
-low-friction. This is a conscious, narrow reversal of the "cuboids retired"
-decision, limited to persisting the selection volume.
+label, not as a display cuboid with a gizmo. The `Cuboid` schema already carries
+`center/size/rotation` (`schemas.py:90-92`, currently `null` on pointsets), so
+storage is low-friction. This is a conscious, narrow reversal of "cuboids
+retired," limited to persisting the selection volume for `source=='box'`.
 
 ## Design
 
-### 1. Storage — an optional `shape` on each instance
+### 1. Storage — `source`-typed shape + apply-order on each instance
 
-Extend the instance doc (`instances_gt.json`, `Cuboid`/instance schema in
-`app/schemas.py`) so a volumetric instance carries a resolution-independent
-primitive:
+Extend the instance doc (`instances_gt.json`, `Cuboid` in `app/schemas.py`):
 
-- **Box** → `shape:{type:"obb", center:[3], size:[3], rotation:[3]}` (reuse the
-  existing `center/size/rotation` fields; the box apply stops discarding them).
-- **Draw** → `shape:{type:"tube", …}` — already persisted in
-  `centerlines.json`, keyed by `instance_id`. Keep that file as the pipe editing
-  store; the materializer reads it. (No duplication: `centerlines.json` is the
-  tube's home; `instances_gt.json` need only mark the instance `source:"draw"`.)
-- **Presegment / any per-point source** → no `shape`. Materialized via NN.
+- **Box** (`source=='box'`): the box apply stops discarding the OBB — persist
+  `center/size/rotation` on the resulting instance. `kind` may stay `pointset`
+  (the live working array still holds its scan.ply points); the OBB is the
+  resolution-independent shape read at materialize time.
+- **Draw** (`source=='draw'`): tube paths stay in `centerlines.json`, keyed by
+  `instance_id` (unchanged). The materializer unions all paths for the instance.
+- **`seq`: an integer apply-order rank** on every instance (all sources). Assigned
+  monotonically at apply time. This is the piece the naive design wrongly omitted.
+  (Plan note: monotonic instance-id assignment may already encode this — to
+  confirm; if so `seq` derives from it, otherwise add an explicit counter.)
 
 Shapes are stored in the **display/recentered frame** (the frame the user drew
 them in), consistent with `centerlines.json` today.
 
-### 2. Precedence oracle — the `scan.ply` working array
+### 2. Why apply-order is required (corrected premise)
 
-By the time `working_*.npy` is saved, every apply has run in order and last-wins
-is baked in: each `scan.ply` point has exactly one `(class, instance)`. So the
-working array **already encodes resolved precedence**. We never store or replay
-apply-order — we ask the oracle. This removes the only piece of ordering
-metadata the naive design would have needed.
+The working array encodes last-wins *only at `scan.ply` sample locations*. For a
+**dense** point in the interior of two overlapping boxes A (earlier) then B
+(later), `scan.ply` baked A∩B → B, but its nearest `scan.ply` sample may be an
+A-only point → NN alone would label it A. The overlap interior would be speckled
+A/B by sampling density, contradicting the last-wins result the user produced.
+`obb_indices` (`shapes.py`) is pure membership with no ordering, so the only
+place order ever lived was the apply sequence. To reproduce last-wins for dense
+points we must persist it. Hence `seq` (§1).
 
 ### 3. Materialize(target_cloud) → (class_ids, instance_ids)
 
-Inputs: the active session's working arrays + `scan.ply` positions (oracle), the
-instance shapes, and a `target_cloud` (N×3, in `scan.ply`'s display frame — see
-§4 for frame alignment). Steps:
+Two regimes, chosen by target density:
 
-1. **NN baseline.** `cKDTree(scan.ply)` → for each target point, its nearest
-   `scan.ply` point resolves `inst_nn` (and its class). One query; this is the
-   layer that carries preseg + overall precedence.
-2. **Volume refinement.** For each target point `p` with nearest-instance
-   `inst_nn`, apply this deterministic rule (a volume only sharpens its *own*
-   instance's extent; it never steals a point the oracle gave to another labeled
-   instance):
+**A. Target ≤ `scan.ply` density (down-sample) — exact, no NN, no shapes.**
+Subsample `scan.ply` (reuse `_safe_subsample`) and index the working array:
+`labels[idx]`. This trivially reproduces the working array (identity when
+`idx == arange`). This path serves Inspect/Compare and any coarser export.
 
-   - `inst_nn` is a **volume** (box/tube) `i`:
-     - `p` inside `i`'s shape → `i` *(confirm)*
-     - `p` outside `i`'s shape → the other volume that contains `p` if any, else
-       background *(exclusion-sharpen: kill NN leak past the true box edge)*
-   - `inst_nn` is **unlabeled (−1)** but `p` is inside some volume `j` → `j`
-     *(inclusion-sharpen: claim dense points the sparse `scan.ply` missed inside
-     the box)*
-   - `inst_nn` is a **preseg** instance → keep it *(oracle's identity stands)*
+**B. Target denser than `scan.ply` (super-resolution) — ordered replay.**
+Ground truth does not exist between `scan.ply` samples, so this regime is
+*defined* by the stored primitives, not reconstructed from a denser original:
 
-3. Emit `class_ids` (int8) + `instance_ids` (int32) for the target cloud.
+- Partition `scan.ply` points into **volumetric-owned** (working instance has
+  `source∈{box,draw}`) and **non-volumetric** (preseg / legacy / manual / −1).
+- **Non-volumetric baseline:** build `cKDTree` over the *non-volumetric* points
+  only; for each target point `p`, its nearest such point gives a candidate
+  `(inst_nv, seq_nv)` (background = seq −∞). Volumetric points are excluded from
+  the baseline so an OBB edge sample can never "leak" a box label onto a point
+  that lies outside the box.
+- **Volumetric candidates:** for each volumetric instance `V`, `p ∈ shape(V)`
+  contributes candidate `(V, seq_V)`. (OBB: inverse-transform + half-extent test;
+  tube: min segment-distance ≤ radius over all of the instance's paths.)
+- **Winner = the max-`seq` candidate.** No candidate ⇒ background (−1).
 
-**The one policy choice — locked to defer-to-`scan.ply`.** A point geometrically
-inside a box whose oracle neighbor is a *preseg* instance (e.g. a tube crossing a
-preseg wall) keeps the preseg label. Faithful to "what it actually was at label
-resolution." The alternative ("volumes always beat preseg") is rejected — it
-could override a deliberate later apply.
+This one rule resolves every case the reviewer raised, by order rather than
+heuristic:
+- *Two overlapping boxes, dense interior:* both A and B are candidates via
+  geometric membership regardless of nearest sample; `seq_B > seq_A` ⇒ B. ✔
+- *Point inside a box that was later reassigned/erased:* the later op has higher
+  `seq` (a later preseg reclassify shows up in the non-volumetric baseline with
+  its higher seq; a later box as a higher-seq volumetric candidate) ⇒ later op
+  wins. ✔
+- *Point outside a box but inside a surrounding preseg wall, nearest sample is a
+  box edge:* box `V` is not a candidate (`p ∉ shape(V)`); the box's points are
+  excluded from the baseline, so the baseline resolves to the wall preseg ⇒ wall.
+  ✔ (No spurious drop-to-background.)
 
-Complexity: one KD-tree build + query over `scan.ply` (~3M), plus O(N · shapes)
-point-in-shape tests; shapes are few and each test is cheap (OBB inverse-
-transform + bounds; tube segment-distance). Materialization is deterministic and
-cacheable as one `int32` NN-index array per (scan, target variant).
+**Guarantees (stated honestly):** volumetric-instance boundaries are **exact** at
+any density; non-volumetric (preseg/legacy) boundaries are **NN-approximate** to
+~`scan.ply` sample spacing (a few cm) — no ground truth exists to do better;
+precedence among all instances follows the persisted `seq`. Regime A is exact.
+
+Complexity: one KD-tree over the non-volumetric `scan.ply` subset + one query per
+target point, plus O(target · #volumes) cheap point-in-shape tests. Deterministic;
+the target→(labels) result is cacheable per (scan, target variant).
 
 ### 4. Raw resolution + frame alignment (prerequisite)
 
 To materialize *above* `scan.ply` density we need the raw cloud path and the
-transform that maps a shape (display frame) into the raw's frame.
+transform mapping a shape (display frame) into the raw's frame.
 
-- **Raw path.** `scene_registry._discover_annotated` currently resolves the raw
-  only from `meta.source_laz`, which is `null` on regenerated scans. Extend it to
-  fall back to the scan-schema registry: `meta.derivation.root.source_id` →
-  `raw/sources.json` → `raw/<file>.laz`. Prefer the existing package
-  (`scan_schema.Registry`) over re-parsing JSON. Result still surfaced as
-  `SceneSource.extras["source_laz_path"]`, so downstream code is unchanged.
+- **Raw path.** `scene_registry._discover_annotated` resolves the raw only from
+  `meta.source_laz` today (`scene_registry.py:129`). That is `null` on **two 3.0
+  Matterport scans** (`mechanical_room_matterport`, `parkhouse_matterport`) which
+  *do* have a `derivation.root.source_id` resolvable in `raw/sources.json`, and on
+  **three lineage-less 2.0 scans** (`water_pump_navvis_3m`,
+  `water_pump_navvis_500k`, `bim_industrial_mep_matterport`) which have neither
+  and are permanently capped at `scan.ply` density. Extend the resolver to fall
+  back to `meta.derivation.root.source_id` → `scan_schema.Registry` →
+  `lidar_root / entry.path` (`Registry` exposes `root(source_id).path`; prefer a
+  roots-only / `root_by_basename` load over the full `Registry.load`, which also
+  walks all of `annotated/`). Result still surfaced as
+  `SceneSource.extras["source_laz_path"]`, so downstream is unchanged.
 - **Frame alignment.** Shapes live in the recentered display frame; the raw LAZ
   is in the source surveying frame (Z-up + UTM). Reuse the transforms the
-  Edit-mode full-density export already relies on
-  (`2026-06-08-edit-raw-full-density-export-design.md`):
-  `_to_display_frame(xyz, scene_is_z_up, offset)` streams raw points into the
-  display frame before the point-in-shape / NN test; the recenter `offset` is
-  the constant shift recorded for the scan. No new transform math.
-- **Streaming.** Reuse the chunked LAZ reader (`_stream_laz_keep` /
-  `load_laz`-style chunk iteration) so a 150M raw never loads whole into memory;
-  materialize per chunk, write incrementally.
+  Edit-mode full-density export relies on
+  (`2026-06-08-edit-raw-full-density-export-design.md`): `_to_display_frame(xyz,
+  scene_is_z_up, offset)` (`core.py:371`) streams raw points into the display
+  frame before the point-in-shape / NN test; `_stream_laz_keep` (`core.py:408`)
+  chunks the LAZ so a 150M cloud never loads whole. A membership/NN test in the
+  display frame is frame-identical to the geometric cutout those helpers were
+  built for. **The recenter `offset` is not stored on disk** — `_recenter`
+  (`core.py:129`) recomputes `points.mean(axis=0)` at load and stashes it in
+  `_state["recenter_offset"]`. It is deterministic from `scan.ply`, so reuse is
+  valid, but materialize therefore inherits the single-in-memory-cloud coupling
+  (CLAUDE.md gotcha): it requires a prior `/api/load` of the same scan to have
+  populated `_state`, exactly like `auto-fit` and `edit-export`.
 
 ### 5. API / consume surface
 
-A single export entrypoint, mirroring the existing Edit full-density export:
+A single export entrypoint, mirroring the Edit full-density export:
 
 `POST /api/labels/materialize` (name TBD in plan) with:
-- `resolution`: `"scan"` (identity — return the working array as-is),
-  `"raw"` (full raw LAZ), or a target point count `N` (subsample of raw when
-  `N > len(scan.ply)`, else subsample of `scan.ply`).
+- `resolution`: `"scan"` (regime A identity — return the working array),
+  a target point count `N` (regime A when `N ≤ len(scan.ply)`; regime B subsample
+  of raw when `N > len(scan.ply)`), or `"raw"` (regime B, full raw LAZ).
 - Writes a labeled cloud (PLY/NPY) to the session's `output/` as a **derived
   product** — the canonical `scan.ply` working array is never overwritten.
-- `raw_source_available` (already on `LoadResponse` from the Edit-export work,
-  once §4 broadens its resolution) gates the denser options in the UI.
-
-Down-sampling (`N ≤ len(scan.ply)`) needs no raw and no NN: subsample `scan.ply`
-and index the working array (`labels[idx]`) — reuse `_safe_subsample`.
+- Gated in the UI by `raw_source_available` (already on `LoadResponse` from the
+  Edit-export work) once §4 broadens its resolution; regime-B options disabled
+  when no raw is linked.
 
 ## Testing
 
-- **Materialize unit tests** (`backend/tests/`):
-  - Identity: `materialize(scan.ply positions)` reproduces the working array
-    exactly.
+- **Regime A** (`backend/tests/`):
+  - Identity: `resolution="scan"` returns the working array byte-for-byte.
   - Down-sample: `N < len(scan.ply)` equals `labels[subsample_idx]`.
-  - OBB exclusion/inclusion sharpen: synthetic cloud + one OBB instance; assert
-    points just outside the box are dropped and dense points inside a sparsely-
-    sampled box are claimed.
-  - Tube rasterize: a capsule from `centerlines.json` labels exactly the points
-    within `radius`.
-  - Precedence: overlapping box + preseg region → shared points keep the
-    oracle's instance (defer-to-`scan.ply`).
-- **Raw resolution** (`backend/tests/`): an annotated scan with `source_laz:
-  null` but a `derivation.root.source_id` present resolves `source_laz_path` via
-  `sources.json`; a scan with neither resolves to `None` (denser materialize
-  disabled, not an error).
-- **Frame alignment**: reuse existing LAZ fixtures; assert a shape rasterized
-  onto raw-streamed-into-display-frame selects the analogous region it selects on
-  `scan.ply`.
+- **Regime B precedence — these must actually exercise the blocker/majors:**
+  - **Two overlapping boxes at dense resolution**, `seq_B>seq_A`: assert the
+    entire A∩B interior is B (not sampling-speckled). *(guards the blocker)*
+  - **Erased/reassigned point inside a retained box**: a point set to −1 (or to a
+    higher-`seq` preseg) inside box `V` materializes to −1 / the preseg, not `V`.
+  - **Box inside a preseg wall**: dense points outside the box but inside the wall
+    materialize to the wall, never dropped to background.
+  - **Legacy `kind:"cuboid"`**: materializes by NN, is never sharpened.
+  - **Multi-path tube**: an instance with two `centerlines.json` paths labels the
+    union of both capsules.
+- **Raw resolution** (`backend/tests/`): a scan with `source_laz:null` but a
+  `derivation.root.source_id` resolves `source_laz_path` via `sources.json`; a
+  lineage-less scan resolves to `None` (regime B disabled, not an error).
+- **Frame alignment**: reuse existing LAZ fixtures; a shape rasterized onto
+  raw-streamed-into-display-frame selects the region analogous to `scan.ply`.
 - **Browser** (per project rule): materialize an annotated scan at raw density,
-  load the result in Inspect, confirm box/tube edges are crisp and preseg regions
-  are contiguous; zero console errors.
+  load the result in Inspect — box/tube edges crisp, preseg regions contiguous,
+  zero console errors.
 
 ## Out of scope / follow-ups
 
 - Live "volumes as source of truth during editing" (re-rasterize on every apply).
   Deferred; the working array stays the live store.
-- Freehand/lasso point cleanup as a tool — would be another per-point (NN)
-  source; none exists today.
-- Caching the NN-index map on disk per (scan, target) — start by computing on
-  demand; add caching only if materialize latency warrants it.
-- `bim_industrial_mep_matterport` and any scan whose raw is genuinely absent:
-  materialize is capped at `scan.ply` density until/unless the raw is restored.
+- Freehand/lasso point cleanup as a tool — another per-point (NN) source; none
+  exists today.
+- Caching the target→labels result on disk per (scan, target); compute on demand
+  first, add caching only if latency warrants it.
+- **Permanently `scan.ply`-capped scans** (no raw lineage): `water_pump_navvis_3m`,
+  `water_pump_navvis_500k`, `bim_industrial_mep_matterport`. Regime B is
+  unavailable for these until/unless a raw source is registered.
