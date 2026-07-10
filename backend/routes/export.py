@@ -9,6 +9,7 @@ from app.constants import *  # noqa: F401,F403
 from app.schemas import *  # noqa: F401,F403
 from app.core import *  # noqa: F401,F403
 from labeling.materialize import MaterializeCtx, collect_volumes
+from labeling.centerline import load_centerlines
 
 router = APIRouter()
 
@@ -37,7 +38,6 @@ def _build_materialize_ctx(scene: str, session_id: str):
     p = _annotation_path(scene, "gt", session_id)
     instances = json.loads(p.read_text()).get("instances", []) if p.exists() else []
 
-    from labeling.centerline import load_centerlines
     centerlines = load_centerlines(seg.session_dir)
     volumes = collect_volumes(instances, centerlines)
 
