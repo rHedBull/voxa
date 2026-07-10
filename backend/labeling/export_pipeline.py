@@ -195,7 +195,7 @@ def build_manifest(
             for tid, t in taxonomy.items()
         },
         "accuracy": {
-            "labeling_points": labeling_points,
+            "labeling_points": int(labeling_points) if labeling_points is not None else None,
             "sample_spacing_p50_m": float(round(p50, 4)),
             "sample_spacing_p90_m": float(round(p90, 4)),
             "semantic_boundary_uncertainty_m": float(round(p90, 4)),
