@@ -62,6 +62,8 @@ def test_box_obb_and_seq_round_trip(client_with_annotated_scene):
 Run: `.venv/bin/pytest backend/tests/test_annotation_sessions.py::test_box_obb_and_seq_round_trip -v`
 Expected: FAIL — `seq` is dropped (not a schema field), so `inst["seq"]` KeyError / assertion error.
 
+(If `.venv` is missing — fresh clone — create it once with `npm run test:backend`, which runs `scripts/test.sh` to build `.venv` and install dev deps, then use `.venv/bin/pytest` for single tests.)
+
 - [ ] **Step 3: Add the field**
 
 In `backend/app/schemas.py`, inside `class Cuboid`, add after the `segId` line (97):
@@ -258,6 +260,8 @@ python3 -c "import json,glob; f=sorted(glob.glob('/home/hendrik/coding/engine/da
 Expected: the last box instance shows non-null `center`/`size`/`rotation` and a `seq`.
 
 - [ ] **Step 4: Take a screenshot of the applied-box state** (per global rule for UI changes) and confirm it matches the intended "no visible cuboid" behavior.
+
+Note: one benign behavior change — pressing `F` on a selected box instance now frames the camera on it (previously a no-op, since `center/size` were null). For a box pointset with live `segState`, `focusInstance` frames the actual labeled points (segId branch, mode-label.jsx:555); only in a degraded state (no `segState`) does it fall back to the OBB. Camera-only, no gizmo/edges — acceptable, not a regression against the "no visible cuboid" goal.
 
 - [ ] **Step 5: Commit**
 
