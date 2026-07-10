@@ -95,8 +95,7 @@ class Cuboid(BaseModel):
     confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
     kind: str = "cuboid"     # 'cuboid' | 'pointset'
     segId: Optional[int] = None  # set for pointset (and preseg-promoted) instances; per-point membership key in segState.instanceFull
-    seq: Optional[int] = None  # monotonic apply-order rank; stamped on save. See
-    # docs/superpowers/specs/2026-07-10-resolution-independent-labels-design.md §2
+    seq: Optional[int] = None  # monotonic apply-order rank; stamped on save (resolution-independent-labels spec §2)
 
 class AnnotationDoc(BaseModel):
     scene: str
