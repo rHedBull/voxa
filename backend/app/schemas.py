@@ -158,6 +158,12 @@ class CenterlineApplyRequest(BaseModel):
     target_inst: int = -1
     merged_from: list[int] = []
 
+class ApplyShapeRequest(BaseModel):
+    shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
+    target_class: int | str
+    target_inst: int = -1
+    merged_from: list[int] = []
+
 class SegmentStateResponse(BaseModel):
     """Snapshot of the in-memory segment session, returned to the frontend
     on page reload so the user doesn't have to re-run preseg every time
