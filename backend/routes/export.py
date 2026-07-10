@@ -162,6 +162,21 @@ def edit_export_ply(req: ExportPlyRequest) -> Response:
                     media_type="application/octet-stream")
 
 
+@router.get("/api/labels/accuracy")
+def labels_accuracy(scene: str, session_id: str) -> dict:
+    """p50/p90 nearest-neighbor sample spacing of the active scan.ply — the
+    labeling-density boundary uncertainty shown in the export wizard."""
+    if _state.get("scene") != scene:
+        raise HTTPException(409, f"scene mismatch — server has '{_state.get('scene')}', request was '{scene}'")
+    if _state.get("session_id") != session_id:
+        raise HTTPException(409, f"session mismatch — server has '{_state.get('session_id')}', request was '{session_id}'")
+    pc = _state.get("pc")
+    if pc is None:
+        raise HTTPException(409, "no scene loaded")
+    p50, p90 = raw_sample_spacing(pc.points)
+    return {"p50": p50, "p90": p90}
+
+
 @router.post("/api/labels/export")
 def export_labels(req: ExportLabelsRequest) -> Response:
     """Export the active session's labels at any of scan/subsample/raw

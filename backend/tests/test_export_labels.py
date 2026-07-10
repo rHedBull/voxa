@@ -651,3 +651,23 @@ def test_export_labels_unknown_kind_422_error_shape(client_with_annotated_scene)
     detail = r.json()["detail"]
     assert isinstance(detail["errors"], list)
     assert any("unknown resolution kind" in e.lower() for e in detail["errors"])
+
+
+# ---------------------------------------------------------------------------
+# Task 6b: GET /api/labels/accuracy
+# ---------------------------------------------------------------------------
+
+def test_labels_accuracy_returns_p50_p90(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 100000})
+    r = client.get(f"/api/labels/accuracy?scene={scene_id}&session_id={session_id}")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["p90"] >= d["p50"] >= 0
+
+
+def test_labels_accuracy_scene_mismatch_409(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 100000})
+    r = client.get(f"/api/labels/accuracy?scene=wrong/scene&session_id={session_id}")
+    assert r.status_code == 409
