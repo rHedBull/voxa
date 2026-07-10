@@ -6,11 +6,12 @@ export function ViewportToolbar({ children, side = 'left' }) {
   return <div className="vp-toolbar" data-side={side}>{children}</div>;
 }
 
-export function ToolButton({ icon, label, active, badge, onClick, hotkey, mini }) {
+export function ToolButton({ icon, label, active, badge, onClick, hotkey, mini, disabled }) {
   return (
     <button type="button"
-      className={'tool-btn' + (active ? ' active' : '') + (mini ? ' mini' : '')}
-      onClick={onClick}
+      className={'tool-btn' + (active ? ' active' : '') + (mini ? ' mini' : '') + (disabled ? ' disabled' : '')}
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
       title={label + (hotkey ? `  (${hotkey})` : '')}>
       <span className="tool-ico" aria-hidden>{icon}</span>
       {!mini && <span className="tool-lbl">{label}</span>}

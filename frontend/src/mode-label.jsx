@@ -14,6 +14,7 @@ import DrawMode from './draw-mode.jsx';
 import SessionPicker from './session-picker.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 import { TOOLS, toolAvailable, defaultTool } from './label-tools.js';
+import ToolRail from './tool-rail.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -1169,6 +1170,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         />
 
         <div className="vp-hud-top">
+          <div className="hud-group">
+            <ToolRail activeTool={activeTool} onSelect={setActiveTool}
+              ctx={{ segState, isAnnotated }} />
+          </div>
           <div className="hud-group">
             {labelStats.total > 0 && (
               <HUDChip label="Points left"
