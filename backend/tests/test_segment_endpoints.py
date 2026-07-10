@@ -286,6 +286,31 @@ def test_save_writes_into_session_output(client_with_loaded_annotated_scene, sca
     assert "preseg_fingerprint" in meta
 
 
+def test_save_persists_dirty_false_to_session_json(client_with_annotated_scene):
+    """After an edit + save, session.json must record dirty:false. The
+    autosave inside save persists the still-True flag first, so the endpoint
+    has to re-persist the cleared flag — otherwise the session list keeps
+    reporting the session as unsaved after reload (stuck "● unsaved" badge)."""
+    import main
+    client, scene_id, session_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+
+    # An edit marks the working canvas dirty.
+    client.post("/api/segment/apply", json={
+        "op": "set_class",
+        "indices": _b64_int32([1, 2]),
+        "payload": {"class_id": 2},
+    })
+    seg = main._state["seg"]
+    assert seg.dirty is True  # edit marks the working canvas dirty
+    session_json = seg.session_dir / "session.json"
+
+    r = client.put("/api/segment/save")
+    assert r.status_code == 200, r.text
+    assert json.loads(session_json.read_text())["dirty"] is False
+
+
 def test_save_without_session_409(client_with_annotated_scene):
     """Saving without an active session_id in _state must return 409."""
     import main

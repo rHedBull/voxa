@@ -206,7 +206,11 @@ def segment_save():
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # The flush_autosave above persisted dirty:True; now that the export
+    # succeeded, re-persist the cleared flag so the session list stops
+    # reporting this session as unsaved after reload.
     seg.dirty = False
+    seg.persist_aux()
     labeled = out_inst >= 0
     n_labeled_points = int(labeled.sum())
     n_segments = int(np.unique(out_inst[labeled]).size) if labeled.any() else 0

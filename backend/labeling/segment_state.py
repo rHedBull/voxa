@@ -318,6 +318,12 @@ class SegmentSession:
             self._autosave_timer = None
         self._do_autosave(write_arrays=True)
 
+    def persist_aux(self) -> None:
+        """Rewrite session.json (aux only, no working arrays) so a flag change
+        like `dirty` reaches disk. Needed after an export clears `dirty`, since
+        the preceding autosave persisted the still-True flag."""
+        self._do_autosave(write_arrays=False)
+
     def _delta_payload(self, d: _Delta, direction: str) -> dict:
         # Frontend reapplies these by index → (class, instance).
         cls = d.before_cls if direction == "undo" else d.after_cls
