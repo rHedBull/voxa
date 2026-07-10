@@ -5,6 +5,7 @@ from labeling.materialize import (
     build_replay_index,
     replay_labels,
     materialize_raw,
+    raw_sample_spacing,
 )
 
 
@@ -271,3 +272,30 @@ def test_materialize_raw_colorless_las_yields_none_rgb(tmp_path):
     assert all(c[1] is None for c in chunks)   # rgb-absent path
     all_inst = np.concatenate([c[3] for c in chunks], axis=0)
     assert all_inst[0] == 10 and all_inst[2] == 20   # replay still runs
+
+
+# ---------------------------------------------------------------------------
+# Sample-spacing accuracy metric (Task 6)
+# ---------------------------------------------------------------------------
+
+def test_sample_spacing_p90_ge_p50_positive():
+    rng = np.random.default_rng(0)
+    pos = rng.random((2000, 3)).astype(np.float32)
+    p50, p90 = raw_sample_spacing(pos)
+    assert p50 > 0 and p90 >= p50
+
+
+def test_sample_spacing_matches_direct_nn():
+    # A regular grid has ~uniform spacing 1.0; p50 and p90 both ~1.0.
+    xs = np.arange(10)
+    ys = np.arange(10)
+    zs = np.arange(10)
+    grid = np.array([[x, y, z] for x in xs for y in ys for z in zs], dtype=np.float32)
+    p50, p90 = raw_sample_spacing(grid)
+    assert abs(p50 - 1.0) < 1e-5
+    assert abs(p90 - 1.0) < 0.5   # boundary points push p90 slightly, still ~1
+
+
+def test_sample_spacing_tiny_cloud():
+    p50, p90 = raw_sample_spacing(np.zeros((1, 3), dtype=np.float32))
+    assert p50 == 0.0 and p90 == 0.0

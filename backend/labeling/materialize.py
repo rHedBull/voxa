@@ -186,3 +186,18 @@ def materialize_raw(index: ReplayIndex, raw_path, scene_is_z_up: bool, offset,
         display_xyz = _to_display_frame(xyz_src, scene_is_z_up, offset)
         cls, inst = replay_labels(index, display_xyz)
         yield (display_xyz, rgb8, cls, inst)
+
+
+def raw_sample_spacing(scan_pos, sample=100_000, seed=0):
+    """Nearest-neighbor spacing of scan.ply (its true sampling pitch). Returns
+    (p50, p90) over a bounded random subsample; p90 is the honest boundary bound
+    under non-uniform LiDAR sampling. Built independent of any regime KD-tree."""
+    scan_pos = np.asarray(scan_pos, dtype=np.float32).reshape(-1, 3)
+    n = len(scan_pos)
+    if n < 2:
+        return 0.0, 0.0
+    rng = np.random.default_rng(seed)
+    q = scan_pos if n <= sample else scan_pos[rng.choice(n, sample, replace=False)]
+    d, _ = cKDTree(scan_pos).query(q, k=2)      # k=2: nearest non-self
+    nn = d[:, 1]
+    return float(np.percentile(nn, 50)), float(np.percentile(nn, 90))
