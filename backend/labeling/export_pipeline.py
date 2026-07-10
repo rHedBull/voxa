@@ -166,3 +166,53 @@ def count_absent_instances(
     """
     distinct = set(int(iid) for iid in np.unique(work_inst) if iid != -1)
     return sum(1 for iid in distinct if iid not in confirmed_by_inst)
+
+
+def build_manifest(
+    taxonomy: dict[int, dict],
+    p50: float,
+    p90: float,
+    scan: str,
+    session: str,
+    resolution: dict,
+    points: int,
+    confirmed_only: bool,
+    include_classes: list[int] | None,
+    drop_unlabeled: bool,
+    absent_count: int,
+    exported_at: str,
+    labeling_points: int | None = None,
+) -> dict:
+    """Build the export zip's manifest.json (pure function; exported_at is passed in).
+
+    Returns:
+        A dict with classes, accuracy, source, resolution, and filters.
+        All values are JSON-serializable (no numpy types).
+    """
+    return {
+        "classes": {
+            str(tid): {"label": t["label"], "color": t["color"]}
+            for tid, t in taxonomy.items()
+        },
+        "accuracy": {
+            "labeling_points": labeling_points,
+            "sample_spacing_p50_m": float(round(p50, 4)),
+            "sample_spacing_p90_m": float(round(p90, 4)),
+            "semantic_boundary_uncertainty_m": float(round(p90, 4)),
+            "note": (
+                "Semantic (preseg/legacy) boundaries are accurate to ~one "
+                "labeling-cloud sample spacing (reported as p90 to reflect non-"
+                "uniform LiDAR sampling) and are set by labeling density, NOT the "
+                "export resolution. Box/pipe (volumetric) boundaries are exact at "
+                "any density."
+            ),
+        },
+        "source": {"scan": scan, "session": session, "exported_at": exported_at},
+        "resolution": {"kind": resolution["kind"], "points": int(points)},
+        "filters": {
+            "confirmed_only": confirmed_only,
+            "include_classes": include_classes,
+            "drop_unlabeled": drop_unlabeled,
+            "absent_instances": int(absent_count),
+        },
+    }

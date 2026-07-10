@@ -216,3 +216,147 @@ def test_apply_filters_remap_does_not_mutate_inputs():
     apply_filters_remap(class_ids, instance_ids, {10: False}, req, src_to_tgt)
     assert np.array_equal(class_ids, cls_before)
     assert np.array_equal(instance_ids, inst_before)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: build_manifest
+# ---------------------------------------------------------------------------
+
+import json
+from labeling.export_pipeline import build_manifest
+
+
+def test_build_manifest_basic_structure():
+    """Manifest from small taxonomy, verify structure and JSON serialization."""
+    taxonomy = {
+        0: {"label": "building", "color": "#8b5cf6"},
+        1: {"label": "pipe", "color": "#22c55e"},
+    }
+    manifest = build_manifest(
+        taxonomy=taxonomy,
+        p50=0.021,
+        p90=0.058,
+        scan="annotated/test_scene",
+        session="s_123",
+        resolution={"kind": "scan"},
+        points=50000,
+        confirmed_only=False,
+        include_classes=None,
+        drop_unlabeled=False,
+        absent_count=2,
+        exported_at="2026-07-11T10:30:00Z",
+        labeling_points=100000,
+    )
+
+    # Verify structure
+    assert "classes" in manifest
+    assert "accuracy" in manifest
+    assert "source" in manifest
+    assert "resolution" in manifest
+    assert "filters" in manifest
+
+    # Class keys are strings (JSON)
+    assert "0" in manifest["classes"]
+    assert manifest["classes"]["0"]["label"] == "building"
+    assert manifest["classes"]["0"]["color"] == "#8b5cf6"
+    assert "1" in manifest["classes"]
+    assert manifest["classes"]["1"]["label"] == "pipe"
+
+    # Accuracy: p90 is the headline uncertainty
+    assert manifest["accuracy"]["sample_spacing_p50_m"] == 0.021
+    assert manifest["accuracy"]["sample_spacing_p90_m"] == 0.058
+    assert manifest["accuracy"]["semantic_boundary_uncertainty_m"] == 0.058
+    assert manifest["accuracy"]["labeling_points"] == 100000
+
+    # Note mentions labeling density and exact
+    note = manifest["accuracy"]["note"]
+    assert "labeling density" in note.lower()
+    assert "exact" in note.lower()
+
+    # Source matches passed values (not generated internally)
+    assert manifest["source"]["scan"] == "annotated/test_scene"
+    assert manifest["source"]["session"] == "s_123"
+    assert manifest["source"]["exported_at"] == "2026-07-11T10:30:00Z"
+
+    # Resolution and filters
+    assert manifest["resolution"]["kind"] == "scan"
+    assert manifest["resolution"]["points"] == 50000
+    assert manifest["filters"]["confirmed_only"] is False
+    assert manifest["filters"]["include_classes"] is None
+    assert manifest["filters"]["drop_unlabeled"] is False
+    assert manifest["filters"]["absent_instances"] == 2
+
+    # JSON serializable (no numpy types)
+    json.dumps(manifest)
+
+
+def test_build_manifest_with_include_classes():
+    """Manifest respects include_classes filter."""
+    taxonomy = {0: {"label": "pipe", "color": "#22c55e"}}
+    manifest = build_manifest(
+        taxonomy=taxonomy,
+        p50=0.05,
+        p90=0.1,
+        scan="scene_x",
+        session="s_x",
+        resolution={"kind": "subsample", "n": 100000},
+        points=100000,
+        confirmed_only=True,
+        include_classes=[0, 1],
+        drop_unlabeled=True,
+        absent_count=0,
+        exported_at="2026-07-11T11:00:00Z",
+        labeling_points=50000,
+    )
+
+    assert manifest["filters"]["confirmed_only"] is True
+    assert manifest["filters"]["include_classes"] == [0, 1]
+    assert manifest["filters"]["drop_unlabeled"] is True
+    assert manifest["resolution"]["kind"] == "subsample"
+
+
+def test_build_manifest_labeling_points_optional():
+    """Labeling_points can be None."""
+    taxonomy = {0: {"label": "test", "color": "#fff"}}
+    manifest = build_manifest(
+        taxonomy=taxonomy,
+        p50=0.01,
+        p90=0.02,
+        scan="s",
+        session="x",
+        resolution={"kind": "scan"},
+        points=1000,
+        confirmed_only=False,
+        include_classes=None,
+        drop_unlabeled=False,
+        absent_count=0,
+        exported_at="2026-07-11T00:00:00Z",
+        labeling_points=None,
+    )
+
+    assert manifest["accuracy"]["labeling_points"] is None
+    json.dumps(manifest)
+
+
+def test_build_manifest_p50_p90_rounding():
+    """Verify p50 and p90 are rounded to 4 decimals."""
+    taxonomy = {0: {"label": "x", "color": "#000"}}
+    manifest = build_manifest(
+        taxonomy=taxonomy,
+        p50=0.0123456,
+        p90=0.9876543,
+        scan="s",
+        session="x",
+        resolution={"kind": "scan"},
+        points=1000,
+        confirmed_only=False,
+        include_classes=None,
+        drop_unlabeled=False,
+        absent_count=0,
+        exported_at="2026-07-11T00:00:00Z",
+    )
+
+    # Rounding to 4 decimals
+    assert manifest["accuracy"]["sample_spacing_p50_m"] == 0.0123
+    assert manifest["accuracy"]["sample_spacing_p90_m"] == 0.9877  # rounds up
+    assert manifest["accuracy"]["semantic_boundary_uncertainty_m"] == 0.9877
