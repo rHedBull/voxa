@@ -402,3 +402,36 @@ def test_ply_labeled_no_color():
     dt = np.dtype([("xyz","<f4",3),("class_id","<i4"),("instance_id","<i4")])
     rec = np.frombuffer(body, dtype=dt)
     assert len(rec) == n
+
+
+# ---------------------------------------------------------------------------
+# Task 5: _build_materialize_ctx
+# ---------------------------------------------------------------------------
+
+
+def test_build_materialize_ctx_shapes_and_invariant(client_with_annotated_scene):
+    from routes.export import _build_materialize_ctx
+
+    client, scene_id, session_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 100})
+    assert r.status_code == 200
+
+    ctx, instances, confirmed_by_inst, class_id_by_inst = _build_materialize_ctx(scene_id, session_id)
+
+    assert ctx.scan_pos.shape[0] == ctx.work_cls.shape[0] == ctx.work_inst.shape[0]
+
+    present_ids = {int(i) for i in np.unique(ctx.work_inst) if int(i) >= 0}
+    assert present_ids.issubset(set(ctx.inst_class_id.keys()))
+
+
+def test_build_materialize_ctx_scene_mismatch_raises_409(client_with_annotated_scene):
+    from fastapi import HTTPException
+    from routes.export import _build_materialize_ctx
+
+    client, scene_id, session_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 100})
+    assert r.status_code == 200
+
+    with pytest.raises(HTTPException) as exc_info:
+        _build_materialize_ctx("wrong-scene", session_id)
+    assert exc_info.value.status_code == 409

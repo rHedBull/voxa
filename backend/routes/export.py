@@ -1,13 +1,82 @@
 """Voxa API routes: export."""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException, Response
 
 from app.constants import *  # noqa: F401,F403
 from app.schemas import *  # noqa: F401,F403
 from app.core import *  # noqa: F401,F403
+from labeling.materialize import MaterializeCtx, collect_volumes
 
 router = APIRouter()
+
+
+def _build_materialize_ctx(scene: str, session_id: str):
+    """Assemble a MaterializeCtx (+ the instance doc / confirmed / class maps)
+    from the active session's in-memory state + on-disk files.
+
+    Snapshots the in-memory state up front so a concurrent /api/load can't
+    swap `_state["seg"]`/`_state["pc"]` out from under this read.
+    """
+    if _state.get("scene") != scene:
+        raise HTTPException(
+            409, f"scene mismatch — server has '{_state.get('scene')}', request was '{scene}'")
+    if _state.get("session_id") != session_id:
+        raise HTTPException(
+            409, f"session mismatch — server has '{_state.get('session_id')}', request was '{session_id}'")
+
+    seg = _state["seg"]
+    pc = _state["pc"]
+    src = _state["source"]
+    offset = np.asarray(_state.get("recenter_offset") or [0.0, 0.0, 0.0])
+    if seg is None:
+        raise HTTPException(409, "no active session")
+
+    p = _annotation_path(scene, "gt", session_id)
+    instances = json.loads(p.read_text()).get("instances", []) if p.exists() else []
+
+    from labeling.centerline import load_centerlines
+    centerlines = load_centerlines(seg.session_dir)
+    volumes = collect_volumes(instances, centerlines)
+
+    class_id_by_inst: dict[int, int] = {}
+    seq_by_inst: dict[int, "int | None"] = {}
+    confirmed_by_inst: dict[int, bool] = {}
+    for i in instances:
+        sid = i.get("segId")
+        if sid is None:
+            continue
+        sid = int(sid)
+        class_id_by_inst[sid] = _coerce_class_id(i["cls"])
+        seq_by_inst[sid] = i.get("seq")
+        confirmed_by_inst[sid] = bool(i.get("confirmed"))
+
+    # Phase A's replay_labels indexes inst_class_id[winner_inst] for every
+    # instance id it sees in seg.instance_ids -> must cover all of them, not
+    # just the ones with an instance-doc entry (e.g. blank/legacy sessions).
+    present = np.unique(seg.instance_ids)
+    for iid in present:
+        iid = int(iid)
+        if iid < 0 or iid in class_id_by_inst:
+            continue
+        k = int(np.argmax(seg.instance_ids == iid))
+        class_id_by_inst[iid] = int(seg.class_ids[k])
+
+    ctx = MaterializeCtx(
+        scan_pos=pc.points,
+        colors=pc.colors,
+        work_cls=seg.class_ids,
+        work_inst=seg.instance_ids,
+        volumes=volumes,
+        seq_by_inst=seq_by_inst,
+        inst_class_id=class_id_by_inst,
+        raw_path=src.extras.get("source_laz_path"),
+        scene_is_z_up=_scene_is_z_up(src),
+        offset=offset,
+    )
+    return ctx, instances, confirmed_by_inst, class_id_by_inst
 
 
 @router.post("/api/edit/export-ply")
