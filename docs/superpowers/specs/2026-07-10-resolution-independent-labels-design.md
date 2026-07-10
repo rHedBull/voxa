@@ -101,10 +101,12 @@ Extend the instance doc (`instances_gt.json`, `Cuboid` in `app/schemas.py`):
   resolution-independent shape read at materialize time.
 - **Draw** (`source=='draw'`): tube paths stay in `centerlines.json`, keyed by
   `instance_id` (unchanged). The materializer unions all paths for the instance.
-- **`seq`: an integer apply-order rank** on every instance (all sources). Assigned
-  monotonically at apply time. This is the piece the naive design wrongly omitted.
-  (Plan note: monotonic instance-id assignment may already encode this — to
-  confirm; if so `seq` derives from it, otherwise add an explicit counter.)
+- **`seq`: an integer apply-order rank** on every instance (all sources),
+  assigned from an **explicit monotonic counter at apply time**. This is the
+  piece the naive design wrongly omitted. Do *not* derive `seq` from
+  `instance_id`: merges (Draw `M`), preseg-promoted instances, and legacy
+  instances loaded from disk can have non-monotonic or reused ids. Persist the
+  counter in the session.
 
 Shapes are stored in the **display/recentered frame** (the frame the user drew
 them in), consistent with `centerlines.json` today.
@@ -133,30 +135,36 @@ Subsample `scan.ply` (reuse `_safe_subsample`) and index the working array:
 Ground truth does not exist between `scan.ply` samples, so this regime is
 *defined* by the stored primitives, not reconstructed from a denser original:
 
-- Partition `scan.ply` points into **volumetric-owned** (working instance has
-  `source∈{box,draw}`) and **non-volumetric** (preseg / legacy / manual / −1).
-- **Non-volumetric baseline:** build `cKDTree` over the *non-volumetric* points
-  only; for each target point `p`, its nearest such point gives a candidate
-  `(inst_nv, seq_nv)` (background = seq −∞). Volumetric points are excluded from
-  the baseline so an OBB edge sample can never "leak" a box label onto a point
-  that lies outside the box.
-- **Volumetric candidates:** for each volumetric instance `V`, `p ∈ shape(V)`
-  contributes candidate `(V, seq_V)`. (OBB: inverse-transform + half-extent test;
-  tube: min segment-distance ≤ radius over all of the instance's paths.)
+Mark each `scan.ply` point **volumetric-owned** iff its working instance has
+`source∈{box,draw}`. Build one `cKDTree` over **all** `scan.ply` points. For each
+target point `p`, collect candidates:
+
+- **Volumetric candidates:** every volumetric instance `V` with `p ∈ shape(V)`
+  contributes `(V, seq_V)` (exact). OBB: inverse-transform + half-extent test;
+  tube: min segment-distance ≤ radius over all of the instance's paths.
+- **Baseline candidate** from the nearest sample's owner `O`:
+  - `O` non-volumetric ⇒ `(O, seq_O)`.
+  - `O` volumetric **and** `p ∈ shape(O)` ⇒ `(O, seq_O)` — *interior defended*:
+    the box competes at full strength for its own interior.
+  - `O` volumetric **and** `p ∉ shape(O)` ⇒ the **leak** case: discard `O` and
+    re-query the nearest **non-volumetric** point for the baseline candidate.
 - **Winner = the max-`seq` candidate.** No candidate ⇒ background (−1).
 
-This one rule resolves every case the reviewer raised, by order rather than
-heuristic:
-- *Two overlapping boxes, dense interior:* both A and B are candidates via
-  geometric membership regardless of nearest sample; `seq_B > seq_A` ⇒ B. ✔
-- *Point inside a box that was later reassigned/erased:* the later op has higher
-  `seq` (a later preseg reclassify shows up in the non-volumetric baseline with
-  its higher seq; a later box as a higher-seq volumetric candidate) ⇒ later op
-  wins. ✔
-- *Point outside a box but inside a surrounding preseg wall, nearest sample is a
-  box edge:* box `V` is not a candidate (`p ∉ shape(V)`); the box's points are
-  excluded from the baseline, so the baseline resolves to the wall preseg ⇒ wall.
-  ✔ (No spurious drop-to-background.)
+The point of building the tree over *all* points and gating the baseline (rather
+than pre-excluding volumetric points) is that a box must be able to *defend* its
+interior: excluding volumetric points would let a far, higher-`seq` preseg that
+never covered `p` win the box's interior, re-creating a regime-A/B disagreement.
+This rule resolves every case by order, not heuristic:
+- *Two overlapping boxes, dense interior* (`seq_B>seq_A`): both A and B are
+  geometric candidates regardless of nearest sample ⇒ B. ✔
+- *Box interior, an adjacent preseg has higher `seq`:* the far preseg is **not**
+  admitted (it is neither `p`'s covering volume nor its nearest owner); the
+  nearest sample is V-owned and covers `p` ⇒ V. ✔ (matches regime A)
+- *Point inside a box later reassigned by a preseg that actually covers it:* that
+  preseg is `p`'s nearest owner with higher `seq` ⇒ preseg. ✔ (matches regime A)
+- *Point outside a box, inside a surrounding preseg wall, nearest sample is a box
+  edge:* leak case — `O=V` discarded, re-query nearest non-volumetric ⇒ wall. ✔
+  (no spurious drop-to-background)
 
 **Guarantees (stated honestly):** volumetric-instance boundaries are **exact** at
 any density; non-volumetric (preseg/legacy) boundaries are **NN-approximate** to
@@ -221,8 +229,16 @@ A single export entrypoint, mirroring the Edit full-density export:
 - **Regime B precedence — these must actually exercise the blocker/majors:**
   - **Two overlapping boxes at dense resolution**, `seq_B>seq_A`: assert the
     entire A∩B interior is B (not sampling-speckled). *(guards the blocker)*
-  - **Erased/reassigned point inside a retained box**: a point set to −1 (or to a
-    higher-`seq` preseg) inside box `V` materializes to −1 / the preseg, not `V`.
+  - **Box interior defended vs a higher-`seq` adjacent preseg**: preseg `P`
+    (`seq_P > seq_V`) drawn *next to* box `V` (P does not cover V's interior);
+    assert V's interior materializes to `V`, not `P`. *(guards the rev2 defect —
+    fails under the "exclude volumetric from baseline" rule, passes under the
+    interior-defense gate)*
+  - **Reassigned point inside a box**: a preseg that *does* cover interior points
+    of box `V` with `seq_P > seq_V` materializes those points to `P`. (Erase-to
+    −1 inside a retained box is not modeled — `obb_indices` labels all points in
+    the OBB on apply and there is no unlabel-while-retaining-volume op, so
+    background carries `seq −∞` and can never out-rank the enclosing volume.)
   - **Box inside a preseg wall**: dense points outside the box but inside the wall
     materialize to the wall, never dropped to background.
   - **Legacy `kind:"cuboid"`**: materializes by NN, is never sharpened.
