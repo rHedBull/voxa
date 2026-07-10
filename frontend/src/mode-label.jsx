@@ -39,6 +39,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Derived legacy flags — keep the existing body working during the refactor.
   const fastMode = activeTool === 'presegment' && presegRapid;
   const drawMode = activeTool === 'draw';
+  // Presegmentation is a way to *select* points; its segments (hulls, boxes,
+  // per-segment hue coloring) only show while the Presegment tool is active.
+  // Every other tool works on the raw RGB cloud.
+  const isPreseg = activeTool === 'presegment';
 
   // Per-tool auto-confirm (added here to avoid a forward reference in Tasks 8/9;
   // threaded into apply paths in Task 10).
@@ -987,7 +991,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           background={theme.bg}
           floorColor={theme.floor}
           navMode={navMode}
-          colorMode={drawMode ? 'rgb' : colorMode}
+          colorMode={isPreseg ? colorMode : 'rgb'}
           pointSize={pointSize}
           diffMask={diffMask}
           showDiff={showDiff}
@@ -1000,10 +1004,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           hideConfirmedPoints={hideConfirmed}
           onLabelStats={setLabelStats}
           onCameraChange={onCameraChange}
-          segBoxes={!drawMode && segBoxesFiltered
+          segBoxes={isPreseg && segBoxesFiltered
             ? { ...segBoxesFiltered, selection: segState.selection }
             : null}
-          segHulls={!drawMode && segHullsFiltered
+          segHulls={isPreseg && segHullsFiltered
             ? { ...segHullsFiltered, selection: segState.selection }
             : null}
           showSegHulls={showSegHulls}
