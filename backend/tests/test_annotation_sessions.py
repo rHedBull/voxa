@@ -75,3 +75,24 @@ def test_no_session_id_keeps_legacy_global_path(client, tmp_path):
     r = client.get("/api/annotations/gt/somescene")
     assert r.status_code == 200
     assert len(r.json()["instances"]) == 1
+
+
+def test_box_obb_and_seq_round_trip(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    doc = {
+        "scene": scene_id, "kind": "gt", "meta": {},
+        "instances": [
+            {"id": "b1", "cls": "pipe", "kind": "pointset", "segId": 7,
+             "source": "box", "confirmed": True,
+             "center": [1.0, 2.0, 3.0], "size": [0.5, 0.5, 2.0],
+             "rotation": [0.0, 0.1, 0.0], "seq": 5},
+        ],
+    }
+    r = client.put(f"/api/annotations/gt/{scene_id}?session_id={session_id}", json=doc)
+    assert r.status_code == 200
+    got = client.get(f"/api/annotations/gt/{scene_id}?session_id={session_id}").json()
+    inst = got["instances"][0]
+    assert inst["center"] == [1.0, 2.0, 3.0]
+    assert inst["size"] == [0.5, 0.5, 2.0]
+    assert inst["rotation"] == [0.0, 0.1, 0.0]
+    assert inst["seq"] == 5
