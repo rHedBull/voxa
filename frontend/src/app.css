@@ -331,12 +331,21 @@ kbd {
   color: var(--text-dim); letter-spacing: 0.04em; text-transform: uppercase;
   border-bottom: 1px solid var(--border);
 }
+.panel-hd-btn {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  background: none; border: none; border-bottom: 1px solid var(--border);
+  font-family: inherit; cursor: pointer; text-align: left;
+}
+.panel-hd-btn:hover { color: var(--text); }
+.panel.collapsed .panel-hd-btn { border-bottom: none; }
+.panel-chev { font-size: 9px; color: var(--text-faint); }
 .panel-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 9px; }
 
 .kv { display: flex; justify-content: space-between; align-items: baseline;
-      font-size: 12px; }
-.kv span { color: var(--text-faint); }
-.kv b { font-weight: 500; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+      gap: 8px; font-size: 12px; }
+.kv span { color: var(--text-faint); flex: 0 0 auto; }
+.kv b { font-weight: 500; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        min-width: 0; text-align: right; overflow-wrap: anywhere; }
 .kv b i { color: var(--text-faint); font-style: normal; margin-left: 3px; font-size: 10px; }
 
 .ctrl { display: flex; flex-direction: column; gap: 5px; }

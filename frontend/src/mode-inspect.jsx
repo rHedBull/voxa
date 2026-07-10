@@ -6,6 +6,26 @@ import { useEffect as useEffectInspect,
 import { Viewer } from './viewer.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 
+// Compact point-count label: ≥1M → "X.X M", otherwise "Nk".
+function fmtCount(n) {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${(n / 1e3).toFixed(0)}k`;
+}
+
+// A right-rail panel whose body collapses when its header is clicked.
+function CollapsiblePanel({ title, defaultOpen = false, children }) {
+  const [open, setOpen] = useStateInspect(defaultOpen);
+  return (
+    <div className={'panel' + (open ? '' : ' collapsed')}>
+      <button className="panel-hd panel-hd-btn" aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}>
+        <span>{title}</span>
+        <span className="panel-chev">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && <div className="panel-body">{children}</div>}
+    </div>
+  );
+}
+
 export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMode, onNavModeChange, onCameraChange }) {
   const [pointSize, setPointSize] = useStateInspect(0.012);
   const [colorMode, setColorMode] = useStateInspect('rgb');
@@ -24,19 +44,20 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
   // Derived stats from the loaded cloud.
   const stats = useMemoInspect(() => {
     if (!cloud) return null;
-    const ext = (cloud.bbox.max[0] - cloud.bbox.min[0]).toFixed(2);
-    const dep = (cloud.bbox.max[2] - cloud.bbox.min[2]).toFixed(2);
-    const hgt = (cloud.bbox.max[1] - cloud.bbox.min[1]).toFixed(2);
-    return { ext, dep, hgt };
+    const extN = cloud.bbox.max[0] - cloud.bbox.min[0];
+    const depN = cloud.bbox.max[2] - cloud.bbox.min[2];
+    const hgtN = cloud.bbox.max[1] - cloud.bbox.min[1];
+    return {
+      ext: extN.toFixed(2), dep: depN.toFixed(2), hgt: hgtN.toFixed(2),
+      area: (extN * depN).toFixed(0),
+    };
   }, [cloud]);
 
   const channels = useMemoInspect(() => ({
     rgb: !!cloud,
     height: !!cloud,
-    intensity: !!cloud && !!cloud.intensity,
     class: !!cloud && !!cloud.classIds && !!cloud.classPalette,
     instance: !!cloud && !!cloud.instanceIds,
-    flat: !!cloud,
   }), [cloud]);
 
   // Auto-fall-back if the previously-selected color mode is no longer
@@ -116,14 +137,17 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
         <div className="vp-hud-top">
           <div className="hud-group">
             <HUDChip label="Scene" value={sceneName || '—'} mono />
-            <HUDChip label="Points" value={cloud ? `${(cloud.numSubsampled / 1000).toFixed(0)}k / ${(((cloud.numPointsTotal ?? cloud.numPoints)) / 1000).toFixed(0)}k` : '—'} mono />
-            {stats && <HUDChip label="Extent" value={`${stats.ext}×${stats.dep}×${stats.hgt}m`} mono />}
+            <HUDChip label="Points" value={cloud ? `${fmtCount(cloud.numSubsampled)} / ${fmtCount(cloud.numPointsTotal ?? cloud.numPoints)}` : '—'} mono />
+            {stats && <HUDChip label="Extent" value={`${stats.ext}×${stats.dep}×${stats.hgt}m · ${stats.area} sqm`} mono />}
           </div>
           <div className="hud-group">
             <NavModeToggle navMode={navMode} onChange={onNavModeChange} />
             <CameraPresets onPreset={(p) => viewerRef.current?.preset(p)} />
-            <HelpButton sections={helpSections} />
           </div>
+        </div>
+
+        <div className="vp-help-corner">
+          <HelpButton sections={helpSections} placement="up" />
         </div>
 
         <ViewportToolbar side="left">
@@ -132,9 +156,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
         </ViewportToolbar>
 
         <div className="inspect-right">
-          <div className="panel">
-            <div className="panel-hd">Scene</div>
-            <div className="panel-body">
+          <CollapsiblePanel title="Scene">
               <div className="kv"><span>name</span><b>{sceneName || '—'}</b></div>
               {cloud && <>
                 <div className="kv"><span>points</span><b className="mono">{(cloud.numPointsTotal ?? cloud.numPoints).toLocaleString()}{cloud.numPointsTotal ? ` (loaded ${cloud.numPoints.toLocaleString()})` : ''}</b></div>
@@ -151,21 +173,16 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
                 )}
               </>}
               {loading && <div className="kv"><span>status</span><b>loading…</b></div>}
-            </div>
-          </div>
-          <div className="panel">
-            <div className="panel-hd">Display</div>
-            <div className="panel-body">
+          </CollapsiblePanel>
+          <CollapsiblePanel title="Display">
               <div className="ctrl">
                 <label>Color by</label>
                 <div className="pill-group">
                   {[
                     ['rgb','RGB'],
                     ['height','Height'],
-                    ['intensity','Intensity'],
                     ['class','Class'],
                     ['instance','Instance'],
-                    ['flat','Flat'],
                   ].map(([k, l]) => {
                     const enabled = !!channels[k];
                     return (
@@ -211,28 +228,7 @@ export function InspectMode({ cloud, loading, theme, viewerRef, sceneName, navMo
                     onChange={(e) => setMeshBrightness(parseFloat(e.target.value))} />
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-
-        <div className="vp-hud-bottom">
-          <div className="kbd-strip">
-            {navMode === 'walk' ? (
-              <>
-                <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
-                <span><kbd>Q</kbd>/<kbd>E</kbd> down/up</span>
-                <span><kbd>Shift</kbd> sprint</span>
-                <span><kbd>Drag</kbd> look</span>
-              </>
-            ) : (
-              <>
-                <span><kbd>Drag</kbd> orbit</span>
-                <span><kbd>Shift</kbd>+<kbd>Drag</kbd> pan</span>
-                <span><kbd>Scroll</kbd> zoom</span>
-                <span><kbd>R</kbd> reset view</span>
-              </>
-            )}
-          </div>
+          </CollapsiblePanel>
         </div>
       </div>
     </div>
