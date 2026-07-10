@@ -155,3 +155,34 @@ def replay_labels(index: ReplayIndex, target_pos):
         target_cls[p_idx] = index.inst_class_id[winner_inst]
 
     return target_cls, target_inst
+
+
+def materialize_raw(index: ReplayIndex, raw_path, scene_is_z_up: bool, offset,
+                     chunk: int = 1_000_000):
+    """Regime B: stream the raw LAZ/LAS at native density, chunked, mapping
+    each chunk into the display frame and replaying labels via `index` (built
+    once by the caller so the scan.ply KD-trees are reused across chunks —
+    never rebuilt here). Yields (display_xyz, rgb8, cls, inst) per chunk;
+    never accumulates the whole cloud (raw clouds run up to 156M points).
+    """
+    from app.core import _to_display_frame
+    from scenes.lidar_io import _laz_chunk_iter, _laz_rgb_to_uint8
+
+    offset = np.asarray(offset)
+    for _hdr, las_chunk in _laz_chunk_iter(raw_path, chunk_size=chunk):
+        xyz_src = np.column_stack([
+            np.asarray(las_chunk.x, dtype=np.float64),
+            np.asarray(las_chunk.y, dtype=np.float64),
+            np.asarray(las_chunk.z, dtype=np.float64),
+        ])
+        try:
+            r = np.asarray(las_chunk.red, dtype=np.uint32)
+            g = np.asarray(las_chunk.green, dtype=np.uint32)
+            b = np.asarray(las_chunk.blue, dtype=np.uint32)
+            rgb8 = _laz_rgb_to_uint8(np.column_stack([r, g, b]))
+        except (AttributeError, ValueError):
+            rgb8 = None
+
+        display_xyz = _to_display_frame(xyz_src, scene_is_z_up, offset)
+        cls, inst = replay_labels(index, display_xyz)
+        yield (display_xyz, rgb8, cls, inst)

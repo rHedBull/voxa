@@ -4,6 +4,7 @@ from labeling.materialize import (
     collect_volumes,
     build_replay_index,
     replay_labels,
+    materialize_raw,
 )
 
 
@@ -170,3 +171,69 @@ def test_replay_all_scan_points_volume_owned_leak_resolves_to_background():
     cls, inst = replay_labels(idx, np.array([[1.05, 0, 0]], dtype=np.float32))
     assert inst[0] == -1
     assert cls[0] == -1
+
+
+# ---------------------------------------------------------------------------
+# Regime-B raw-LAZ streaming (Task 5)
+# ---------------------------------------------------------------------------
+
+def _write_tiny_las_at(path, points):
+    """A minimal LAS 1.2 / point-format-3 (RGB-carrying) file with explicit
+    point coordinates, so inside/outside-the-OBB membership is unambiguous."""
+    import laspy
+
+    n = len(points)
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.scales = np.array([0.001, 0.001, 0.001])
+    header.offsets = np.array([0.0, 0.0, 0.0])
+    las = laspy.LasData(header)
+    pts = np.asarray(points, dtype=np.float64)
+    las.x, las.y, las.z = pts[:, 0], pts[:, 1], pts[:, 2]
+    rng = np.random.default_rng(1)
+    las.red = rng.integers(0, 65535, n).astype(np.uint16)
+    las.green = rng.integers(0, 65535, n).astype(np.uint16)
+    las.blue = rng.integers(0, 65535, n).astype(np.uint16)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    las.write(str(path))
+
+
+def test_materialize_raw_streams_chunks_through_replay(tmp_path):
+    inside = [[0.0, 0.0, 0.0], [0.4, -0.3, 0.2], [-0.5, 0.5, 0.5]]
+    outside = [[5.0, 5.0, 5.0], [6.0, 6.0, 6.0], [10.0, 0.0, 0.0]]
+    points = inside + outside
+    las_path = tmp_path / "raw.las"
+    _write_tiny_las_at(las_path, points)
+
+    volV = _obb_vol(10, 1, [0, 0, 0], [2, 2, 2])
+    scan_pos = [[0, 0, 0], [8, 8, 8]]
+    work_inst = [10, 20]
+    seq_by_inst = {10: 1, 20: 0}
+    inst_class_id = {10: 7, 20: 3}
+    index = _index(scan_pos, work_inst, [volV], seq_by_inst, inst_class_id)
+
+    chunks = list(materialize_raw(
+        index, las_path, scene_is_z_up=False, offset=np.array([0.0, 0.0, 0.0]),
+        chunk=2,
+    ))
+
+    assert len(chunks) > 1  # multiple chunks actually streamed (6 pts / chunk=2)
+
+    all_xyz = np.concatenate([c[0] for c in chunks], axis=0)
+    all_rgb = np.concatenate([c[1] for c in chunks], axis=0)
+    all_cls = np.concatenate([c[2] for c in chunks], axis=0)
+    all_inst = np.concatenate([c[3] for c in chunks], axis=0)
+
+    assert len(all_xyz) == len(points)
+    assert all_rgb.shape == (len(points), 3)
+    assert all_rgb.dtype == np.uint8
+
+    # Display frame == source frame here (scene_is_z_up=False, zero offset),
+    # so xyz should match the LAS points directly (within LAS quantization).
+    np.testing.assert_allclose(all_xyz, np.asarray(points), atol=1e-2)
+
+    for i in range(len(inside)):
+        assert all_inst[i] == 10
+        assert all_cls[i] == 7
+    for i in range(len(inside), len(points)):
+        assert all_inst[i] == 20
+        assert all_cls[i] == 3
