@@ -128,29 +128,32 @@ def apply_filters_remap(
     points (the caller applies `drop_unlabeled`). Instance ids are returned
     unchanged.
     """
-    out_cls = class_ids.copy()
+    out_cls = class_ids.copy()  # mutated below
 
     if req.confirmed_only:
-        # Instances absent from confirmed_by_inst are treated as confirmed.
-        unconfirmed_mask = np.array(
-            [confirmed_by_inst.get(int(iid), True) is False for iid in instance_ids],
-            dtype=bool,
-        )
-        out_cls[unconfirmed_mask] = -1
+        # Instances absent from confirmed_by_inst are treated as confirmed:
+        # they're not in `unconfirmed`, so np.isin leaves them untouched.
+        unconfirmed = [iid for iid, ok in confirmed_by_inst.items() if not ok]
+        if unconfirmed:
+            out_cls[np.isin(instance_ids, unconfirmed)] = -1
 
     if req.include_classes is not None:
-        include_set = set(req.include_classes)
-        exclude_mask = np.array([int(c) not in include_set for c in out_cls], dtype=bool)
-        out_cls[exclude_mask] = -1
+        # A -1 isn't in include_classes -> set to -1 again, harmless.
+        out_cls[~np.isin(out_cls, list(req.include_classes))] = -1
 
     remap_mask = out_cls >= 0
-    if remap_mask.any():
-        out_cls[remap_mask] = np.array(
-            [src_to_tgt.get(int(c), int(c)) for c in out_cls[remap_mask]],
-            dtype=out_cls.dtype,
-        )
+    if src_to_tgt and remap_mask.any():
+        # src_to_tgt covers every palette class as identity, so all real class
+        # ids are <= hi; the np.where guard is just defensive.
+        hi = max(src_to_tgt)
+        lut = np.arange(hi + 1, dtype=out_cls.dtype)
+        for s, t in src_to_tgt.items():
+            lut[s] = t
+        vals = out_cls[remap_mask]
+        out_cls[remap_mask] = np.where(vals <= hi, lut[np.minimum(vals, hi)], vals)
 
-    return out_cls, instance_ids.copy()
+    # instance_ids is read-only here; return it directly (no full-array memcpy).
+    return out_cls, instance_ids
 
 
 def count_absent_instances(

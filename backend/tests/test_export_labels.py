@@ -200,3 +200,19 @@ def test_empty_after_filters_yields_all_negative_one_no_error():
     out_cls, out_inst = apply_filters_remap(class_ids, instance_ids, {}, req, src_to_tgt)
     assert list(out_cls) == [-1, -1, -1]
     assert list(out_inst) == list(instance_ids)
+
+
+def test_apply_filters_remap_does_not_mutate_inputs():
+    class_ids = np.array([1, 2, 0], dtype=np.int64)
+    instance_ids = np.array([10, 20, 30], dtype=np.int64)
+    cls_before = class_ids.copy()
+    inst_before = instance_ids.copy()
+    req = _base_req(
+        confirmed_only=True,
+        include_classes=[1, 2],
+        remap=[{"from": [1, 2], "to": {"id": 9, "label": "merged", "color": "#fff"}}],
+    )
+    src_to_tgt = {0: 0, 1: 9, 2: 9}
+    apply_filters_remap(class_ids, instance_ids, {10: False}, req, src_to_tgt)
+    assert np.array_equal(class_ids, cls_before)
+    assert np.array_equal(instance_ids, inst_before)
