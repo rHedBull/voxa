@@ -855,6 +855,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       console.error('box apply failed:', err);
       return;
     }
+    // Empty box: the backend returns no delta when the OBB encloses zero
+    // full-res points (parity with the Draw tool's empty-tube guard). Keep the
+    // box so the user can reposition it, and don't create an empty instance.
+    if (!r.indices || r.nAffected === 0) {
+      console.warn('box apply: no points inside the box');
+      return;
+    }
     const segId = Number.isFinite(r.instanceId) ? r.instanceId : -1;
     if (segId >= 0) {
       onChange([...instances, {
@@ -868,11 +875,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         confirmed: !!autoConfirmFor('box'),
       }]);
     }
-    setSegState((s) => (s ? applyDelta(s, {
+    // Refresh working arrays AND clear any stale preseg selection so it can't
+    // resurface after a box apply (confirmSegmentSelection clears it likewise).
+    setSegState((s) => (s ? { ...applyDelta(s, {
       indices: r.indices,
       after_class: r.afterClass,
       after_instance: r.afterInstance,
-    }) : s));
+    }), selection: new Set() } : s));
     setSelBox(null);
   }, [selBox, activeClassDef, instances, counts, onChange, setSegState, setSelBox, autoConfirm, presegRapid]);
 
