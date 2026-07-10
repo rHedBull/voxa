@@ -838,6 +838,44 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     });
   }, [segState, activeClassDef, instances, counts, onChange, setSegState]);
 
+  // Box tool apply: send the OBB to the backend, which labels every FULL-RES
+  // point inside it (never a client-side subsample test) and returns a delta.
+  // Mirrors confirmSegmentSelection's pointset-creation + applyDelta flow, then
+  // clears the box so the outline vanishes.
+  const applyBox = useCallbackLabel(async (clsDef) => {
+    const targetCls = clsDef || activeClassDef;
+    if (!selBox || !targetCls) return;
+    let r;
+    try {
+      r = await VoxaAPI.applyShape({
+        shape: { type: 'obb', center: selBox.center, size: selBox.size, rotation: selBox.rotation },
+        targetClass: targetCls.id,
+      });
+    } catch (err) {
+      console.error('box apply failed:', err);
+      return;
+    }
+    const segId = Number.isFinite(r.instanceId) ? r.instanceId : -1;
+    if (segId >= 0) {
+      onChange([...instances, {
+        id: newId(),
+        segId,
+        kind: 'pointset',
+        cls: targetCls.id,
+        label: `${targetCls.label} ${(counts[targetCls.id] || 0) + 1}`,
+        color: targetCls.color,
+        source: 'box',
+        confirmed: !!autoConfirmFor('box'),
+      }]);
+    }
+    setSegState((s) => (s ? applyDelta(s, {
+      indices: r.indices,
+      after_class: r.afterClass,
+      after_instance: r.afterInstance,
+    }) : s));
+    setSelBox(null);
+  }, [selBox, activeClassDef, instances, counts, onChange, setSegState, setSelBox, autoConfirm, presegRapid]);
+
   // Surface each applied centerline instance in the right Instances panel as
   // a pointset row (parity with fast-label promotion). Re-applies refresh the
   // class; instances absorbed by a merge drop their row. Reads the latest
@@ -974,10 +1012,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       // the confirmed flag on the active cuboid (the legacy behaviour).
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        if (segState && segState.selection.size > 0) {
+        if ((segState && segState.selection.size > 0) || (activeTool === 'box' && selBox)) {
           // Open the class picker so the user can quick-pick the class for
           // the new (unconfirmed) pointset instead of falling back on the
-          // activeClass. The picker has its own keydown handler.
+          // activeClass. In Box mode this routes to applyBox; otherwise to
+          // confirmSegmentSelection. The picker has its own keydown handler.
           setClassPickerOpen(true);
         } else if (activeTool === 'box') {
           toggleConfirmSelected();
@@ -1018,7 +1057,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, confirmSegmentSelection, fastMode, drawMode]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, fastMode, drawMode]);
 
   return (
     <div className="mode-root label">
@@ -1046,7 +1085,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           counts={counts}
           onPick={(cls) => {
             setClassPickerOpen(false);
-            confirmSegmentSelection(cls);
+            if (activeTool === 'box' && selBox) applyBox(cls);
+            else confirmSegmentSelection(cls);
           }}
           onClose={() => setClassPickerOpen(false)}
         />
@@ -1097,7 +1137,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           pointSize={pointSize} setPointSize={setPointSize}
           activeClass={activeClass} setActiveClass={setActiveClass}
           onExit={() => setActiveTool('presegment')}
-          onDrawApplied={onDrawApplied} />
+          onDrawApplied={onDrawApplied}
+          hasBox={!!selBox} onDrawBox={toggleBoxSelect}
+          onApply={() => setClassPickerOpen(true)} />
       </aside>
 
       {/* Center: viewport */}

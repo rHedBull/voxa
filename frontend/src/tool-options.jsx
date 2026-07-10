@@ -67,10 +67,22 @@ function DrawOptions({
   );
 }
 
-function BoxOptions({ autoConfirm, setAutoConfirm }) {
+function BoxOptions({ autoConfirm, setAutoConfirm, hasBox, onDrawBox, onApply }) {
   return (
     <div className="tool-options tool-options-box">
-      <p className="tool-opt-hint">Box tool — draw a box to select points</p>
+      {hasBox ? (
+        <div className="tool-opt-toggle">
+          <button onClick={onDrawBox}>Clear box</button>
+          <button className="active" onClick={onApply}>Apply (Ctrl+Enter)</button>
+        </div>
+      ) : (
+        <>
+          <div className="tool-opt-toggle">
+            <button className="active" onClick={onDrawBox}>Draw a box</button>
+          </div>
+          <p className="tool-opt-hint">Draw a box, then transform it to enclose points and Apply.</p>
+        </>
+      )}
       <AutoConfirmToggle tool="box" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
     </div>
   );
