@@ -12,7 +12,7 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
-import { TOOLS, toolAvailable, defaultTool } from './label-tools.js';
+import { toolAvailable, defaultTool } from './label-tools.js';
 import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 
@@ -300,67 +300,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Confirmed instances are read-only: no gizmo, no auto-fit, no rename, no
   // class change, no delete. The user reopens (toggles confirmed off) first.
   const isLocked = !!selected?.confirmed;
-
-  // Pass-through for the viewer to highlight points inside the currently
-  // selected cuboid. Updates as the box is dragged because `selected` is
-  // re-derived from `instances` on every render.
-  // Dense overlay: full-density LAZ points inside the selected cuboid.
-  // Manually triggered (D hotkey) so the user controls when to pay the
-  // load cost. Auto-clears whenever the selected cuboid moves/resizes so
-  // a stale overlay never stays "stuck" beside the box after a drag.
-  const [denseOverlay, setDenseOverlay] = useStateLabel(null);
-  // Bumping this token causes the fetch effect to refire with the current
-  // cuboid bounds. Token-based (not bounds-based) so we don't thrash the
-  // backend on every gizmo tick.
-  const [denseTrigger, setDenseTrigger] = useStateLabel(0);
-
-  // Stable key for the selected cuboid's geometry. Whenever this changes
-  // (drag, resize, rotate, deselect, switch to another instance) we drop
-  // the overlay so it can't visibly disconnect from the box.
-  const selectedBoundsKey = useMemoLabel(() => {
-    if (!selected) return null;
-    if (selected.kind === 'pointset' || !selected.center || !selected.size) return null;
-    const c = selected.center, sz = selected.size, r = selected.rotation || [0, 0, 0];
-    return `${selected.id}|${c[0]},${c[1]},${c[2]}|${sz[0]},${sz[1]},${sz[2]}|${r[0]},${r[1]},${r[2]}`;
-  }, [selected]);
-
-  useEffectLabel(() => { setDenseOverlay(null); }, [selectedBoundsKey]);
-
-  useEffectLabel(() => {
-    if (!denseTrigger) return;
-    if (!selected) return;
-    if (!selected.center || !selected.size) return;
-    const center = selected.center;
-    const size = selected.size;
-    const rot = selected.rotation || [0, 0, 0];
-    const hx = size[0] / 2, hy = size[1] / 2, hz = size[2] / 2;
-    const m = new THREE.Matrix4().makeRotationFromEuler(
-      new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ')
-    );
-    const v = new THREE.Vector3();
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (const sx of [-hx, hx]) for (const sy of [-hy, hy]) for (const sz of [-hz, hz]) {
-      v.set(sx, sy, sz).applyMatrix4(m);
-      if (v.x < minX) minX = v.x; if (v.y < minY) minY = v.y; if (v.z < minZ) minZ = v.z;
-      if (v.x > maxX) maxX = v.x; if (v.y > maxY) maxY = v.y; if (v.z > maxZ) maxZ = v.z;
-    }
-    // Small margin so points right at the box edge are visible.
-    const dx = (maxX - minX) * 0.10, dy = (maxY - minY) * 0.10, dz = (maxZ - minZ) * 0.10;
-    const aabbMin = [center[0] + minX - dx, center[1] + minY - dy, center[2] + minZ - dz];
-    const aabbMax = [center[0] + maxX + dx, center[1] + maxY + dy, center[2] + maxZ + dz];
-
-    let cancelled = false;
-    VoxaAPI.loadRegion(aabbMin, aabbMax, { maxPoints: 500_000 })
-      .then((res) => {
-        if (cancelled) return;
-        setDenseOverlay({ positions: res.positions, colors: res.colors });
-      })
-      .catch(() => { if (!cancelled) setDenseOverlay(null); });
-    return () => { cancelled = true; };
-    // Token-based: only fires when the user explicitly hits D.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denseTrigger]);
 
   // Mask of sub-cloud points belonging to the selected instance. Viewer dims
   // points where mask=0 so the selection visually pops from the rest of the
@@ -1050,7 +989,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onCuboidTransform={onCuboidTransform}
           highlightCuboid={highlightCuboid}
           selectionMask={selectionMask}
-          denseOverlay={denseOverlay}
           confirmedCuboids={confirmedCuboids}
           confirmedPointsetHideMask={confirmedPointsetHideMask}
           hideConfirmedPoints={hideConfirmed}
