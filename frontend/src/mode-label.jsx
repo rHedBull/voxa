@@ -692,6 +692,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         color: targetCls.color,
         source: 'box',
         confirmed: !!autoConfirmFor('box'),
+        // Persist the selection OBB (display frame) so a future export can
+        // rasterize this box at any density. Stays kind:'pointset' -> no gizmo,
+        // no cuboid edges (gated on kind !== 'pointset'). Spec section 1.
+        center: [...selBox.center],
+        size: [...selBox.size],
+        rotation: [...selBox.rotation],
       }]);
     }
     // Refresh working arrays AND clear any stale preseg selection so it can't
