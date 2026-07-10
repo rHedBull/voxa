@@ -6,6 +6,8 @@ from labeling.materialize import (
     replay_labels,
     materialize_raw,
     raw_sample_spacing,
+    materialize,
+    MaterializeCtx,
 )
 
 
@@ -299,3 +301,78 @@ def test_sample_spacing_matches_direct_nn():
 def test_sample_spacing_tiny_cloud():
     p50, p90 = raw_sample_spacing(np.zeros((1, 3), dtype=np.float32))
     assert p50 == 0.0 and p90 == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Top-level materialize() dispatcher (Task 7)
+# ---------------------------------------------------------------------------
+
+def _simple_ctx():
+    pos, col, cls, inst = _cloud(50)
+    return MaterializeCtx(
+        scan_pos=pos, colors=col, work_cls=cls, work_inst=inst,
+        volumes=[], seq_by_inst={}, inst_class_id={},
+        raw_path=None, scene_is_z_up=False, offset=np.array([0.0, 0.0, 0.0]),
+    )
+
+
+def test_materialize_scan_regime_matches_working_arrays():
+    ctx = _simple_ctx()
+    positions, colors, class_ids, instance_ids, meta = materialize(ctx, {"kind": "scan"})
+    assert len(positions) == len(ctx.scan_pos)
+    assert np.array_equal(class_ids, ctx.work_cls)
+    assert np.array_equal(instance_ids, ctx.work_inst)
+    assert meta["accuracy"]["p90"] >= meta["accuracy"]["p50"] >= 0
+    assert meta["points"] == len(ctx.scan_pos)
+
+
+def test_materialize_scan_regime_returns_defensive_copy():
+    ctx = _simple_ctx()
+    _, _, class_ids, instance_ids, _ = materialize(ctx, {"kind": "scan"})
+    class_ids[0] = 99
+    instance_ids[0] = 999
+    assert ctx.work_cls[0] != 99
+    assert ctx.work_inst[0] != 999
+
+
+def test_materialize_subsample_returns_exact_count():
+    ctx = _simple_ctx()
+    k = 10
+    positions, colors, class_ids, instance_ids, meta = materialize(
+        ctx, {"kind": "subsample", "n": k})
+    assert len(positions) == k
+    assert len(colors) == k
+    assert len(class_ids) == k
+    assert len(instance_ids) == k
+    assert meta["points"] == k
+
+
+def test_materialize_raw_regime_replays_onto_las(tmp_path):
+    inside = [[0.0, 0.0, 0.0], [0.4, -0.3, 0.2]]
+    outside = [[5.0, 5.0, 5.0], [6.0, 6.0, 6.0]]
+    points = inside + outside
+    las_path = tmp_path / "raw.las"
+    _write_tiny_las_at(las_path, points)
+
+    volV = _obb_vol(10, 1, [0, 0, 0], [2, 2, 2])
+    scan_pos = np.array([[0, 0, 0], [8, 8, 8]], dtype=np.float32)
+    col = np.zeros((2, 3), dtype=np.uint8)
+    work_cls = np.array([7, 3], dtype=np.int8)
+    work_inst = np.array([10, 20], dtype=np.int32)
+    ctx = MaterializeCtx(
+        scan_pos=scan_pos, colors=col, work_cls=work_cls, work_inst=work_inst,
+        volumes=[volV], seq_by_inst={10: 1, 20: 0}, inst_class_id={10: 7, 20: 3},
+        raw_path=las_path, scene_is_z_up=False, offset=np.array([0.0, 0.0, 0.0]),
+    )
+
+    positions, colors, class_ids, instance_ids, meta = materialize(ctx, {"kind": "raw"})
+
+    assert len(positions) == len(points)
+    assert colors.shape == (len(points), 3)
+    assert "accuracy" in meta
+    for i in range(len(inside)):
+        assert instance_ids[i] == 10
+        assert class_ids[i] == 7
+    for i in range(len(inside), len(points)):
+        assert instance_ids[i] == 20
+        assert class_ids[i] == 3

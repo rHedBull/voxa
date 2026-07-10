@@ -188,6 +188,82 @@ def materialize_raw(index: ReplayIndex, raw_path, scene_is_z_up: bool, offset,
         yield (display_xyz, rgb8, cls, inst)
 
 
+@dataclass
+class MaterializeCtx:
+    """Everything `materialize()` needs for one session, gathered by the
+    caller (Phase B's export endpoint). Fields mirror the scan.ply working
+    arrays (display frame) plus the regime-B replay inputs."""
+    scan_pos: np.ndarray          # (N,3) float32, display frame
+    colors: np.ndarray            # (N,3) uint8
+    work_cls: np.ndarray          # (N,) int8
+    work_inst: np.ndarray         # (N,) int32
+    volumes: list                 # output of collect_volumes
+    seq_by_inst: dict
+    inst_class_id: dict
+    raw_path: "str | None"
+    scene_is_z_up: bool
+    offset: np.ndarray
+
+
+def materialize(ctx: MaterializeCtx, resolution: dict):
+    """Top-level dispatcher: pick regime A (scan/subsample) or regime B (raw)
+    and always attach the accuracy metric.
+
+    `resolution` = {"kind": "scan"|"subsample"|"raw", "n": int|None}.
+
+    NOTE: the "raw" branch here concatenates every `materialize_raw` chunk
+    into single in-memory arrays. That is a convenience/small-cloud/TEST
+    entry point ONLY. Phase B's real export endpoint must consume
+    `materialize_raw(index, ...)`'s generator directly and stream each chunk
+    to disk — it must NOT call `materialize(ctx, {"kind": "raw"})` against a
+    real ~156M-point raw cloud, since that would hold the whole ~GB result
+    in memory at once.
+    """
+    kind = resolution["kind"]
+
+    if kind in ("scan", "subsample"):
+        n = len(ctx.scan_pos) if kind == "scan" else resolution["n"]
+        positions, colors, class_ids, instance_ids = materialize_downsample(
+            ctx.scan_pos, ctx.colors, ctx.work_cls, ctx.work_inst, n)
+        # materialize_downsample's identity branch (n >= N) returns the input
+        # arrays BY REFERENCE. Phase B remaps class_ids in place after this
+        # call, which would otherwise corrupt the session's live working
+        # arrays. Copy defensively; cheap since scan.ply is <= a few million
+        # points. positions/colors are read-only for the PLY, so left as-is.
+        class_ids = class_ids.copy()
+        instance_ids = instance_ids.copy()
+    elif kind == "raw":
+        index = build_replay_index(
+            ctx.scan_pos, ctx.work_inst, ctx.volumes, ctx.seq_by_inst, ctx.inst_class_id)
+        pos_chunks, rgb_chunks, cls_chunks, inst_chunks = [], [], [], []
+        any_rgb_none = False
+        for xyz, rgb8, cls, inst in materialize_raw(
+                index, ctx.raw_path, ctx.scene_is_z_up, ctx.offset):
+            pos_chunks.append(xyz)
+            cls_chunks.append(cls)
+            inst_chunks.append(inst)
+            if rgb8 is None:
+                any_rgb_none = True
+            else:
+                rgb_chunks.append(rgb8)
+        positions = np.concatenate(pos_chunks, axis=0)
+        class_ids = np.concatenate(cls_chunks, axis=0)
+        instance_ids = np.concatenate(inst_chunks, axis=0)
+        if any_rgb_none:
+            # Colorless LAS: no per-point RGB to assemble. Return an
+            # all-zeros uint8 array (not None) so the PLY writer always has
+            # a colors array to write.
+            colors = np.zeros((len(positions), 3), dtype=np.uint8)
+        else:
+            colors = np.concatenate(rgb_chunks, axis=0)
+    else:
+        raise ValueError(f"unknown resolution kind: {kind!r}")
+
+    p50, p90 = raw_sample_spacing(ctx.scan_pos)
+    meta = {"accuracy": {"p50": p50, "p90": p90}, "points": len(positions)}
+    return positions, colors, class_ids, instance_ids, meta
+
+
 def raw_sample_spacing(scan_pos, sample=100_000, seed=0):
     """Nearest-neighbor spacing of scan.ply (its true sampling pitch). Returns
     (p50, p90) over a bounded random subsample; p90 is the honest boundary bound
