@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.constants import MAX_POINTS_DEFAULT
 
@@ -212,5 +212,23 @@ class CreateSessionRequest(BaseModel):
 
 class RenameSessionRequest(BaseModel):
     name: str
+
+class RemapRule(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    from_: list[int] = Field(alias="from")
+    to: dict   # {id:int, label:str, color:str}
+
+class ExportResolution(BaseModel):
+    kind: str            # "scan" | "subsample" | "raw"
+    n: Optional[int] = None
+
+class ExportLabelsRequest(BaseModel):
+    scene: str
+    session_id: str
+    resolution: ExportResolution
+    confirmed_only: bool = False
+    include_classes: Optional[list[int]] = None
+    remap: list[RemapRule] = []
+    drop_unlabeled: bool = False
 
 __all__ = [n for n in list(globals()) if not n.startswith("__")]
