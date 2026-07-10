@@ -984,7 +984,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         }
         return;
       }
-      if (activeTool !== 'cuboid') return;
+      if (activeTool !== 'box') return;
       if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
