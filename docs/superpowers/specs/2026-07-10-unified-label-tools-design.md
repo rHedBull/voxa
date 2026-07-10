@@ -41,10 +41,59 @@ are selected; all downstream behavior is identical.**
 - **Structure is persisted** for tools that carry a graph (Draw, Beam), so the
   selection is re-editable — the graph is the source of truth, the point-group is
   its derived label.
+- **One generic backend `apply-shape` endpoint.** The backend mirror of the
+  frontend principle: a tool's selection is a *shape*, and the backend resolves any
+  shape to the full-resolution points inside it, then reassigns them — identically
+  for every shape.
 
-This is a **frontend + UX refactor**. It rides entirely on the existing backend
-(`segApply('reassign')`, the `confirmed` flag, `promotedSegIds`, and the
-per-session sidecar files); no backend pipeline changes are required.
+This is mostly a **frontend + UX refactor**, with **one backend generalization**:
+today's `centerline-apply` becomes a generic `apply-shape` endpoint (see below).
+Everything else rides on the existing backend (`apply_reassign`, the `confirmed`
+flag, `promotedSegIds`, and the per-session sidecar files).
+
+## Backend: the generic `apply-shape` endpoint
+
+The Draw and Box tools are the **same backend operation**: resolve a geometric
+shape to the full-resolution point indices inside it, then `apply_reassign` them
+to a label. They differ only in the shape's membership test. Presegment is the
+degenerate case — its "shape" is an explicit index list, which `reassign` already
+handles.
+
+Crucially this **cannot** be done frontend-only for geometric shapes: the cloud
+the frontend renders is **subsampled** (`_safe_subsample` in `routes/load.py`,
+capped at `VOXA_MAX_POINTS`), while labeling reassigns points in the
+**full-resolution** working arrays. Draw already handles this by sending its
+geometry to the backend, where `centerline_apply` runs `tube_indices` on the
+backend's full-res `seg.positions` (`routes/segment.py:103`). Box has the identical
+requirement, so it needs backend membership computation too — running the OBB test
+on the subsampled `cloud.positions` in the browser would label only the visible
+subset and miss most in-box points.
+
+So introduce **`POST /api/segment/apply-shape`** — a generalization of the existing
+`centerline-apply`:
+
+```
+body: { shape, target_inst, target_class, merged_from? }
+  shape = { type: 'tube', paths: [...] }              # Draw (migrated)
+        | { type: 'obb',  center, size, rotation }    # Box (new)
+        | { type: 'beam', ... }                       # later
+```
+
+The endpoint has two per-shape hooks and an otherwise-shared body:
+
+1. **`shape → full-res indices`** (dispatch): `tube` → existing `tube_indices`;
+   `obb` → a new `obb_indices(positions, box)` (the full-res analogue of
+   `pointsInsideOBBLabel`, with the same AABB prefilter `tube_indices` uses).
+2. **shared** `apply_reassign(idx, target_inst, target_class)` + serialize.
+3. **persist structure sidecar** (per-shape): `tube` → `update_centerlines`
+   (`centerlines.json`); `obb` → none; `beam` → `structure.json` (later).
+
+**Migration:** `centerline_apply`'s body is refactored into `apply-shape` with
+`shape.type='tube'`; the `/api/segment/centerline-apply` route is either kept as a
+thin wrapper delegating to `apply-shape` or removed once the Draw frontend calls
+`apply-shape`. Existing centerline tests are preserved (they must stay green — the
+tube path is behavior-unchanged). Box adds the `obb` branch; Beam adds `beam`
+later with no further endpoint work.
 
 ## Tool model
 
@@ -67,11 +116,13 @@ next apply will label). This deletes the `subMode` split and the hard-coded
   This is distinct from both existing "box" paths: it is **not** `addCuboid`
   (the `A` key, which creates a geometric `kind:'cuboid'` and encloses no points),
   and **not** `confirmBoxSelect` (the box-select toolbar, which toggles whole
-  presegments by centroid). Box here labels the **actual points inside the OBB**
-  via the existing `pointsInsideOBBLabel` helper (`mode-label.jsx:30–59`), so it
+  presegments by centroid). Box labels the **actual full-res points inside the
+  OBB** by sending the box to the `apply-shape` endpoint (`shape.type='obb'`) — the
+  browser-side `pointsInsideOBBLabel` operates on the subsampled cloud and is used
+  only for the live selection *preview/highlight*, never for the label itself. Box
   works on raw / preseg-less clouds where there are no segments to select.
-- **Draw** — draw centerline paths; the backend extracts full-res points within a
-  per-path tube radius. Behavior otherwise as today.
+- **Draw** — draw centerline paths; `apply-shape` (`shape.type='tube'`) extracts
+  full-res points within a per-path tube radius. Behavior otherwise as today.
 
 **Tool gating.** The rail always shows all three tools, but tools unavailable for
 the current scan are **disabled** (not hidden), with a tooltip: **Presegment** is
@@ -80,12 +131,13 @@ non-annotated (legacy-tier) scans, as today (`mode-label.jsx:1081`). **Box** is
 always available — it needs neither presegments nor an annotated scan — so it is
 the default tool on a raw/preseg-less cloud.
 
-Because Box (and, later, Beam) label explicit point indices rather than segment
-ids, `confirmSegmentSelection` — which today derives its indices from
-`segState.selection` (segment ids, `mode-label.jsx:776`) — gains an
-**explicit-point-indices code path**. This is a frontend-only change:
-`segApply('reassign')` already accepts an arbitrary `indices` array
-(`routes/segment.py:25`, `api.js:149`), so no backend work is required.
+Because the tools now reach the backend by different routes — Presegment via
+`reassign` (explicit indices) and Box/Draw via `apply-shape` (a shape) — the
+frontend apply logic is refactored so all three land the *same* resulting
+`pointset` instance in the right-side list (see The shared pipeline). Presegment
+keeps using `confirmSegmentSelection` (indices from `segState.selection`); Box and
+Draw call `apply-shape` and feed the returned instance id through the same
+instance-creation path.
 
 ### Output type: pointset only
 
@@ -151,9 +203,10 @@ select points
   → confirm       (per-row ✓, or class hotkey when auto-confirm is on)
 ```
 
-- Apply routes through the existing `confirmSegmentSelection(cls, opts)` →
-  `segApply('reassign')`, creating a `pointset` instance with
-  `confirmed: !!opts.autoConfirm`.
+- Apply resolves the selection to points (Presegment → `reassign` with explicit
+  indices; Box/Draw → `apply-shape` with a shape) and creates a `pointset`
+  instance with `confirmed: !!opts.autoConfirm`. The instance-creation half is
+  shared across tools; only the resolve-to-points call differs.
 - **`auto-confirm on apply`** is the *only* per-tool deviation. When on, apply
   lands directly in **confirmed** (preserving fast-labeling's one-keypress speed).
   When off, it lands **unconfirmed** and is confirmed as a separate step.
@@ -179,8 +232,9 @@ Every tool outputs a point-group into the shared pipeline. Tools whose selection
 sidecar, linked to the resulting instance:
 
 - **Draw** → centerline graph (control points/nodes, branches, junctions) →
-  `sessions/<id>/centerlines.json` (already exists; kept and treated as the source
-  of truth for the instance).
+  `sessions/<id>/centerlines.json` (already exists; now written by `apply-shape`'s
+  per-shape persist hook for `tube`, behavior-unchanged; source of truth for the
+  instance).
 - **Beam** (later) → node/edge graph → `sessions/<id>/structure.json` (per the
   beam-structure spec).
 - **Presegment** → structure is just the absorbed seg-ids (`promotedSegIds`,
@@ -202,16 +256,26 @@ editor are otherwise unchanged; confirmed rows keep their locked styling and the
 
 ## Scope / non-goals
 
-- **Backend:** no pipeline change. Reuses `segApply('reassign')`, the `confirmed`
-  flag, `promotedSegIds`, and the existing sidecar files.
-- **Beam:** not implemented here — the rail reserves its slot and the persisted-
-  structure pattern anticipates it, per `2026-07-10-beam-structure-labeling-design.md`.
+- **Backend:** one generalization only — `centerline-apply` → generic
+  `apply-shape` (adds the `obb` shape for Box; `tube` migrated unchanged). No new
+  annotation types and no new persistence formats: `obb` persists nothing,
+  `tube` keeps writing `centerlines.json`. Reuses `apply_reassign`, the `confirmed`
+  flag, and `promotedSegIds`.
+- **Beam:** not implemented here — the rail reserves its slot, and `apply-shape`
+  anticipates its `beam` shape + `structure.json` sidecar, per
+  `2026-07-10-beam-structure-labeling-design.md`.
 - **Legacy cuboids:** display-only; no migration/auto-conversion.
-- **No new annotation types, no new persistence formats** beyond what already
-  exists.
 
 ## Testing
 
+- Backend tests (pytest):
+  - `apply-shape` `tube` parity: same result as the old `centerline-apply` on the
+    same input (migrate/extend the existing centerline tests — they must stay
+    green).
+  - `apply-shape` `obb`: `obb_indices` selects exactly the full-res points inside
+    an oriented box on a known synthetic cloud (incl. a rotated box), and the
+    endpoint reassigns them and returns a new instance id.
+  - unknown `shape.type` → HTTP 400.
 - Frontend unit tests (vitest, pure-function level as the repo does today):
   - tool-state reducer: switching `activeTool` clears/preserves selection
     correctly and swaps tool-options.
@@ -220,5 +284,6 @@ editor are otherwise unchanged; confirmed rows keep their locked styling and the
   - preseg `rapid` queue logic (existing `deriveFastQueue` tests carried over).
 - Manual browser verification (per project convention for UI): switch between all
   three tools, apply from each, confirm unconfirmed→confirmed transition, verify
-  box vanishes on apply, verify a drawn pipe re-opens its centerline graph, verify
-  legacy cuboids still render, zero console errors, API calls succeed.
+  box vanishes on apply and labels full-res points, verify a drawn pipe re-opens
+  its centerline graph, verify legacy cuboids still render, zero console errors,
+  API calls succeed.
