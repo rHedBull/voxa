@@ -1,7 +1,21 @@
 # Resolution-independent labels (volumetric saving + materialize-at-any-density)
 
 **Date:** 2026-07-10
-**Status:** Draft — under spec review (rev 2, addresses reviewer blockers)
+**Status:** Approved (spec-review passed, 3 iterations).
+
+**Implementation split into two phases:**
+- **Phase 1 — saving (this change).** Capture the resolution-independent
+  primitives *at labeling time*, since they are otherwise lost: persist the Box
+  OBB (`source=='box'`), keep the Draw tube (already persisted), and stamp an
+  explicit monotonic `seq` apply-order on every instance (+ backfill for existing
+  sessions). Small, additive, low-risk; no consumer yet.
+- **Phase 2 — export / materialize (deferred).** The materialize algorithm (§3),
+  the raw-cloud resolution + frame alignment (§4), and the export endpoint (§5)
+  are designed here but **not built now**. §3 is specified only to *prove Phase-1
+  storage is sufficient* (it is why `seq` is required — verified in review).
+
+The rest of this document is the full design; Phase-2 sections are tagged
+**[Phase 2 — deferred]**.
 
 ## Problem
 
@@ -124,7 +138,10 @@ A/B by sampling density, contradicting the last-wins result the user produced.
 place order ever lived was the apply sequence. To reproduce last-wins for dense
 points we must persist it. Hence `seq` (§1).
 
-### 3. Materialize(target_cloud) → (class_ids, instance_ids)
+### 3. Materialize(target_cloud) → (class_ids, instance_ids)  [Phase 2 — deferred]
+
+*Designed here to validate that Phase-1 storage (box OBB + `seq` + tube) is
+sufficient to materialize at any density. Not implemented in Phase 1.*
 
 Two regimes, chosen by target density:
 
@@ -183,7 +200,7 @@ subset for leak re-queries) + one query per target point, plus O(target ·
 #volumes) cheap point-in-shape tests. Deterministic; the target→(labels) result
 is cacheable per (scan, target variant).
 
-### 4. Raw resolution + frame alignment (prerequisite)
+### 4. Raw resolution + frame alignment (prerequisite)  [Phase 2 — deferred]
 
 To materialize *above* `scan.ply` density we need the raw cloud path and the
 transform mapping a shape (display frame) into the raw's frame.
@@ -215,7 +232,7 @@ transform mapping a shape (display frame) into the raw's frame.
   (CLAUDE.md gotcha): it requires a prior `/api/load` of the same scan to have
   populated `_state`, exactly like `auto-fit` and `edit-export`.
 
-### 5. API / consume surface
+### 5. API / consume surface  [Phase 2 — deferred]
 
 A single export entrypoint, mirroring the Edit full-density export:
 
@@ -230,6 +247,19 @@ A single export entrypoint, mirroring the Edit full-density export:
   when no raw is linked.
 
 ## Testing
+
+### Phase 1 — saving (this change)
+
+- Box apply **persists** `center/size/rotation` on the resulting instance
+  (`source=='box'`); a round-trip save/load preserves the OBB.
+- Every apply stamps a strictly increasing `seq`; `seq` is monotonic across mixed
+  tool applies, merges, and preseg promotions (never reused/derived from
+  `instance_id`).
+- Backfill: loading a pre-feature session assigns `seq` by existing instance
+  order, deterministically.
+- Draw tube persistence unchanged (regression guard on `centerlines.json`).
+
+### Phase 2 — export / materialize (deferred, with the export work)
 
 - **Regime A** (`backend/tests/`):
   - Identity: `resolution="scan"` returns the working array byte-for-byte.
