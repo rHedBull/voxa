@@ -24,14 +24,16 @@ def health():
 def get_config():
     if not CONFIG_PATH.exists():
         # Sensible defaults if no yaml is present.
+        # class_id must always be a real id — the frontend keys palettes and
+        # instance rows by it unconditionally.
         return ConfigResponse(classes=[
-            ClassDef(id="boss",     label="Boss",       color="#5b8def", hotkey="1"),
-            ClassDef(id="fastener", label="Fastener",   color="#f5a524", hotkey="2"),
-            ClassDef(id="gasket",   label="Gasket",     color="#10b981", hotkey="3"),
-            ClassDef(id="fitting",  label="Fitting",    color="#d4a017", hotkey="4"),
-            ClassDef(id="rail",     label="Rail",       color="#a855f7", hotkey="5"),
-            ClassDef(id="plate",    label="Base plate", color="#64748b", hotkey="6"),
-            ClassDef(id="unknown",  label="Unknown",    color="#ef4444", hotkey="0"),
+            ClassDef(id="boss",     label="Boss",       color="#5b8def", hotkey="1", class_id=0),
+            ClassDef(id="fastener", label="Fastener",   color="#f5a524", hotkey="2", class_id=1),
+            ClassDef(id="gasket",   label="Gasket",     color="#10b981", hotkey="3", class_id=2),
+            ClassDef(id="fitting",  label="Fitting",    color="#d4a017", hotkey="4", class_id=3),
+            ClassDef(id="rail",     label="Rail",       color="#a855f7", hotkey="5", class_id=4),
+            ClassDef(id="plate",    label="Base plate", color="#64748b", hotkey="6", class_id=5),
+            ClassDef(id="unknown",  label="Unknown",    color="#ef4444", hotkey="0", class_id=6),
         ]) # TODO: defaults make no sense
     with CONFIG_PATH.open() as f:
         raw = yaml.safe_load(f) or {}

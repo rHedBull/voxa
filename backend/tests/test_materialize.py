@@ -383,3 +383,39 @@ def test_materialize_raw_regime_replays_onto_las(tmp_path):
     for i in range(len(inside), len(points)):
         assert instance_ids[i] == 20
         assert class_ids[i] == 3
+
+
+def test_replay_multi_axis_rotated_box_labels_exactly_the_drawn_volume():
+    # The confirmed-label guarantee end-to-end: a box the user drew (Three.js
+    # Euler XYZ = Rx@Ry@Rz, pinned in test_reproject) must label exactly its
+    # interior when replayed at a different density — apply-time selection
+    # (shape_indices) and export-time replay (build_replay_index/replay_labels)
+    # go through the same obb_indices, and both must match the drawn volume.
+    from scenes.reproject import euler_xyz_matrix
+    from labeling.shapes import shape_indices
+
+    rot = [0.4, -0.7, 0.3]
+    shape = {"type": "obb", "center": [0.0, 0.0, 0.0],
+             "size": [1.2, 0.7, 0.4], "rotation": rot}
+
+    rng = np.random.default_rng(1)
+    scan_pos = rng.uniform(-1, 1, (500, 3)).astype(np.float32)
+    raw_pos = rng.uniform(-1, 1, (5000, 3)).astype(np.float32)
+
+    # Apply at scan resolution exactly as POST /api/segment/apply-shape does.
+    inside_scan = shape_indices(scan_pos.reshape(-1), shape)
+    work_inst = np.full(500, -1, dtype=np.int32)
+    work_inst[inside_scan] = 7
+
+    vol = {"kind": "obb", "instance_id": 7, "seq": 1,
+           "shape": {k: shape[k] for k in ("center", "size", "rotation")}}
+    idx = _index(scan_pos, work_inst, [vol], {7: 1}, {7: 3})
+    cls, inst = replay_labels(idx, raw_pos)
+
+    # Independent reference: containment under the pinned Rx@Ry@Rz basis.
+    R = euler_xyz_matrix(*rot)
+    local = raw_pos.astype(np.float64) @ R
+    expected_inside = np.all(np.abs(local) <= np.array([0.6, 0.35, 0.2]), axis=1)
+    assert expected_inside.any() and not expected_inside.all()  # non-trivial
+    np.testing.assert_array_equal(inst == 7, expected_inside)
+    assert (cls[expected_inside] == 3).all()

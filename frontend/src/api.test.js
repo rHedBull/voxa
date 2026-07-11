@@ -230,6 +230,45 @@ describe('VoxaAPI.load — 409 detail attachment', () => {
   });
 });
 
+describe('VoxaAPI.getAnnotation — fail loudly', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('throws with status + detail on a non-OK response (never an empty doc)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({ detail: 'instances_gt.json is corrupt' }),
+    })));
+
+    let thrown = null;
+    try { await VoxaAPI.getAnnotation('annotated/demo', 'gt', 's1'); } catch (e) { thrown = e; }
+
+    expect(thrown).not.toBeNull();
+    expect(thrown.status).toBe(500);
+    expect(thrown.message).toBe('instances_gt.json is corrupt');
+  });
+
+  it('throws a generic message when the error body is not JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      json: async () => { throw new Error('not json'); },
+    })));
+
+    let thrown = null;
+    try { await VoxaAPI.getAnnotation('annotated/demo', 'gt', 's1'); } catch (e) { thrown = e; }
+
+    expect(thrown.status).toBe(502);
+    expect(thrown.message).toBe('annotation fetch failed: 502');
+  });
+
+  it('returns the parsed doc on OK', async () => {
+    const doc = { scene: 'annotated/demo', kind: 'gt', instances: [{ id: 'i1' }], meta: {} };
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => doc })));
+    expect(await VoxaAPI.getAnnotation('annotated/demo', 'gt', 's1')).toEqual(doc);
+  });
+});
+
 describe('decodeCompareResponse', () => {
   it('decodes metrics, arrays and palette', () => {
     const enc = (arr) => Buffer.from(Int8Array.from(arr).buffer).toString('base64');

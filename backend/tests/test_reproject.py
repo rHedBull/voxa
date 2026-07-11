@@ -32,6 +32,20 @@ def test_occlusion_near_hides_far():
     assert 0 in idx and 1 not in idx  # only the near point is visible
 
 
+def test_euler_xyz_matrix_matches_threejs_xyz_order():
+    # Three.js Euler 'XYZ' = Rx @ Ry @ Rz. A multi-axis rotation catches a
+    # reversed composition that single-axis presets can't distinguish.
+    rx, ry, rz = 0.4, -0.7, 0.3
+    cx, sx = np.cos(rx), np.sin(rx)
+    cy, sy = np.cos(ry), np.sin(ry)
+    cz, sz = np.cos(rz), np.sin(rz)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    np.testing.assert_allclose(euler_xyz_matrix(rx, ry, rz), Rx @ Ry @ Rz,
+                               atol=1e-12)
+
+
 def test_zplus_preset_maps_zup_to_yup():
     # a Z-up point with height in z should land in +y after the Z+ rotation
     R = euler_xyz_matrix(*ORIENTATION_PRESETS["Z+"])

@@ -51,6 +51,10 @@ class SegmentSession:
             raise ValueError("class/instance/position lengths disagree")
         self.class_ids = class_ids
         self.instance_ids = instance_ids
+        # Fresh-instance ids are session-monotonic: this floor never
+        # decreases, so an id freed by undo is never re-issued to a later
+        # apply (the frontend's instance doc may still reference it).
+        self._next_fresh_inst = int(instance_ids.max(initial=-1)) + 1
         self.positions = positions.astype(np.float32, copy=False)
         self.preseg_ids: np.ndarray = np.full(n, -1, dtype=np.int32)
         self.preseg_id: Optional[str] = None
@@ -218,7 +222,9 @@ class SegmentSession:
                         "apply_reassign: target_class is required unless target_inst is None too (erase)",
                     )
                 if ti is None or ti < 0:
-                    new_inst_id = int(self.instance_ids.max(initial=-1)) + 1
+                    new_inst_id = max(self._next_fresh_inst,
+                                      int(self.instance_ids.max(initial=-1)) + 1)
+                    self._next_fresh_inst = new_inst_id + 1
                     self.instance_ids[indices] = np.int32(new_inst_id)
                 else:
                     self.instance_ids[indices] = np.int32(ti)

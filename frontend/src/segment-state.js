@@ -13,6 +13,11 @@ export function initSegState({
     isFromPrelabel,
     segBoxes,  // { segIds, segCenters, segSizes } — kept for fallback / metrics
     segHulls,  // { vertices: Float32Array, faces: Int32Array, faceSeg: Int32Array }
+    // Pointset rows removed by an undo, keyed by segId, so a redo revives the
+    // row (with its OBB/centerline volume + seq) instead of orphaning points.
+    // Living on the state keeps it session-scoped structurally: a scene or
+    // session switch rebuilds the state and drops these with it.
+    dormant: new Map(),
   };
 }
 
@@ -48,6 +53,53 @@ export function hydrateFromServerState(state, payload) {
     sourceFingerprint: payload.source_fingerprint ?? null,
     dirty: !!payload.dirty,
   };
+}
+
+// After an undo/redo delta, sync the Instances-panel rows with the working
+// arrays: a pointset row whose instance id vanished (its apply was undone)
+// moves into `dormant` — otherwise its persisted OBB/centerline volume would
+// replay into raw-density exports the user can't see — and comes back from
+// `dormant` when a redo restores the id. Only ids in `touchedIds` (the ones
+// the delta wrote) are considered: an id merely overwritten by a later apply
+// is not an undone one, and its volume must survive for export replay.
+// `summary` (from deriveSummary) answers liveness in O(1); returns the new
+// rows array, or null when nothing changed.
+export function reconcilePointsetRows(rows, summary, touchedIds, dormant) {
+  if (!touchedIds || touchedIds.size === 0) return null;
+  let changed = false;
+  const kept = [];
+  for (const row of rows) {
+    if (row.kind === 'pointset' && touchedIds.has(row.segId) && !summary.has(row.segId)) {
+      dormant.set(row.segId, row);
+      changed = true;
+    } else {
+      kept.push(row);
+    }
+  }
+  for (const id of touchedIds) {
+    if (summary.has(id) && dormant.has(id)) {
+      kept.push(dormant.get(id));
+      dormant.delete(id);
+      changed = true;
+    }
+  }
+  return changed ? kept : null;
+}
+
+// One undo/redo step: apply the delta to the working arrays AND reconcile the
+// Instances-panel rows. Bundled because the touched-set must read the
+// instance values BEFORE applyDelta mutates them in place — an ordering
+// invariant no caller should have to know. Returns { next, rows } where
+// `rows` is the reconciled row list or null when the rows are unchanged.
+export function applyUndoRedoDelta(state, { indices, after_class, after_instance }, rows) {
+  const touched = new Set();
+  for (let k = 0; k < indices.length; k++) {
+    touched.add(state.instanceFull[indices[k]]);
+    touched.add(after_instance[k]);
+  }
+  touched.delete(-1);
+  const next = applyDelta(state, { indices, after_class, after_instance });
+  return { next, rows: reconcilePointsetRows(rows, next.summary, touched, state.dormant) };
 }
 
 function deriveSummary(cls, inst) {

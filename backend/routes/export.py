@@ -71,7 +71,12 @@ def _build_materialize_ctx(scene: str, session_id: str):
         if sid is None:
             continue
         sid = int(sid)
-        class_id_by_inst[sid] = _coerce_class_id(i["cls"])
+        try:
+            class_id_by_inst[sid] = _coerce_class_id(i["cls"])
+        except ValueError as e:
+            # e.g. an instance saved under a class name since renamed/removed
+            # in classes.yaml — diagnosable 400, not an unhandled 500.
+            raise HTTPException(400, f"instance {i.get('id', sid)!r}: {e}")
         seq_by_inst[sid] = i.get("seq")
         confirmed_by_inst[sid] = bool(i.get("confirmed"))
 
@@ -213,8 +218,13 @@ def export_labels(req: ExportLabelsRequest) -> Response:
 
         if req.resolution.kind in ("scan", "subsample"):
             n = len(ctx.scan_pos) if req.resolution.kind == "scan" else req.resolution.n
+            # Colorless sources load with colors=None; mirror the raw branch's
+            # zeros fallback so subsample indexing and drop_unlabeled masking
+            # never subscript None.
+            colors = (ctx.colors if ctx.colors is not None
+                      else np.zeros((len(ctx.scan_pos), 3), np.uint8))
             pos, col, cls, inst = materialize_downsample(
-                ctx.scan_pos, ctx.colors, ctx.work_cls, ctx.work_inst, n)
+                ctx.scan_pos, colors, ctx.work_cls, ctx.work_inst, n)
             # materialize_downsample's identity branch (n >= N) returns the
             # live working arrays by reference — copy before mutating.
             cls = cls.copy()

@@ -300,24 +300,27 @@ def _coerce_class_id(v):
         raise ValueError(f"unknown class name: {v!r}")
     return name_to_id[key]
 
-def _voxa_class_name_to_id() -> dict[str, int]:
-    """Build {class-name-lower: int-id} from the configured classes.yaml.
+def _voxa_class_name_to_id(config_path: Optional[Path] = None) -> dict[str, int]:
+    """Build {class-name-lower: int-id} from a classes.yaml (default: the
+    configured CONFIG_PATH).
 
     Uses each class's explicit ``id:`` (the canonical id from
     engine/data/lidar/classes.json) and falls back to yaml position only
     when absent — positional ids silently corrupt labels if the yaml is
     ever reordered. Mirrors ``get_config()`` so id↔name stays consistent
-    with the palette the frontend renders.
+    with the palette the frontend renders. Single home for this mapping:
+    the preseg script CLIs delegate here too (scripts/preseg/_common.py).
     """
-    if not CONFIG_PATH.exists():
+    path = Path(config_path) if config_path is not None else CONFIG_PATH
+    if not path.exists():
         return {}
-    raw = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    raw = yaml.safe_load(path.read_text()) or {}
     out: dict[str, int] = {}
     for i, (name, body) in enumerate((raw.get("classes") or {}).items()):
         explicit = body.get("id") if isinstance(body, dict) else None
         out[str(name).lower()] = int(explicit) if explicit is not None else i
     if len(set(out.values())) != len(out):
-        raise ValueError(f"duplicate class ids in {CONFIG_PATH}: {out}")
+        raise ValueError(f"duplicate class ids in {path}: {out}")
     return out
 
 def _compute_segment_boxes(positions: np.ndarray, instance_ids: np.ndarray) -> tuple:

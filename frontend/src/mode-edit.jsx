@@ -5,6 +5,7 @@
 // "Original" sits at the top of the chain and is immutable.
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
 import { NavModeToggle, HUDChip, CameraPresets, ViewportToolbar, ToolButton } from './viewport-atoms.jsx';
 
@@ -15,26 +16,21 @@ const SEL_COLOR = '#ffd24a';
 // Box-local frame: subtract center, apply inverse rotation (Euler XYZ),
 // check |x| < sx/2 etc. `inside=false` flips the predicate (returns
 // points strictly outside the box) — used for the "delete" op.
-function pointsInsideOBB(positions, indices, box, inside = true) {
+export function pointsInsideOBB(positions, indices, box, inside = true) {
   const [cx, cy, cz] = box.center;
   const [sx, sy, sz] = box.size;
   const [rx, ry, rz] = box.rotation;
   const hx = sx / 2, hy = sy / 2, hz = sz / 2;
 
-  // Build inverse rotation matrix (Rz * Ry * Rx, applied as transpose of XYZ).
-  const cxR = Math.cos(rx), sxR = Math.sin(rx);
-  const cyR = Math.cos(ry), syR = Math.sin(ry);
-  const czR = Math.cos(rz), szR = Math.sin(rz);
-  // Forward R = Rz * Ry * Rx (Three.js Euler XYZ default).
-  const m00 = cyR * czR;
-  const m01 = sxR * syR * czR - cxR * szR;
-  const m02 = cxR * syR * czR + sxR * szR;
-  const m10 = cyR * szR;
-  const m11 = sxR * syR * szR + cxR * czR;
-  const m12 = cxR * syR * szR - sxR * czR;
-  const m20 = -syR;
-  const m21 = sxR * cyR;
-  const m22 = cxR * cyR;
+  // Forward R from THREE itself — the same matrix makeRotationFromEuler
+  // builds for the rendered gizmo box, so the slice matches the wireframe
+  // exactly and can never drift from the convention. Scalars are read out
+  // once (column-major elements) to keep the per-point loop allocation-free.
+  const e = new THREE.Matrix4()
+    .makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ')).elements;
+  const m00 = e[0], m10 = e[1], m20 = e[2];
+  const m01 = e[4], m11 = e[5], m21 = e[6];
+  const m02 = e[8], m12 = e[9], m22 = e[10];
   // Inverse = transpose for orthonormal R.
 
   const out = [];

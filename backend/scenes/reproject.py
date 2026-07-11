@@ -30,8 +30,9 @@ def euler_xyz_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
     Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
     Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
     Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-    # Three.js Euler "XYZ" applies as Rz * Ry * Rx (intrinsic XYZ)
-    return Rz @ Ry @ Rx
+    # Three.js Euler "XYZ" (intrinsic X→Y→Z) composes as Rx * Ry * Rz —
+    # matching Matrix4.makeRotationFromEuler, which the viewer renders with.
+    return Rx @ Ry @ Rz
 
 
 def look_at_view(pos: np.ndarray, target: np.ndarray, up=(0.0, 1.0, 0.0)) -> np.ndarray:

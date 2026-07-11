@@ -45,6 +45,18 @@ export function decodeCompareResponse(j) {
   };
 }
 
+// Shared non-OK handler: surfaces the backend's `detail` (message when it's a
+// string, attached as err.detail either way) plus err.status. Every endpoint
+// that fails loudly funnels through here so the shapes can't drift.
+async function throwApiError(r, label) {
+  let detail = null;
+  try { detail = (await r.json()).detail; } catch { /* non-JSON body */ }
+  const err = new Error(typeof detail === 'string' ? detail : `${label} failed: ${r.status}`);
+  err.status = r.status;
+  err.detail = detail;
+  throw err;
+}
+
 export const VoxaAPI = {
   async health() {
     const r = await fetch('/api/health');
@@ -110,7 +122,11 @@ export const VoxaAPI = {
     // without it, every session of a scan would share one instance list.
     const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
     const r = await fetch(`/api/annotations/${kind}/${scene}${q}`);
-    if (!r.ok) return { scene, kind, instances: [], meta: {} };
+    // Never fall back to an empty doc: the caller autosaves whatever this
+    // returns, so masking a failure here would overwrite the session's
+    // instance doc (OBB volumes, confirmed flags, seqs) with emptiness.
+    // A missing doc is not an error — the backend returns an empty doc.
+    if (!r.ok) await throwApiError(r, 'annotation fetch');
     return r.json();
   },
   async putAnnotation(scene, kind, doc, sessionId = null) {
@@ -130,13 +146,7 @@ export const VoxaAPI = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ a, b }),
     });
-    if (!r.ok) {
-      let detail = null;
-      try { detail = (await r.json()).detail; } catch { /* non-JSON body */ }
-      const err = new Error(typeof detail === 'string' ? detail : `compare failed: ${r.status}`);
-      err.status = r.status;
-      throw err;
-    }
+    if (!r.ok) await throwApiError(r, 'compare');
     return decodeCompareResponse(await r.json());
   },
   async autoFit(bboxMin, bboxMax, cls, color, label) {
@@ -273,14 +283,7 @@ export const VoxaAPI = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cfg),
     });
-    if (!r.ok) {
-      let detail = null;
-      try { detail = (await r.json()).detail; } catch { /* non-JSON body */ }
-      const err = new Error(`export failed: ${r.status}`);
-      err.status = r.status;
-      err.detail = detail;
-      throw err;
-    }
+    if (!r.ok) await throwApiError(r, 'export');
     return r.blob();
   },
 };
