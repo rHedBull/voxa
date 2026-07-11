@@ -1,7 +1,7 @@
 # Export Wizard — labeled-dataset export from a session
 
 **Date:** 2026-07-10
-**Status:** Draft — under spec review (rev 2, addresses reviewer issues)
+**Status:** Implemented (Phase B shipped on `feat/export-wizard`)
 
 ## Problem
 
