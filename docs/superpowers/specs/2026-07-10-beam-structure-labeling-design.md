@@ -1,7 +1,7 @@
 # Beam / structure labeling — design
 
 Date: 2026-07-10
-Status: approved by user (brainstorming session)
+Status: implemented 2026-07-12 (branch feat/beam-tool; plan docs/superpowers/plans/2026-07-11-beam-structure-labeling.md)
 
 ## Problem
 
@@ -308,3 +308,27 @@ and ordered polylines are different models and sharing one file would tangle the
 - **Manual browser verification** of the graph-building UX (node place, snap,
   connect, drag joint with beams following, scroll-resize, Enter apply,
   Ctrl+Enter commit + ◌/● toggle, undo) before calling it done.
+
+## As built (deviations from this spec)
+
+- No `beam-apply` endpoint / no `box_indices` — each beam converts to an OBB on
+  the frontend and applies via the existing `POST /api/segment/apply-shape`
+  `{type:'obb'}`, one sequential call per beam (Draw's loop precedent).
+- Beam pointset rows persist their OBB (like Box rows), and
+  `materialize.py::collect_volumes` accepts `source:'beam'` → beams replay
+  exactly into raw exports.
+- `backend/labeling/beams.py` holds only `structure.json` persistence;
+  `GET`/`PUT /api/segment/structure` are both pinned to a `session_id` (409 on
+  mismatch) to make debounced/remount writes race-safe across session switches.
+- Per-edge `dirty` flag (persisted): Enter applies only never-applied/edited
+  beams; a mid-flight edit keeps the edge dirty; commit retires only clean
+  applied beams (dirty/failed ones stay active).
+- The width scroll/± uses multiplicative 8% steps; the panel width field also
+  sets the inherited default when nothing is selected.
+- Sub-mode input gating in `mode-label.jsx` is a named `subModeOwnsInput` flag;
+  the row-creation helper is the generalized `onToolApplied` (Draw call sites
+  unchanged).
+- UX flags from browser verification, deferred: committed-layer boxes are very
+  faint (opacity 0.08); Beam class grey is low-contrast on grey clouds; joint
+  spheres have no minimum screen-space size; staged beams inherit the current
+  sidebar class.

@@ -486,6 +486,11 @@ def test_replay_skew_beam_labels_exactly_the_swept_volume():
     # spec's own containment definition (mirrors test_shapes' ground truth).
     rel = raw_pos.astype(np.float64) - a
     du, dv, dw = rel @ u, rel @ v, rel @ w
+    # float32 points on float64 boundaries: the ground truth above uses the raw
+    # frame directly, while the code path round-trips frame -> euler -> matrix in
+    # float, so boundary points may legitimately flip between the two. Only
+    # strict inside/outside (outside this epsilon shell) is asserted (mirrors
+    # test_shapes.py).
     margin = 1e-5
     strict_inside = (du >= margin) & (du <= length - margin) \
         & (np.abs(dv) <= width / 2 - margin) & (np.abs(dw) <= width / 2 - margin)
