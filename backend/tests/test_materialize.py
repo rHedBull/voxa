@@ -58,6 +58,21 @@ def test_collect_volumes_box_and_tube():
     assert obb["seq"] == 2 and obb["shape"]["size"] == [1, 1, 1]
 
 
+def test_collect_volumes_beam_source_is_obb():
+    instances = [
+        {"source": "beam", "segId": 7, "seq": 3,
+         "center": [1.0, 0.0, 0.0], "size": [2.0, 0.2, 0.2],
+         "rotation": [0.0, 0.0, 0.5]},
+        # Beam row without a persisted OBB (defensive): skipped, not crashed.
+        {"source": "beam", "segId": 8, "seq": 4},
+    ]
+    vols = collect_volumes(instances, {"paths": []})
+    assert len(vols) == 1
+    assert vols[0] == {"kind": "obb", "instance_id": 7, "seq": 3,
+                       "shape": {"center": [1.0, 0.0, 0.0], "size": [2.0, 0.2, 0.2],
+                                 "rotation": [0.0, 0.0, 0.5]}}
+
+
 # ---------------------------------------------------------------------------
 # Regime-B max-seq replay rule
 # ---------------------------------------------------------------------------

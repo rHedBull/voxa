@@ -23,21 +23,21 @@ def materialize_downsample(positions, colors, class_ids, instance_ids, n):
 
 
 def collect_volumes(instances, centerlines):
-    """Volumetric instances only (source in {'box','draw'}). Box -> obb from
-    center/size/rotation; draw -> tube from the instance's centerlines paths
-    (grouped by instance_id == segId). Each carries its apply-order `seq`."""
+    """Volumetric instances only (source in {'box','beam','draw'}). Box/beam ->
+    obb from center/size/rotation; draw -> tube from the instance's centerlines
+    paths (grouped by instance_id == segId). Each carries its apply-order `seq`."""
     paths_by_inst = {}
     for p in (centerlines or {}).get("paths", []):
         paths_by_inst.setdefault(int(p["instance_id"]), []).append(p)
     out = []
     for inst in instances:
         src = inst.get("source")
-        if src not in ("box", "draw") or inst.get("segId") is None:
+        if src not in ("box", "beam", "draw") or inst.get("segId") is None:
             continue
         seq = inst.get("seq")
         iid = int(inst["segId"])  # symmetric int key with paths_by_inst; the seq
         # map + KD-tree replay (Task 4) key off this same instance_id
-        if src == "box" and inst.get("center") and inst.get("size"):
+        if src in ("box", "beam") and inst.get("center") and inst.get("size"):
             out.append({"kind": "obb", "instance_id": iid, "seq": seq,
                         "shape": {"center": inst["center"], "size": inst["size"],
                                   "rotation": inst.get("rotation", [0, 0, 0])}})
