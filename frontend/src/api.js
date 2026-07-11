@@ -267,6 +267,22 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`getCenterlines failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
+  async getStructure() {
+    const r = await fetch('/api/segment/structure');
+    if (!r.ok) throw new Error(`getStructure failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  // sessionId pins the write: the backend 409s if the active session changed
+  // between the edit and this (debounced) write — never write cross-session.
+  async putStructure(doc, sessionId) {
+    const r = await fetch('/api/segment/structure', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...doc, session_id: sessionId }),
+    });
+    if (!r.ok) throw new Error(`putStructure failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
   // Export wizard Review step: real p50/p90 sample spacing for the loaded scan.
   async getAccuracy(scene, sessionId) {
     const q = `?scene=${encodeURIComponent(scene)}&session_id=${encodeURIComponent(sessionId)}`;
