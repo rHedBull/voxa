@@ -434,3 +434,92 @@ def test_replay_multi_axis_rotated_box_labels_exactly_the_drawn_volume():
     assert expected_inside.any() and not expected_inside.all()  # non-trivial
     np.testing.assert_array_equal(inst == 7, expected_inside)
     assert (cls[expected_inside] == 3).all()
+
+
+def test_replay_skew_beam_labels_exactly_the_swept_volume():
+    # Same end-to-end guarantee as the box test above, for a beam: the
+    # frame->euler construction (frontend beam-graph.js, mirrored in
+    # test_shapes._beam_frame / _euler_xyz_from_basis) must select exactly
+    # its swept box on apply (shape_indices) and on replay at a denser,
+    # foreign density (build_replay_index/replay_labels) — both go through
+    # the same obb_indices as the box path, since a beam is just an OBB.
+    try:
+        from tests.test_shapes import _beam_frame, _euler_xyz_from_basis
+    except ImportError:
+        # Canonical copies live in test_shapes.py; duplicated here only if
+        # the package-relative import above doesn't resolve in this env.
+        def _beam_frame(a, b):
+            a, b = np.asarray(a, float), np.asarray(b, float)
+            d = b - a
+            u = d / np.linalg.norm(d)
+            ref = np.eye(3)[int(np.argmin(np.abs(u)))]
+            v = np.cross(ref, u)
+            v /= np.linalg.norm(v)
+            w = np.cross(u, v)
+            return u, v, w
+
+        def _euler_xyz_from_basis(u, v, w):
+            m13, m23, m33 = w[0], w[1], w[2]
+            m11, m12 = u[0], v[0]
+            m22, m32 = v[1], v[2]
+            y = np.arcsin(np.clip(m13, -1.0, 1.0))
+            if abs(m13) < 0.9999999:
+                x = np.arctan2(-m23, m33)
+                z = np.arctan2(-m12, m11)
+            else:
+                x = np.arctan2(m32, m22)
+                z = 0.0
+            return [float(x), float(y), float(z)]
+
+    from labeling.shapes import shape_indices
+
+    a = np.array([0.2, 0.1, -0.3])
+    b = np.array([1.8, 1.2, 0.9])
+    width = 0.4
+    u, v, w = _beam_frame(a, b)
+    length = np.linalg.norm(b - a)
+
+    shape = {
+        "type": "obb",
+        "center": ((a + b) / 2).tolist(),
+        "size": [float(length), width, width],
+        "rotation": _euler_xyz_from_basis(u, v, w),
+    }
+
+    # collect_volumes picks up the beam instance row as an "obb" volume.
+    instances = [{"id": "beam-1", "source": "beam", "kind": "pointset",
+                  "segId": 11, "seq": 4,
+                  "center": shape["center"], "size": shape["size"],
+                  "rotation": shape["rotation"]}]
+    vols = collect_volumes(instances, {"paths": []})
+    assert len(vols) == 1
+    assert vols[0] == {"kind": "obb", "instance_id": 11, "seq": 4,
+                        "shape": {"center": shape["center"], "size": shape["size"],
+                                  "rotation": shape["rotation"]}}
+
+    rng = np.random.default_rng(2)
+    scan_pos = rng.uniform(-1, 3, (500, 3)).astype(np.float32)
+    raw_pos = rng.uniform(-1, 3, (8000, 3)).astype(np.float32)
+
+    # Apply at scan resolution exactly as POST /api/segment/apply-shape does.
+    inside_scan = shape_indices(scan_pos.reshape(-1), shape)
+    work_inst = np.full(500, -1, dtype=np.int32)
+    work_inst[inside_scan] = 11
+
+    idx = _index(scan_pos, work_inst, vols, {11: 4}, {11: 6})
+    cls, inst = replay_labels(idx, raw_pos)
+
+    # Independent reference: containment straight from the beam frame, the
+    # spec's own containment definition (mirrors test_shapes' ground truth).
+    rel = raw_pos.astype(np.float64) - a
+    du, dv, dw = rel @ u, rel @ v, rel @ w
+    margin = 1e-5
+    strict_inside = (du >= margin) & (du <= length - margin) \
+        & (np.abs(dv) <= width / 2 - margin) & (np.abs(dw) <= width / 2 - margin)
+    strict_outside = (du < -margin) | (du > length + margin) \
+        | (np.abs(dv) > width / 2 + margin) | (np.abs(dw) > width / 2 + margin)
+
+    assert strict_inside.any() and strict_outside.any()  # non-trivial split
+    assert (inst[strict_inside] == 11).all()
+    assert (cls[strict_inside] == 6).all()
+    assert (inst[strict_outside] != 11).all()
