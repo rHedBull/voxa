@@ -149,14 +149,39 @@ def centerline_apply(req: CenterlineApplyRequest):
     return _apply_shape_core(seg, shape, req.target_inst, target_class,
                              req.merged_from)
 
+def _require_session_seg():
+    """Active SegmentSession that has a session dir (409 otherwise) — shared
+    by the centerline/structure persistence routes."""
+    seg = _require_seg()
+    if seg.session_dir is None:
+        raise HTTPException(409, "no active session")
+    return seg
+
 @router.get("/api/segment/centerlines")
 def get_centerlines():
     """Stored centerline paths for the active session (Draw sub-mode resume)."""
     from labeling.centerline import load_centerlines
-    seg = _require_seg()
-    if seg.session_dir is None:
-        raise HTTPException(409, "no active session")
+    seg = _require_session_seg()
     return load_centerlines(seg.session_dir)
+
+@router.get("/api/segment/structure")
+def get_structure():
+    """Stored Beam-tool graph for the active session (Beam sub-mode resume)."""
+    from labeling.beams import load_structure
+    return load_structure(_require_session_seg().session_dir)
+
+@router.put("/api/segment/structure")
+def put_structure(doc: StructureDoc):
+    """Replace the stored Beam-tool graph wholesale. The frontend owns graph
+    geometry; point labels flow through apply-shape separately (not undoable
+    here, matching centerlines.json)."""
+    from labeling.beams import save_structure
+    seg = _require_session_seg()
+    if doc.session_id is not None and doc.session_id != _state.get("session_id"):
+        raise HTTPException(
+            409, f"session mismatch — server has '{_state.get('session_id')}', "
+                 f"write was for '{doc.session_id}'")
+    return save_structure(seg.session_dir, doc.model_dump(exclude={"session_id"}))
 
 @router.put("/api/segment/save")
 def segment_save():

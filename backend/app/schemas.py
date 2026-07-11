@@ -213,6 +213,49 @@ class CreateSessionRequest(BaseModel):
 class RenameSessionRequest(BaseModel):
     name: str
 
+class StructureNode(BaseModel):
+    id: int
+    pos: list[float]
+
+    @field_validator("pos")
+    @classmethod
+    def _pos_is_3d(cls, v):
+        if len(v) != 3:
+            raise ValueError("pos must be [x, y, z]")
+        return v
+
+class StructureEdge(BaseModel):
+    id: int
+    a: int
+    b: int
+    width: float = Field(gt=0)
+    class_id: int
+    instance_id: Optional[int] = None
+    dirty: bool = False   # edited since last apply (frontend re-apply bookkeeping)
+
+class CommittedBeam(BaseModel):
+    a: list[float]
+    b: list[float]
+    width: float = Field(gt=0)
+    class_id: int
+    instance_id: int
+
+    @field_validator("a", "b")
+    @classmethod
+    def _endpoint_is_3d(cls, v):
+        if len(v) != 3:
+            raise ValueError("endpoint must be [x, y, z]")
+        return v
+
+class StructureDoc(BaseModel):
+    # Written by the frontend after apply/commit/edits, debounced — session_id
+    # pins the write to the session the graph was built in so a session switch
+    # mid-debounce can't land the old graph in the new session's file.
+    session_id: Optional[str] = None
+    nodes: list[StructureNode] = []
+    edges: list[StructureEdge] = []
+    committed_beams: list[CommittedBeam] = []
+
 class RemapTarget(BaseModel):
     id: int
     label: str
