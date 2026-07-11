@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
-  initBeamState, addNode, clickNode, selectNode, selectEdge, clearSelection,
+  initBeamState, addNode, clickNode, selectNode, clearSelection,
   moveNode, deleteSelected, setWidth, nudgeWidth, setClass,
   applyTargets, markApplied, commitAll, beamFrame, eulerXYZFromBasis,
   obbForEdge, toStructureDoc, seedFromServer, MIN_WIDTH,
@@ -189,6 +189,16 @@ describe('beam-graph: OBB math', () => {
         new THREE.Vector3(...u), new THREE.Vector3(...v), new THREE.Vector3(...w));
       rebuilt.elements.forEach((el, i) => expect(el).toBeCloseTo(direct.elements[i], 6));
     }
+  });
+
+  it('obbForEdge on a zero-length edge throws (never a NaN OBB)', () => {
+    let s = initBeamState();
+    s = addNode(s, [1, 2, 3]);
+    s = addNode(s, [1, 2, 3]);         // distinct node, identical position
+    s = clickNode(s, 1, CLS);
+    s = clickNode(s, 2, CLS);          // edge still created (different ids)
+    expect(s.edges).toHaveLength(1);
+    expect(() => obbForEdge(s, s.edges[0])).toThrow(/degenerate/);
   });
 
   it('obbForEdge: center is the midpoint, size is [len, width, width]', () => {

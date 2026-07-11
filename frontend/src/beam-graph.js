@@ -144,6 +144,8 @@ export function applyTargets(state) {
     (e) => (e.dirty || e.instanceId == null) && !isDegenerate(state, e));
 }
 
+// An unknown edgeId is a deliberate no-op: the async apply loop can race an
+// edge deletion (same tolerance class as draw-paths' movePoint).
 export function markApplied(state, edgeId, instanceId) {
   const edges = state.edges.map((e) =>
     e.id === edgeId ? { ...e, instanceId, dirty: false } : e);
@@ -194,6 +196,9 @@ const scale = (p, s) => [p[0] * s, p[1] * s, p[2] * s];
 export function beamFrame(a, b) {
   const d = sub(b, a);
   const len = norm(d);
+  // applyTargets filters degenerate edges before obbForEdge; reaching this
+  // with coincident endpoints is a caller bug — fail loudly, never NaN.
+  if (len < DEGENERATE_EPS) throw new Error('beam-graph: degenerate beam (coincident endpoints)');
   const u = scale(d, 1 / len);
   // Reference: the world axis least aligned with u — the cross product can't
   // degenerate. Mirrored by _beam_frame in backend/tests/test_shapes.py.
@@ -266,5 +271,9 @@ export function seedFromServer(state, doc) {
   const committed = (doc.committed_beams ?? []).map((c) => ({
     a: c.a, b: c.b, width: c.width, classId: c.class_id, instanceId: c.instance_id,
   }));
-  return { ...state, nodes, edges, committed, nextId: Math.max(state.nextId, maxId + 1) };
+  // Defensive: seeding over a non-fresh state must not keep a dangling selection id.
+  return {
+    ...state, nodes, edges, committed,
+    selection: null, nextId: Math.max(state.nextId, maxId + 1),
+  };
 }
