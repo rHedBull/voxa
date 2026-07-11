@@ -443,34 +443,7 @@ def test_replay_skew_beam_labels_exactly_the_swept_volume():
     # its swept box on apply (shape_indices) and on replay at a denser,
     # foreign density (build_replay_index/replay_labels) — both go through
     # the same obb_indices as the box path, since a beam is just an OBB.
-    try:
-        from tests.test_shapes import _beam_frame, _euler_xyz_from_basis
-    except ImportError:
-        # Canonical copies live in test_shapes.py; duplicated here only if
-        # the package-relative import above doesn't resolve in this env.
-        def _beam_frame(a, b):
-            a, b = np.asarray(a, float), np.asarray(b, float)
-            d = b - a
-            u = d / np.linalg.norm(d)
-            ref = np.eye(3)[int(np.argmin(np.abs(u)))]
-            v = np.cross(ref, u)
-            v /= np.linalg.norm(v)
-            w = np.cross(u, v)
-            return u, v, w
-
-        def _euler_xyz_from_basis(u, v, w):
-            m13, m23, m33 = w[0], w[1], w[2]
-            m11, m12 = u[0], v[0]
-            m22, m32 = v[1], v[2]
-            y = np.arcsin(np.clip(m13, -1.0, 1.0))
-            if abs(m13) < 0.9999999:
-                x = np.arctan2(-m23, m33)
-                z = np.arctan2(-m12, m11)
-            else:
-                x = np.arctan2(m32, m22)
-                z = 0.0
-            return [float(x), float(y), float(z)]
-
+    from tests.test_shapes import _beam_frame, _euler_xyz_from_basis
     from labeling.shapes import shape_indices
 
     a = np.array([0.2, 0.1, -0.3])
