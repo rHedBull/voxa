@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.constants import MAX_POINTS_DEFAULT
 
@@ -67,6 +67,7 @@ class LoadResponse(BaseModel):
     seg_sizes: Optional[str] = None          # b64 Float32 (N×3) — bbox extents
     session_id: Optional[str] = None         # active session resolved on load (annotated tier)
     sessions: list[dict] = []                # SessionInfo dicts for the session picker
+    raw_source_available: bool = False       # true if a full-density raw cloud resolved (source_laz or lineage)
 
 class LoadRegionRequest(BaseModel):
     aabb_min: list[float]    # in loaded frame (post recenter)
@@ -95,6 +96,7 @@ class Cuboid(BaseModel):
     confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
     kind: str = "cuboid"     # 'cuboid' | 'pointset'
     segId: Optional[int] = None  # set for pointset (and preseg-promoted) instances; per-point membership key in segState.instanceFull
+    seq: Optional[int] = None  # monotonic apply-order rank; stamped on save (resolution-independent-labels spec §2)
 
 class AnnotationDoc(BaseModel):
     scene: str
@@ -210,5 +212,28 @@ class CreateSessionRequest(BaseModel):
 
 class RenameSessionRequest(BaseModel):
     name: str
+
+class RemapTarget(BaseModel):
+    id: int
+    label: str
+    color: str
+
+class RemapRule(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    from_: list[int] = Field(alias="from")
+    to: RemapTarget
+
+class ExportResolution(BaseModel):
+    kind: str            # "scan" | "subsample" | "raw"
+    n: Optional[int] = None
+
+class ExportLabelsRequest(BaseModel):
+    scene: str
+    session_id: str
+    resolution: ExportResolution
+    confirmed_only: bool = False
+    include_classes: Optional[list[int]] = None
+    remap: list[RemapRule] = []
+    drop_unlabeled: bool = False
 
 __all__ = [n for n in list(globals()) if not n.startswith("__")]

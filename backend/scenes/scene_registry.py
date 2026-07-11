@@ -80,6 +80,18 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
     root = lidar_root / "annotated"
     if not root.is_dir():
         return []
+    # Read raw/sources.json once (never per-scan — scan_schema.Registry.load()
+    # re-walks every scan's meta.json, which is O(N^2) across a large archive).
+    raw_by_id: dict[str, str] = {}
+    try:
+        sj = lidar_root / "raw" / "sources.json"
+        if sj.exists():
+            raw_by_id = {e["source_id"]: e["path"]
+                         for e in json.loads(sj.read_text()).get("sources", [])}
+    except Exception as e:  # noqa: BLE001 — raw lineage is best-effort; never break discovery
+        logging.warning("raw lineage disabled: failed to read %s: %s",
+                        lidar_root / "raw" / "sources.json", e)
+        raw_by_id = {}
     out: list[SceneSource] = []
     for sd in sorted(root.iterdir()):
         if not sd.is_dir():
@@ -134,6 +146,14 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
                 if cand.exists():
                     source_laz_path = str(cand)
                     break
+        # Fallback: source_laz is null on regenerated scans, but the scan's
+        # lineage (derivation.root.source_id) may still resolve through the
+        # archive's raw/sources.json registry.
+        if source_laz_path is None:
+            sid = ((meta.get("derivation") or {}).get("root") or {}).get("source_id")
+            rel = raw_by_id.get(sid) if sid else None            # "raw/<file>.laz"
+            if rel and (lidar_root / rel).exists():
+                source_laz_path = str(lidar_root / rel)
         out.append(SceneSource(
             tier="annotated", name=sd.name,
             source_path=scan, source_format="ply",

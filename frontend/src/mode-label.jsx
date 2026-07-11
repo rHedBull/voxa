@@ -11,6 +11,7 @@ import { focusSegment } from './segment-tools.jsx';
 import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
+import ExportWizard from './export-wizard.jsx';
 import { applyDelta, computeDiffMask } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
 import ToolRail from './tool-rail.jsx';
@@ -246,6 +247,24 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     instances.forEach((i) => { c[i.cls] = (c[i.cls] || 0) + 1; });
     return c;
   }, [instances]);
+
+  const [exportOpen, setExportOpen] = useStateLabel(false);
+
+  // Per-class point counts (class_id → n_points) for the export wizard's
+  // "~0 after filters" guard. Derived from the load-time segment_summary;
+  // null when the session wasn't loaded from a prelabel (then the wizard
+  // falls back to a nLabeledPoints check).
+  const perClassPointCounts = useMemoLabel(() => {
+    const ss = cloud?.segmentSummary;
+    if (!ss) return null;
+    const c = {};
+    for (const k in ss) {
+      const cid = ss[k]?.class_id;
+      if (cid == null || cid < 0) continue;
+      c[cid] = (c[cid] || 0) + (ss[k].n_points || 0);
+    }
+    return Object.keys(c).length ? c : null;
+  }, [cloud]);
 
   // Set of segment ids absorbed into a right-side instance, so the left
   // PresegmentList can hide them once they've been promoted.
@@ -692,6 +711,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         color: targetCls.color,
         source: 'box',
         confirmed: !!autoConfirmFor('box'),
+        // Persist the selection OBB (display frame) so a future export can
+        // rasterize this box at any density. Stays kind:'pointset' -> no gizmo,
+        // no cuboid edges (gated on kind !== 'pointset'). Spec section 1.
+        center: [...selBox.center],
+        size: [...selBox.size],
+        rotation: [...selBox.rotation],
       }]);
     }
     // Refresh working arrays AND clear any stale preseg selection so it can't
@@ -926,6 +951,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onClose={() => setClassPickerOpen(false)}
         />
       )}
+      {exportOpen && cloud && (
+        <ExportWizard
+          scene={cloud.scene}
+          sessionId={activeSessionId}
+          classes={classes}
+          scanCount={cloud.numPointsTotal ?? cloud.numPoints}
+          rawSourceAvailable={cloud.rawSourceAvailable}
+          perClassPointCounts={perClassPointCounts}
+          nLabeledPoints={cloud.nLabeledPoints}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
 
       {/* Left: class palette */}
       <aside className="side-l">
@@ -940,6 +977,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             onRename={onRenameSession}
             onDelete={onDeleteSession}
           />
+        )}
+        {isAnnotated && (
+          <button className="ghost-btn ew-open" disabled={!activeSessionId || !cloud}
+            title={activeSessionId ? 'Export labeled cloud from this session' : 'Open a session first'}
+            onClick={() => setExportOpen(true)}>
+            ⬇ Export…
+          </button>
         )}
         <div className="side-hd">
           <span>Classes</span>

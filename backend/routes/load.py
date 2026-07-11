@@ -192,6 +192,7 @@ def load_scene(req: LoadRequest):
         georef_offset=fsum.get("georef_offset"),
         session_id=session_id,
         sessions=sessions_meta,
+        raw_source_available=bool(src.extras.get("source_laz_path")),
         **full_payload,
     )
 
