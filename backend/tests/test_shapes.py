@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from labeling.shapes import obb_indices
 from labeling.shapes import shape_indices
 
@@ -100,22 +101,27 @@ def _euler_xyz_from_basis(u, v, w):
     return [float(x), float(y), float(z)]
 
 
-def test_beam_style_obb_matches_frame_membership():
+@pytest.mark.parametrize("a, b", [
+    # Skew axis: generic branch of _euler_xyz_from_basis (|m13| < 1).
+    ([0.5, -0.2, 1.0], [2.0, 1.3, -0.4]),
+    # World-axis-aligned beam: u=[0,1,0] -> w=[+-1,0,0] -> |m13| = 1, the
+    # gimbal-lock else-branch that every vertical beam hits.
+    ([1.0, 1.0, 1.0], [1.0, 4.0, 1.0]),
+])
+def test_beam_style_obb_matches_frame_membership(a, b):
     """A beam OBB built the frontend's way (frame -> euler) must select exactly
-    the points inside the swept square box, on a skew (non-world-aligned) axis."""
+    the points inside the swept square box."""
     rng = np.random.default_rng(7)
-    a = np.array([0.5, -0.2, 1.0])
-    b = np.array([2.0, 1.3, -0.4])
+    a = np.array(a)
+    b = np.array(b)
     width = 0.3
     u, v, w = _beam_frame(a, b)
     length = np.linalg.norm(b - a)
 
-    pts = rng.uniform(-1.5, 3.0, size=(5000, 3)).astype(np.float32)
+    pts = rng.uniform(-1.5, 3.0, size=(20000, 3)).astype(np.float32)
     # Ground truth straight from the frame (the spec's containment definition).
     rel = pts.astype(np.float64) - a
     du, dv, dw = rel @ u, rel @ v, rel @ w
-    inside = (du >= 0) & (du <= length) & (np.abs(dv) <= width / 2) & (np.abs(dw) <= width / 2)
-    assert inside.sum() > 5           # sanity: the box actually contains points
 
     box = {
         "center": ((a + b) / 2).tolist(),
@@ -131,5 +137,6 @@ def test_beam_style_obb_matches_frame_membership():
         & (np.abs(dv) <= width / 2 - margin) & (np.abs(dw) <= width / 2 - margin)
     outside = (du < -margin) | (du > length + margin) \
         | (np.abs(dv) > width / 2 + margin) | (np.abs(dw) > width / 2 + margin)
+    assert strict.sum() > 5           # sanity: the positive leg isn't vacuous
     assert got[strict].all()
     assert not got[outside].any()
