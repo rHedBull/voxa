@@ -39,6 +39,10 @@ def validate_export_request(
             consumed.add(src_id)
 
         to_id = rule.to.id
+        if not (0 <= to_id <= 65535):
+            # Exported class_id is int32, but a negative id collides with the
+            # unlabeled sentinel and a huge one would size the remap LUT.
+            errors.append(f"remap rule {rule_idx}: remap target id {to_id} out of range [0, 65535]")
         if to_id in to_by_id:
             prev = to_by_id[to_id]
             if prev.label != rule.to.label or prev.color != rule.to.color:
@@ -149,9 +153,15 @@ def apply_filters_remap(
         # src_to_tgt covers every palette class as identity, so all real class
         # ids are <= hi; the np.where guard is just defensive.
         hi = max(src_to_tgt)
-        lut = np.arange(hi + 1, dtype=out_cls.dtype)
+        # LUT (and, when a target exceeds the input dtype, the output) in
+        # int32: class arrays arrive int8, and a remap target >= 128 would
+        # silently wrap negative in the input dtype. Exported class_id is
+        # int32 regardless (_ply_labeled_chunk_bytes).
+        lut = np.arange(hi + 1, dtype=np.int32)
         for s, t in src_to_tgt.items():
             lut[s] = t
+        if lut.max() > np.iinfo(out_cls.dtype).max:
+            out_cls = out_cls.astype(np.int32)
         vals = out_cls[remap_mask]
         out_cls[remap_mask] = np.where(vals <= hi, lut[np.minimum(vals, hi)], vals)
 

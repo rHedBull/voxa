@@ -28,6 +28,26 @@ def test_obb_rotated_matches_local_frame():
     assert obb_indices(pts, outside).tolist() == []
 
 
+def test_obb_multi_axis_rotation_matches_threejs_euler_xyz():
+    # Three.js Euler 'XYZ' (what the viewer renders and mode-label previews)
+    # composes as Rx @ Ry @ Rz. Multi-axis rotations distinguish it from the
+    # reversed Rz @ Ry @ Rx order — single-axis tests cannot. The composition
+    # itself is pinned independently in test_reproject.py; here we verify
+    # obb_indices' vectorized containment against that basis.
+    from scenes.reproject import euler_xyz_matrix
+    rx, ry, rz = 0.4, -0.7, 0.3
+    R = euler_xyz_matrix(rx, ry, rz)
+
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(-2, 2, (5000, 3)).astype(np.float32)
+    half = np.array([1.0, 0.5, 0.25])
+    expected = np.flatnonzero(np.all(np.abs(pts @ R) <= half, axis=1))
+
+    box = {"center": [0.0, 0.0, 0.0], "size": (half * 2).tolist(),
+           "rotation": [rx, ry, rz]}
+    np.testing.assert_array_equal(obb_indices(pts.reshape(-1), box), expected)
+
+
 def test_shape_indices_obb_dispatch():
     pts = np.array([0.9, 0.0, 0.0], dtype=np.float32)
     shape = {"type": "obb", "center": [0.9, 0.0, 0.0],

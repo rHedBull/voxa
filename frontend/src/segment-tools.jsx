@@ -69,9 +69,11 @@ export function PresegmentList({
     () => deriveFastQueue(segState?.summary, excludeSegIds),
     [segState, excludeSegIds]);
 
+  // seg.classId is the canonical numeric class id (classes.yaml `id:`), so
+  // key by class_id — never array position, which diverges from it.
   const classesById = useMemo(() => {
     const out = {};
-    classes.forEach((c, i) => { out[i] = c; out[c.id] = c; });
+    classes.forEach((c) => { out[c.class_id] = c; });
     return out;
   }, [classes]);
 

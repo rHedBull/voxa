@@ -4,7 +4,7 @@
 import { useState as useStateApp, useRef as useRefApp,
          useEffect as useEffectApp, useCallback as useCallbackApp } from 'react';
 import { VoxaAPI, getSegmentState } from './api.js';
-import { initSegState, applyDelta, hydrateFromServerState } from './segment-state.js';
+import { initSegState, hydrateFromServerState, applyUndoRedoDelta } from './segment-state.js';
 import { InspectMode } from './mode-inspect.jsx';
 import { LabelMode } from './mode-label.jsx';
 import { CompareMode } from './mode-compare.jsx';
@@ -351,6 +351,10 @@ function MainApp() {
   useEffectApp(() => { activeSceneRef.current = activeScene; }, [activeScene]);
   const activeSessionRef = useRefApp(activeSessionId);
   useEffectApp(() => { activeSessionRef.current = activeSessionId; }, [activeSessionId]);
+  // Mirror gtInstances for the undo/redo row reconciliation (it runs inside
+  // a setSegState updater, where the closure's gtInstances can be stale).
+  const gtInstancesRef = useRefApp(gtInstances);
+  useEffectApp(() => { gtInstancesRef.current = gtInstances; }, [gtInstances]);
 
   const saveGt = useCallbackApp(async (instances) => {
     if (!activeScene) return;
@@ -498,11 +502,14 @@ function MainApp() {
         if (r === null) return;
         setSegState((s) => {
           if (!s) return s;
-          const next = applyDelta(s, {
+          // Applies the delta AND drops pointset rows whose apply was just
+          // undone (else their OBB volume replays into raw exports) /
+          // revives them on redo.
+          const { next, rows } = applyUndoRedoDelta(s, {
             indices: r.indices,
             after_class: r.afterClass,
             after_instance: r.afterInstance,
-          });
+          }, gtInstancesRef.current);
           viewerRef.current?.recolorByEdit({
             affectedFullIndices: r.indices,
             classFull: next.classFull,
@@ -510,6 +517,9 @@ function MainApp() {
             colorMode: 'class',
             palette: cloud?.classPalette ?? null,
           });
+          // Deferred: onCuboidChange sets state + autosaves, illegal inside
+          // an updater.
+          if (rows) queueMicrotask(() => onCuboidChange(rows));
           return next;
         });
       } catch (err) {
@@ -518,7 +528,7 @@ function MainApp() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [segState, viewerRef, cloud]);
+  }, [segState, viewerRef, cloud, onCuboidChange]);
 
   // Full save: persist per-point segments (into the scan dir) first, then
   // cuboids. Both the Ctrl/Cmd+S shortcut and the header Save button call this

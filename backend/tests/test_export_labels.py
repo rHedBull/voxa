@@ -110,6 +110,16 @@ def test_unknown_resolution_kind_rejected():
     assert any("unknown resolution kind" in e.lower() for e in errors)
 
 
+def test_remap_target_out_of_range_rejected():
+    # Exported class_id is int32, but ids outside [0, 65535] are nonsense
+    # (negative collides with the unlabeled sentinel) and a huge id would
+    # size the remap LUT.
+    for bad in (-1, 70_000):
+        req = _base_req(remap=[{"from": [1], "to": {"id": bad, "label": "m", "color": "#fff"}}])
+        errors = validate_export_request(req, n_scan=1000, palette_ids={0, 1, 2, 3}, raw_available=True)
+        assert any("remap target id" in e and "range" in e for e in errors), (bad, errors)
+
+
 # ---------------------------------------------------------------------------
 # Task 2: build_taxonomy / apply_filters_remap / count_absent_instances
 # ---------------------------------------------------------------------------
@@ -172,6 +182,20 @@ def test_remap_merges_two_source_classes_into_one_target():
     out_cls, out_inst = apply_filters_remap(class_ids, instance_ids, {}, req, src_to_tgt)
     assert list(out_cls) == [9, 9, 0]
     assert list(out_inst) == list(instance_ids)
+
+
+def test_remap_target_above_int8_range_not_wrapped():
+    # Working class arrays are int8; a merge target >= 128 must survive into
+    # the (int32) export, not wrap negative — wrapped points would silently
+    # carry a class the taxonomy doesn't contain, or vanish via drop_unlabeled.
+    req = _base_req(
+        remap=[{"from": [1, 2], "to": {"id": 200, "label": "merged", "color": "#fff"}}],
+    )
+    _, src_to_tgt = build_taxonomy(_PALETTE, req)
+    class_ids = np.array([-1, 0, 1, 2], dtype=np.int8)
+    instance_ids = np.array([-1, 5, 6, 7], dtype=np.int32)
+    out_cls, _ = apply_filters_remap(class_ids, instance_ids, {}, req, src_to_tgt)
+    assert list(out_cls) == [-1, 0, 200, 200]
 
 
 def test_taxonomy_is_palette_driven_pass_through_class_present_even_if_absent_from_data():
@@ -671,3 +695,49 @@ def test_labels_accuracy_scene_mismatch_409(client_with_annotated_scene):
     client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 100000})
     r = client.get(f"/api/labels/accuracy?scene=wrong/scene&session_id={session_id}")
     assert r.status_code == 409
+
+
+def test_export_labels_colorless_scan_subsample_and_drop(client_with_annotated_scene, tmp_path):
+    # A scan.ply without red/green/blue loads with colors=None; subsample and
+    # drop_unlabeled exports must not crash on it. Positions are preserved
+    # (write_scene_ply is seeded) so the session's source fingerprint pin holds.
+    client, scene_id, session_id = client_with_annotated_scene
+    from plyfile import PlyData, PlyElement
+    ply_path = tmp_path / "lidar" / "annotated" / "demo" / "source" / "scan.ply"
+    v = PlyData.read(str(ply_path))["vertex"].data
+    bare = np.zeros(len(v), dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")])
+    for f in ("x", "y", "z"):
+        bare[f] = v[f]
+    PlyData([PlyElement.describe(bare, "vertex")], text=False).write(str(ply_path))
+
+    _load_demo(client, scene_id, session_id)
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "subsample", "n": 4},
+        "drop_unlabeled": True,
+    })
+    assert r.status_code == 200, r.text
+    ply_bytes, manifest = _unzip_export(r.content)
+    n, rec = _parse_labeled_ply(ply_bytes)
+    assert n == manifest["resolution"]["points"]
+    assert (rec["class_id"] >= 0).all()
+
+
+def test_export_labels_stale_class_name_is_400_not_500(client_with_annotated_scene):
+    # An instance saved under a class name that was since renamed/removed in
+    # classes.yaml must fail as a diagnosable 400, not an unhandled 500.
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+    r = client.put(
+        f"/api/annotations/gt/{scene_id}?session_id={session_id}",
+        json={"scene": scene_id, "kind": "gt", "meta": {},
+              "instances": [{"id": "i0", "cls": "no_such_class",
+                             "kind": "pointset", "segId": 0}]},
+    )
+    assert r.status_code == 200, r.text
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+    })
+    assert r.status_code == 400, r.text
+    assert "no_such_class" in r.text

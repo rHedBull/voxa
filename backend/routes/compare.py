@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Response
 from app.constants import *  # noqa: F401,F403
 from app.schemas import *  # noqa: F401,F403
 from app.core import *  # noqa: F401,F403
+from labeling.segment_io import atomic_write_json
 
 router = APIRouter()
 
@@ -54,8 +55,10 @@ def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest,
         "instances": [c.model_dump() for c in doc.instances],
         "meta": doc.meta,
     }
-    with p.open("w") as f:
-        json.dump(body, f, indent=2)
+    # Atomic: this doc is autosaved every ~600 ms of editing; a plain write
+    # truncated mid-crash would take every instance's OBB volume, confirmed
+    # flag and seq with it.
+    atomic_write_json(p, body)
     return {"saved": str(p), "count": len(doc.instances)}
 
 @router.post("/api/compare-points/{tier}/{name}")

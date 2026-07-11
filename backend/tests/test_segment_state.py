@@ -72,6 +72,19 @@ def test_reassign_with_negative_target_inst_allocates_new_id():
     assert int(s.class_ids[6]) == 2
 
 
+def test_fresh_instance_ids_are_never_reused_after_undo():
+    # An undone apply's id may still be referenced by the frontend's instance
+    # doc (the row survives Ctrl+Z until reconciliation); re-issuing it would
+    # cross-link two instances. Fresh ids must be monotonic for the session.
+    s = _seed()
+    out1 = s.apply_reassign(np.array([0], dtype=np.int32),
+                            target_inst=-1, target_class=2)
+    s.undo()
+    out2 = s.apply_reassign(np.array([6], dtype=np.int32),
+                            target_inst=-1, target_class=2)
+    assert out2["new_instance_id"] > out1["new_instance_id"]
+
+
 def test_reassign_with_both_none_erases_to_unlabeled():
     s = _seed()
     s.apply_reassign(np.array([1, 2], dtype=np.int32),

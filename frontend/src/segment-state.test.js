@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState } from './segment-state.js';
+import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta } from './segment-state.js';
 
 const seed = () => initSegState({
   classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
@@ -89,5 +89,91 @@ describe('hydrateFromServerState', () => {
     const state = { hiddenInstIds: new Set([42]), presegRunId: 'old' };
     const out = hydrateFromServerState(state, { has_seg: false });
     expect(out).toBe(state);
+  });
+});
+
+describe('reconcilePointsetRows', () => {
+  const row = (segId, extra = {}) => ({ id: `i${segId}`, kind: 'pointset', segId, ...extra });
+  const summaryOf = (...ids) => new Map(ids.map((id) => [id, { nPoints: 1 }]));
+
+  it('prunes a pointset row whose touched segId vanished (undo)', () => {
+    const rows = [row(3), row(4)];
+    const dormant = new Map();
+    const out = reconcilePointsetRows(rows, summaryOf(4), new Set([3]), dormant);
+    expect(out.map((r) => r.segId)).toEqual([4]);
+    expect(dormant.get(3)).toBe(rows[0]);
+  });
+
+  it('returns null when the touched id still has points (partial undo)', () => {
+    const rows = [row(3)];
+    expect(reconcilePointsetRows(rows, summaryOf(3), new Set([3]), new Map())).toBeNull();
+  });
+
+  it('revives a dormant row when its id reappears (redo)', () => {
+    const undone = row(3);
+    const dormant = new Map([[3, undone]]);
+    const rows = [row(4)];
+    const out = reconcilePointsetRows(rows, summaryOf(3, 4), new Set([3]), dormant);
+    expect(out).toEqual([rows[0], undone]);
+    expect(dormant.has(3)).toBe(false);
+  });
+
+  it('never touches rows outside touchedIds, even with zero points', () => {
+    // An instance fully overwritten by a later apply is NOT an undone one:
+    // its OBB volume must survive for raw-density replay.
+    const rows = [row(3)];
+    expect(reconcilePointsetRows(rows, summaryOf(7), new Set([7]), new Map())).toBeNull();
+  });
+
+  it('ignores non-pointset (legacy cuboid) rows', () => {
+    const rows = [{ id: 'c1', kind: 'cuboid', segId: 3 }];
+    expect(reconcilePointsetRows(rows, summaryOf(), new Set([3]), new Map())).toBeNull();
+  });
+
+  it('is a no-op for an empty touched set', () => {
+    expect(reconcilePointsetRows([row(3)], summaryOf(), new Set(), new Map())).toBeNull();
+  });
+});
+
+describe('applyUndoRedoDelta', () => {
+  it('applies the delta and prunes the undone row, then revives it on redo', () => {
+    // Point 7 was labeled by apply #3 (a fresh box). Undo erases it.
+    const state = initSegState({
+      classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
+      instanceFull: new Int32Array([-1, 0, 0, 1, 1, 2, -1, 3]),
+    });
+    const boxRow = { id: 'i3', kind: 'pointset', segId: 3, center: [0, 0, 0] };
+    const rows = [{ id: 'i1', kind: 'pointset', segId: 1 }, boxRow];
+
+    const undo = applyUndoRedoDelta(state, {
+      indices: new Int32Array([7]),
+      after_class: new Int8Array([-1]),
+      after_instance: new Int32Array([-1]),
+    }, rows);
+    expect(undo.next.instanceFull[7]).toBe(-1);
+    expect(undo.rows.map((r) => r.segId)).toEqual([1]);
+    expect(state.dormant.get(3)).toBe(boxRow);
+
+    const redo = applyUndoRedoDelta(undo.next, {
+      indices: new Int32Array([7]),
+      after_class: new Int8Array([2]),
+      after_instance: new Int32Array([3]),
+    }, undo.rows);
+    expect(redo.next.instanceFull[7]).toBe(3);
+    expect(redo.rows.map((r) => r.segId)).toEqual([1, 3]);
+    expect(state.dormant.has(3)).toBe(false);
+  });
+
+  it('returns rows=null when the delta does not change row liveness', () => {
+    const state = initSegState({
+      classFull: new Int8Array([0, 0]),
+      instanceFull: new Int32Array([1, 1]),
+    });
+    const out = applyUndoRedoDelta(state, {
+      indices: new Int32Array([0]),
+      after_class: new Int8Array([2]),
+      after_instance: new Int32Array([1]),
+    }, [{ id: 'i1', kind: 'pointset', segId: 1 }]);
+    expect(out.rows).toBeNull();
   });
 });

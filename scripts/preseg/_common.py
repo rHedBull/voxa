@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 # Make backend importable when _common is imported from scripts/preseg/.
 _BACKEND = Path(__file__).resolve().parents[2] / "backend"
@@ -19,15 +18,15 @@ if str(_BACKEND) not in sys.path:
 
 
 def classes_from_yaml(config_path: Path) -> dict[str, int]:
-    """{name_lower: id} from voxa's classes.yaml, ids by enumeration order.
+    """{name_lower: id} from voxa's classes.yaml.
 
-    classes.yaml is keyed by name with no explicit id; ordering matches
-    backend ``main.py::load_classes`` so the int ids line up with the palette.
+    Thin delegate to backend ``app.core._voxa_class_name_to_id`` — the single
+    home for the name↔id mapping (explicit ``id:`` with positional fallback,
+    duplicate-id guard) — so the ids published into segment_summary.json can
+    never drift from the app palette and exports.
     """
-    if not config_path.exists():
-        return {}
-    data = yaml.safe_load(config_path.read_text()) or {}
-    return {str(k).lower(): i for i, k in enumerate((data.get("classes", {})).keys())}
+    from app.core import _voxa_class_name_to_id  # lazy backend import
+    return _voxa_class_name_to_id(config_path)
 
 
 def ply_vertex_count(path: Path) -> int:
