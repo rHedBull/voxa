@@ -32,6 +32,7 @@ export function decodeLoadResponse(j) {
     segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
     sessionId: j.session_id ?? null,
     sessions: j.sessions || [],
+    rawSourceAvailable: !!j.raw_source_available,
   };
 }
 
@@ -255,6 +256,32 @@ export const VoxaAPI = {
     const r = await fetch('/api/segment/centerlines');
     if (!r.ok) throw new Error(`getCenterlines failed: ${r.status} ${await r.text()}`);
     return r.json();
+  },
+  // Export wizard Review step: real p50/p90 sample spacing for the loaded scan.
+  async getAccuracy(scene, sessionId) {
+    const q = `?scene=${encodeURIComponent(scene)}&session_id=${encodeURIComponent(sessionId)}`;
+    const r = await fetch(`/api/labels/accuracy${q}`);
+    if (!r.ok) throw new Error(`getAccuracy failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  // Export the active session's labels → zip blob. Surfaces backend 422/409
+  // detail on the thrown error (err.status / err.detail) so the wizard can
+  // render it inline instead of alerting.
+  async exportLabels(cfg) {
+    const r = await fetch('/api/labels/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r.ok) {
+      let detail = null;
+      try { detail = (await r.json()).detail; } catch { /* non-JSON body */ }
+      const err = new Error(`export failed: ${r.status}`);
+      err.status = r.status;
+      err.detail = detail;
+      throw err;
+    }
+    return r.blob();
   },
 };
 

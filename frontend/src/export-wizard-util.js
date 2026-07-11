@@ -1,7 +1,10 @@
 /**
  * Pure-function helpers for the export wizard. No React, no DOM — plain JS only.
- * These mirror the backend build_taxonomy semantics so the UI preview matches
- * what the server will produce.
+ * `remapToTaxonomy` mirrors the backend `build_taxonomy`
+ * (backend/labeling/export_pipeline.py) so the Review-step preview matches what
+ * the server will produce — keep the two in sync if the taxonomy semantics
+ * (palette-driven, consumed-skip, exclude-omit) change. The backend stays the
+ * source of truth; this is preview only.
  */
 
 /**
