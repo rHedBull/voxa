@@ -139,6 +139,19 @@ describe('beam-graph: apply & commit', () => {
     expect(s.edges[0]).toMatchObject({ instanceId: 42, dirty: false });
   });
 
+  it('markApplied keeps dirty when the live edge was edited in flight', () => {
+    let s = oneEdge();
+    const snapshot = s.edges[0];                 // press-time snapshot sent to the server
+    s = moveNode(s, 2, [4, 0, 0]);               // edit lands mid-flight
+    s = markApplied(s, snapshot.id, 42, snapshot);
+    expect(s.edges[0]).toMatchObject({ instanceId: 42, dirty: true });
+
+    let t = oneEdge();
+    const sent = t.edges[0];
+    t = markApplied(t, sent.id, 42, sent);       // untouched in flight → clean
+    expect(t.edges[0]).toMatchObject({ instanceId: 42, dirty: false });
+  });
+
   it('commitAll retires applied edges (baked endpoints), keeps failed ones + their nodes', () => {
     let s = oneEdge();
     s = addNode(s, [0, 5, 0]);                   // node 4 (shared id counter)
@@ -151,6 +164,17 @@ describe('beam-graph: apply & commit', () => {
     expect(s.edges).toHaveLength(1);              // the unapplied one stays
     expect(s.nodes.map((n) => n.id).sort()).toEqual([1, 4]);  // node 2 dropped
     expect(s.selection).toBeNull();
+  });
+
+  it('commitAll keeps an applied-then-edited (dirty) edge in the active graph', () => {
+    let s = oneEdge();
+    s = markApplied(s, s.edges[0].id, 100);
+    s = moveNode(s, 2, [4, 0, 0]);               // dirty again — server holds the OLD box
+    s = commitAll(s);
+    expect(s.committed).toHaveLength(0);
+    expect(s.edges).toHaveLength(1);
+    expect(s.edges[0]).toMatchObject({ instanceId: 100, dirty: true });
+    expect(s.nodes.map((n) => n.id).sort()).toEqual([1, 2]);
   });
 });
 
@@ -216,8 +240,8 @@ describe('beam-graph: serialization', () => {
   it('toStructureDoc <-> seedFromServer round-trip preserves graph + committed + dirty', () => {
     let s = oneEdge();
     s = addNode(s, [0, 5, 0]);
+    s = moveNode(s, 1, [0, 1, 0]);               // move BEFORE apply — edge commits clean
     s = markApplied(s, s.edges[0].id, 100);
-    s = moveNode(s, 1, [0, 1, 0]);               // applied edge now dirty
     s = commitAll(s);                            // applied edge → committed; isolated nodes dropped
     s = addNode(s, [7, 7, 7]);
     const doc = toStructureDoc(s);

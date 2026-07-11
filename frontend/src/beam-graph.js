@@ -144,24 +144,33 @@ export function applyTargets(state) {
     (e) => (e.dirty || e.instanceId == null) && !isDegenerate(state, e));
 }
 
-// An unknown edgeId is a deliberate no-op: the async apply loop can race an
-// edge deletion (same tolerance class as draw-paths' movePoint).
-export function markApplied(state, edgeId, instanceId) {
-  const edges = state.edges.map((e) =>
-    e.id === edgeId ? { ...e, instanceId, dirty: false } : e);
+// Record the backend instance for an applied edge. `appliedEdge` is the
+// press-time snapshot that was sent: if the live edge was edited while the
+// request was in flight (reference inequality — every mutating op replaces
+// the edge object), keep it dirty so the next Enter re-applies the new
+// geometry. An unknown edgeId is a deliberate no-op (the async apply loop
+// can race an edge deletion — same tolerance class as draw-paths' movePoint).
+export function markApplied(state, edgeId, instanceId, appliedEdge = null) {
+  const edges = state.edges.map((e) => {
+    if (e.id !== edgeId) return e;
+    const editedInFlight = appliedEdge != null && e !== appliedEdge;
+    return { ...e, instanceId, dirty: editedInFlight };
+  });
   return { ...state, edges };
 }
 
 // Ctrl+Enter: retire every applied edge into the committed layer (bake its
 // endpoint positions — the graph structure is not needed after commit) and
-// drop it from the active graph. Edges that never got an instance (apply
-// failed / 0 points) stay active so the user can fix them; nodes with no
-// remaining edges are dropped (canvas clears).
+// drop it from the active graph. Edges that never got an instance OR are
+// dirty (edited/failed re-apply) stay active so the user can fix them —
+// committing a dirty edge would bake NEW endpoints while the server holds
+// labels for the OLD box; nodes with no remaining edges are dropped (canvas
+// clears).
 export function commitAll(state) {
   const committed = [...state.committed];
   const remaining = [];
   for (const e of state.edges) {
-    if (e.instanceId == null) { remaining.push(e); continue; }
+    if (e.instanceId == null || e.dirty) { remaining.push(e); continue; }
     committed.push({
       a: [...nodePos(state, e.a)], b: [...nodePos(state, e.b)],
       width: e.width, classId: e.classId, instanceId: e.instanceId,

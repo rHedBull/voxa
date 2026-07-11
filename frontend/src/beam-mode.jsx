@@ -161,7 +161,9 @@ function BeamOverlay({ viewerRef, beam, setBeam, classes, defaultClassId, showCo
       group.add(mesh);
       if (isSel) addRimShell(mesh, Math.max(0.02, e.width * 0.15));
     }
-    // Nodes last — pick priority: node sphere > beam box > cloud.
+    // Nodes. Pick priority (node sphere > beam box > cloud) comes from the
+    // pointer handler checking beamNode hits before beamEdge hits — not from
+    // add order.
     const sphereR = Math.max(0.03, beam.lastWidth * 0.3);
     for (const n of beam.nodes) {
       const isSel = beam.selection?.kind === 'node' && beam.selection.id === n.id;
@@ -322,6 +324,7 @@ export default function BeamMode({
     toastTimer.current = setTimeout(() => setToast(null), 2500);
   }, []);
   const seededRef = useRef(false);
+  const persistPendingRef = useRef(false);
 
   // Load stored structure once on open (active graph + committed layer).
   // On failure seededRef stays false → we never PUT → a load hiccup can't
@@ -346,12 +349,26 @@ export default function BeamMode({
   // selection clicks don't trigger writes.
   useEffect(() => {
     if (!seededRef.current) return undefined;
+    persistPendingRef.current = true;
     const t = setTimeout(() => {
+      persistPendingRef.current = false;
       VoxaAPI.putStructure(toStructureDoc(beamLiveRef.current), sessionId)
         .catch((err) => showToast(`structure save failed: ${err.message}`));
     }, 800);
     return () => clearTimeout(t);
   }, [beam.nodes, beam.edges, beam.committed, sessionId, showToast]);
+
+  // Flush a pending debounced write on unmount — otherwise the last <800ms of
+  // graph changes (incl. fresh instanceIds from an apply) silently vanish.
+  // The session pin turns a race with a session switch into a 409, never a
+  // cross-session write.
+  useEffect(() => () => {
+    if (seededRef.current && persistPendingRef.current) {
+      VoxaAPI.putStructure(toStructureDoc(beamLiveRef.current), sessionId)
+        .catch((err) => console.error('beam structure flush failed:', err));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Apply every never-applied/edited beam: one apply-shape call per beam,
   // sequential (same loop pattern as draw-mode's applySelection). Press-time
@@ -381,7 +398,7 @@ export default function BeamMode({
         allOk = false;
         continue;                     // no instance allocated for empty beams
       }
-      setBeam((cur) => markApplied(cur, edge.id, r.instanceId));
+      setBeam((cur) => markApplied(cur, edge.id, r.instanceId, edge));
       setSegState((st) => st ? applyDelta(st, {
         indices: r.indices,
         after_class: r.afterClass,
