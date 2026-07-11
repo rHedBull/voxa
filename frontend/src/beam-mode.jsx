@@ -325,21 +325,24 @@ export default function BeamMode({
   }, []);
   const seededRef = useRef(false);
   const persistPendingRef = useRef(false);
+  const skipPersistRef = useRef(false);
 
   // Load stored structure once on open (active graph + committed layer).
-  // On failure seededRef stays false → we never PUT → a load hiccup can't
-  // wipe the server-side doc with an empty graph.
+  // On failure (incl. a 409 from the session pin) seededRef stays false → we
+  // never PUT → a load hiccup can't wipe the server-side doc with an empty
+  // graph.
   useEffect(() => {
     let gone = false;
-    VoxaAPI.getStructure()
+    VoxaAPI.getStructure(sessionId)
       .then((doc) => {
         if (gone) return;
+        skipPersistRef.current = true;
         setBeam((s) => seedFromServer(s, doc));
         seededRef.current = true;
       })
       .catch((err) => { if (!gone) showToast(`structure load failed: ${err.message}`); });
     return () => { gone = true; };
-  }, [showToast]);
+  }, [showToast, sessionId]);
 
   // Persist graph geometry (debounced) after every graph change post-seed.
   // Covers apply/commit/edits per the spec; the session pin makes a session
@@ -349,6 +352,13 @@ export default function BeamMode({
   // selection clicks don't trigger writes.
   useEffect(() => {
     if (!seededRef.current) return undefined;
+    if (skipPersistRef.current) {
+      // The seed run: the arrays were just replaced by what we loaded —
+      // writing them back is a redundant echo (and, in a remount race, the
+      // vector for cross-session clobber).
+      skipPersistRef.current = false;
+      return undefined;
+    }
     persistPendingRef.current = true;
     const t = setTimeout(() => {
       persistPendingRef.current = false;

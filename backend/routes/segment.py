@@ -165,10 +165,17 @@ def get_centerlines():
     return load_centerlines(seg.session_dir)
 
 @router.get("/api/segment/structure")
-def get_structure():
-    """Stored Beam-tool graph for the active session (Beam sub-mode resume)."""
+def get_structure(session_id: str | None = None):
+    """Stored Beam-tool graph for the active session (Beam sub-mode resume).
+    `session_id` pins the read like the PUT pins the write: a remount racing
+    a session switch must 409 loudly, never seed from the wrong session."""
     from labeling.beams import load_structure
-    return load_structure(_require_session_seg().session_dir)
+    seg = _require_session_seg()
+    if session_id is not None and session_id != _state.get("session_id"):
+        raise HTTPException(
+            409, f"session mismatch — server has '{_state.get('session_id')}', "
+                 f"read was for '{session_id}'")
+    return load_structure(seg.session_dir)
 
 @router.put("/api/segment/structure")
 def put_structure(doc: StructureDoc):

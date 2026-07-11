@@ -48,6 +48,13 @@ def test_structure_put_validation(client_with_loaded_annotated_scene):
     assert client.put("/api/segment/structure", json=bad_pos).status_code == 422
 
 
+def test_structure_get_session_pin(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    sid = client.get("/api/segment/state").json()["session_id"]
+    assert client.get(f"/api/segment/structure?session_id={sid}").status_code == 200
+    assert client.get("/api/segment/structure?session_id=nope").status_code == 409
+
+
 def test_structure_put_session_pin_mismatch(
         client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
     client = client_with_loaded_annotated_scene

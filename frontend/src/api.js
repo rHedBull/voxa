@@ -267,8 +267,12 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`getCenterlines failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
-  async getStructure() {
-    const r = await fetch('/api/segment/structure');
+  // sessionId pins the read for the same reason putStructure pins the write:
+  // a remount racing a session switch must fail loudly, never seed from the
+  // wrong session.
+  async getStructure(sessionId) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const r = await fetch(`/api/segment/structure${q}`);
     if (!r.ok) throw new Error(`getStructure failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
