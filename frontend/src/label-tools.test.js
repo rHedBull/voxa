@@ -5,14 +5,14 @@ describe('label-tools', () => {
   it('lists the four selection tools in rail order', () => {
     expect(TOOLS.map((t) => t.id)).toEqual(['presegment', 'box', 'draw', 'beam']);
   });
-  it('gates all tools on a segment session (apply needs one); draw also on annotated', () => {
+  it('gates all tools on a segment session (apply needs one); draw and beam also on annotated', () => {
     const raw = { segState: null, isAnnotated: false };
     // No session → nothing can apply, including Box.
     expect(toolAvailable('box', raw)).toBe(false);
     expect(toolAvailable('presegment', raw)).toBe(false);
     expect(toolAvailable('draw', raw)).toBe(false);
     expect(toolAvailable('beam', raw)).toBe(false);
-    // Session but not annotated tier → Box + Presegment work, Draw doesn't.
+    // Session but not annotated tier → Box + Presegment work, Draw and Beam don't.
     const sessionOnly = { segState: {}, isAnnotated: false };
     expect(toolAvailable('box', sessionOnly)).toBe(true);
     expect(toolAvailable('presegment', sessionOnly)).toBe(true);

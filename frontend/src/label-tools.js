@@ -12,7 +12,7 @@ export function toolAvailable(id, { segState, isAnnotated }) {
   // a session dir, which only annotated-tier scans have.
   if (id === 'draw' || id === 'beam') return !!segState && !!isAnnotated;
   // Every tool applies through the segment session (apply-shape / reassign),
-  // which only exists on annotated-tier scans — so all three need segState.
+  // which only exists on annotated-tier scans — so all four need segState.
   // Box works without presegments, but still requires a session.
   return !!segState;
 }

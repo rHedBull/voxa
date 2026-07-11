@@ -1,5 +1,6 @@
 import { PresegmentList } from './segment-tools.jsx';
 import DrawMode from './draw-mode.jsx';
+import BeamMode from './beam-mode.jsx';
 
 function AutoConfirmToggle({ tool, autoConfirm, setAutoConfirm }) {
   return (
@@ -44,7 +45,7 @@ function PresegOptions({
 
 function DrawOptions({
   viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
-  activeClass, setActiveClass, onDrawApplied, autoConfirm, setAutoConfirm,
+  activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
 }) {
   return (
     <div className="tool-options tool-options-draw">
@@ -60,9 +61,41 @@ function DrawOptions({
           const cls = classes.find((c) => c.class_id === cid);
           if (cls) setActiveClass(cls.id);
         }}
-        onApplied={onDrawApplied}
+        onApplied={onToolApplied}
       />
       <AutoConfirmToggle tool="draw" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
+    </div>
+  );
+}
+
+function BeamOptions({
+  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
+  activeSessionId,
+}) {
+  return (
+    <div className="tool-options tool-options-beam">
+      {/* Remount per session: BeamMode's unmount flush + structure load are
+          per-session; a session switch must tear down and reseed, or the old
+          graph could be flushed against the new session (the 409 pin would
+          reject it — but the graph would be lost instead of saved). */}
+      <BeamMode
+        key={activeSessionId}
+        viewerRef={viewerRef}
+        classes={classes}
+        setSegState={setSegState}
+        onExit={onExit}
+        pointSize={pointSize}
+        setPointSize={setPointSize}
+        defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
+        onClassChange={(cid) => {
+          const cls = classes.find((c) => c.class_id === cid);
+          if (cls) setActiveClass(cls.id);
+        }}
+        onApplied={onToolApplied}
+        sessionId={activeSessionId}
+      />
+      <AutoConfirmToggle tool="beam" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
     </div>
   );
 }
@@ -108,6 +141,7 @@ export default function ToolOptions(props) {
   const { activeTool } = props;
   if (activeTool === 'presegment') return <PresegOptions {...props} />;
   if (activeTool === 'draw') return <DrawOptions {...props} />;
+  if (activeTool === 'beam') return <BeamOptions {...props} />;
   if (activeTool === 'box') return <BoxOptions {...props} />;
   return null;
 }
