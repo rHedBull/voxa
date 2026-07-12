@@ -243,12 +243,13 @@ export const VoxaAPI = {
     const j = await r.json();
     return j.presegs;
   },
-  async applyShape({ shape, targetClass, targetInst = -1, mergedFrom = [] }) {
+  async applyShape({ shape, targetClass, targetInst = -1, mergedFrom = [], protectInstances = [] }) {
     const body = {
       shape,
       target_class: targetClass,
       target_inst: targetInst,
       merged_from: mergedFrom,
+      protect_instances: protectInstances,
     };
     const r = await fetch('/api/segment/apply-shape', {
       method: 'POST',
@@ -259,12 +260,32 @@ export const VoxaAPI = {
     const j = await r.json();
     return { ..._decodeApplyResponse(j), instanceId: j.instance_id ?? null };
   },
-  async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [] }) {
-    return this.applyShape({ shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom });
+  async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [], protectInstances = [] }) {
+    return this.applyShape({ shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom, protectInstances });
   },
   async getCenterlines() {
     const r = await fetch('/api/segment/centerlines');
     if (!r.ok) throw new Error(`getCenterlines failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  // sessionId pins the read for the same reason putStructure pins the write:
+  // a remount racing a session switch must fail loudly, never seed from the
+  // wrong session.
+  async getStructure(sessionId) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const r = await fetch(`/api/segment/structure${q}`);
+    if (!r.ok) throw new Error(`getStructure failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  // sessionId pins the write: the backend 409s if the active session changed
+  // between the edit and this (debounced) write — never write cross-session.
+  async putStructure(doc, sessionId) {
+    const r = await fetch('/api/segment/structure', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...doc, session_id: sessionId }),
+    });
+    if (!r.ok) throw new Error(`putStructure failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
   // Export wizard Review step: real p50/p90 sample spacing for the loaded scan.
@@ -292,6 +313,7 @@ function _decodeApplyResponse(j) {
   return {
     op: j.op,
     nAffected: j.n_affected,
+    nProtected: j.n_protected ?? 0,
     dirty: j.dirty,
     newInstanceId: j.new_instance_id ?? null,
     indices: j.indices ? b64ToInt32(j.indices) : null,

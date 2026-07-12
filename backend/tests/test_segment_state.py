@@ -85,6 +85,62 @@ def test_fresh_instance_ids_are_never_reused_after_undo():
     assert out2["new_instance_id"] > out1["new_instance_id"]
 
 
+def test_reassign_skips_points_in_protected_instances():
+    # "Confirmed = locked": a reassign must never overwrite points that belong
+    # to a protected (confirmed) instance. _seed: idx 1,2 -> inst 0; idx 3,4 ->
+    # inst 1. Protecting inst 0 while reassigning [1,2,3,4] must touch only 3,4.
+    s = _seed()
+    out = s.apply_reassign(np.array([1, 2, 3, 4], dtype=np.int32),
+                           target_inst=-1, target_class=5,
+                           protect_instances=[0])
+    # Protected inst-0 points untouched.
+    assert int(s.class_ids[1]) == 0 and int(s.instance_ids[1]) == 0
+    assert int(s.class_ids[2]) == 0 and int(s.instance_ids[2]) == 0
+    # Unprotected inst-1 points reassigned to the fresh instance + class 5.
+    new_id = out["new_instance_id"]
+    assert int(s.instance_ids[3]) == new_id and int(s.class_ids[3]) == 5
+    assert int(s.instance_ids[4]) == new_id and int(s.class_ids[4]) == 5
+    assert out["n_affected"] == 2
+    assert out["n_protected"] == 2
+
+
+def test_reassign_all_protected_is_a_noop():
+    # Every candidate point is locked -> no mutation, no fresh id, nothing dirty.
+    s = _seed()
+    s.dirty = False
+    out = s.apply_reassign(np.array([1, 2], dtype=np.int32),
+                           target_inst=-1, target_class=5,
+                           protect_instances=[0])
+    assert out["n_affected"] == 0
+    assert out["n_protected"] == 2
+    assert "new_instance_id" not in out
+    assert int(s.class_ids[1]) == 0 and int(s.instance_ids[1]) == 0
+    assert s.dirty is False
+
+
+def test_reassign_never_protects_its_own_target_inst():
+    # Re-applying an existing box reuses its instance id; passing that id in
+    # protect_instances (defensive frontend) must not make the write a no-op.
+    s = _seed()
+    out = s.apply_reassign(np.array([3, 4], dtype=np.int32),
+                           target_inst=1, target_class=5,
+                           protect_instances=[1])
+    assert out["n_affected"] == 2
+    assert int(s.class_ids[3]) == 5 and int(s.instance_ids[3]) == 1
+
+
+def test_reassign_never_protects_unlabeled_points():
+    # A stray -1 in protect_instances must not lock every unlabeled point out of
+    # labeling — unlabeled points are always the target of a fresh apply.
+    s = _seed()  # idx 0, 6 are unlabeled (-1, -1)
+    out = s.apply_reassign(np.array([0, 6], dtype=np.int32),
+                           target_inst=-1, target_class=2,
+                           protect_instances=[-1])
+    assert out["n_affected"] == 2
+    assert out["n_protected"] == 0
+    assert int(s.class_ids[0]) == 2 and int(s.class_ids[6]) == 2
+
+
 def test_reassign_with_both_none_erases_to_unlabeled():
     s = _seed()
     s.apply_reassign(np.array([1, 2], dtype=np.int32),

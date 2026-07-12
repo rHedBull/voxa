@@ -45,6 +45,26 @@ def test_apply_shape_tube_parity_with_centerline_apply(client_with_loaded_annota
     assert r1.json()["n_affected"] == r2.json()["n_affected"]
 
 
+def test_apply_shape_skips_protected_instances(client_with_loaded_annotated_scene):
+    # Overextending a box over an already-labeled (confirmed) instance must not
+    # steal its points. First apply creates instance A; a second overlapping
+    # apply that lists A in protect_instances leaves A's points untouched.
+    client = client_with_loaded_annotated_scene
+    r1 = client.post("/api/segment/apply-shape", json=_obb_body())
+    a = r1.json()
+    a_id, a_n = a["instance_id"], a["n_affected"]
+    assert a_n > 0
+
+    r2 = client.post("/api/segment/apply-shape", json=_obb_body(
+        target_class="tank", protect_instances=[a_id]))
+    b = r2.json()
+    assert b["n_protected"] == a_n     # every one of A's points was skipped
+    assert b["n_affected"] == 0        # nothing else was inside the box
+    # A still exists as class 'pipe' — a third, unprotected apply would grab it.
+    r3 = client.post("/api/segment/apply-shape", json=_obb_body(target_class="tank"))
+    assert r3.json()["n_affected"] == a_n
+
+
 def test_apply_shape_unknown_type_400(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/apply-shape",

@@ -263,6 +263,8 @@ def _require_seg():
 
 def _serialize_apply(out: dict) -> dict:
     body = {"op": out["op"], "n_affected": out["n_affected"], "dirty": True}
+    if "n_protected" in out:
+        body["n_protected"] = int(out["n_protected"])
     if "new_instance_id" in out:
         body["new_instance_id"] = int(out["new_instance_id"])
     if "indices" in out:

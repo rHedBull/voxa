@@ -87,7 +87,8 @@ def segment_state():
     )
 
 def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
-                      merged_from: list[int]) -> dict:
+                      merged_from: list[int],
+                      protect_instances: list[int] | None = None) -> dict:
     """Shared core for /apply-shape and /centerline-apply: resolve a shape to
     full-res point indices, reassign them, and run the per-shape structure
     persist hook (tube -> update_centerlines; obb -> none)."""
@@ -99,8 +100,16 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     idx = shape_indices(np.asarray(seg.positions), shape)
     if idx.size == 0:
         # Same key-absence contract as _serialize_apply on an empty delta.
-        return {"op": "apply-shape", "n_affected": 0, "dirty": bool(seg.dirty)}
-    out = seg.apply_reassign(idx, target_inst=target_inst, target_class=target_class)
+        return {"op": "apply-shape", "n_affected": 0, "n_protected": 0,
+                "dirty": bool(seg.dirty)}
+    out = seg.apply_reassign(idx, target_inst=target_inst, target_class=target_class,
+                             protect_instances=protect_instances)
+    if out["n_affected"] == 0:
+        # Every point inside the shape belonged to a protected (confirmed)
+        # instance — nothing written, no instance created. Surface n_protected
+        # so the UI can say "skipped N locked points" instead of "empty box".
+        return {"op": "apply-shape", "n_affected": 0,
+                "n_protected": out.get("n_protected", 0), "dirty": bool(seg.dirty)}
     # new_instance_id is only present on fresh allocation (target_inst < 0);
     # on re-apply the requested id is reused.
     instance_id = out.get("new_instance_id", target_inst)
@@ -127,7 +136,8 @@ def apply_shape(req: ApplyShapeRequest):
         raise HTTPException(400, str(e))
     try:
         return _apply_shape_core(seg, req.shape, req.target_inst,
-                                 target_class, req.merged_from)
+                                 target_class, req.merged_from,
+                                 req.protect_instances)
     except ValueError as e:            # unknown shape type
         raise HTTPException(400, str(e))
 
@@ -147,16 +157,48 @@ def centerline_apply(req: CenterlineApplyRequest):
     paths = [p.model_dump() for p in req.paths]
     shape = {"type": "tube", "paths": paths}
     return _apply_shape_core(seg, shape, req.target_inst, target_class,
-                             req.merged_from)
+                             req.merged_from, req.protect_instances)
+
+def _require_session_seg():
+    """Active SegmentSession that has a session dir (409 otherwise) — shared
+    by the centerline/structure persistence routes."""
+    seg = _require_seg()
+    if seg.session_dir is None:
+        raise HTTPException(409, "no active session")
+    return seg
 
 @router.get("/api/segment/centerlines")
 def get_centerlines():
     """Stored centerline paths for the active session (Draw sub-mode resume)."""
     from labeling.centerline import load_centerlines
-    seg = _require_seg()
-    if seg.session_dir is None:
-        raise HTTPException(409, "no active session")
+    seg = _require_session_seg()
     return load_centerlines(seg.session_dir)
+
+@router.get("/api/segment/structure")
+def get_structure(session_id: str | None = None):
+    """Stored Beam-tool graph for the active session (Beam sub-mode resume).
+    `session_id` pins the read like the PUT pins the write: a remount racing
+    a session switch must 409 loudly, never seed from the wrong session."""
+    from labeling.beams import load_structure
+    seg = _require_session_seg()
+    if session_id is not None and session_id != _state.get("session_id"):
+        raise HTTPException(
+            409, f"session mismatch — server has '{_state.get('session_id')}', "
+                 f"read was for '{session_id}'")
+    return load_structure(seg.session_dir)
+
+@router.put("/api/segment/structure")
+def put_structure(doc: StructureDoc):
+    """Replace the stored Beam-tool graph wholesale. The frontend owns graph
+    geometry; point labels flow through apply-shape separately (not undoable
+    here, matching centerlines.json)."""
+    from labeling.beams import save_structure
+    seg = _require_session_seg()
+    if doc.session_id is not None and doc.session_id != _state.get("session_id"):
+        raise HTTPException(
+            409, f"session mismatch — server has '{_state.get('session_id')}', "
+                 f"write was for '{doc.session_id}'")
+    return save_structure(seg.session_dir, doc.model_dump(exclude={"session_id"}))
 
 @router.put("/api/segment/save")
 def segment_save():

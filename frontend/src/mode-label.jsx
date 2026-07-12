@@ -40,6 +40,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Derived legacy flags — keep the existing body working during the refactor.
   const fastMode = activeTool === 'presegment' && presegRapid;
   const drawMode = activeTool === 'draw';
+  const beamMode = activeTool === 'beam';
+  // Sub-modes whose overlay owns viewport input (capture-phase keys +
+  // pointer): global pick/hotkey handlers stand down. A future 5th tool
+  // adds one term here instead of touching every gate.
+  const subModeOwnsInput = drawMode || beamMode;
   // Presegmentation is a way to *select* points; its segments (hulls, boxes,
   // per-segment hue coloring) only show while the Presegment tool is active.
   // Every other tool works on the raw RGB cloud.
@@ -47,7 +52,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   // Per-tool auto-confirm (added here to avoid a forward reference in Tasks 8/9;
   // threaded into apply paths in Task 10).
-  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false });
+  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false });
   const autoConfirmFor = (tool) =>
     tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
   // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
@@ -151,7 +156,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Draw mode owns all pointer events; skip registration while it's on.
   useEffectLabel(() => {
     if (!segState) return;
-    if (drawMode) return;
+    if (subModeOwnsInput) return;
     const viewer = viewerRef?.current;
     if (!viewer?.onPointerPick) return;
     return viewer.onPointerPick((fullIndex, evt) => {
@@ -165,13 +170,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         return { ...s, selection: next };
       });
     });
-  }, [segState, viewerRef, setSegState, drawMode]);
+  }, [segState, viewerRef, setSegState, subModeOwnsInput]);
 
   // Hull-click selection: clicking directly on a hull face (Ctrl or plain click)
   // selects the segment. Works in all tool modes.
   useEffectLabel(() => {
     if (!segState) return;
-    if (drawMode) return;
+    if (subModeOwnsInput) return;
     const viewer = viewerRef?.current;
     if (!viewer?.onHullPick) return;
     return viewer.onHullPick((segId, evt) => {
@@ -184,7 +189,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       });
       return true;
     });
-  }, [segState, viewerRef, setSegState, drawMode]);
+  }, [segState, viewerRef, setSegState, subModeOwnsInput]);
 
   // Drop the selection box whenever the scene changes.
   useEffectLabel(() => { setSelBox(null); }, [cloud]);
@@ -425,6 +430,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     [instances],
   );
 
+  // "Confirmed = locked": instance ids a volume apply (Box/Draw/Beam) must not
+  // overwrite. Sent to apply-shape so an overextended box can't steal points
+  // that already belong to a confirmed instance. Un-confirm to re-label them.
+  const protectedSegIds = useMemoLabel(
+    () => instances.filter((i) => i.confirmed && Number.isFinite(i.segId)).map((i) => i.segId),
+    [instances],
+  );
+
   // Always populated when there are confirmed instances, regardless of the
   // hide toggle. The Viewer uses it to compute "points labeled / left" stats
   // as well as to optionally NaN positions.
@@ -492,7 +505,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     {
       title: 'Tools',
       items: [
-        { keys: ['Rail'], desc: 'Switch Presegment / Box / Draw' },
+        { keys: ['Rail'], desc: 'Switch Presegment / Box / Draw / Beam' },
         { keys: ['Ctrl', '↵'], desc: 'Apply selection (pick class)' },
         { keys: ['0–9'], desc: 'Apply selection with that class' },
         { keys: ['✓'], desc: 'Confirm instance (row button)' },
@@ -688,6 +701,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       r = await VoxaAPI.applyShape({
         shape: { type: 'obb', center: selBox.center, size: selBox.size, rotation: selBox.rotation },
         targetClass: targetCls.id,
+        protectInstances: protectedSegIds,
       });
     } catch (err) {
       console.error('box apply failed:', err);
@@ -697,7 +711,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     // full-res points (parity with the Draw tool's empty-tube guard). Keep the
     // box so the user can reposition it, and don't create an empty instance.
     if (!r.indices || r.nAffected === 0) {
-      console.warn('box apply: no points inside the box');
+      // Distinguish a geometrically-empty box from one that only covered
+      // confirmed (locked) points, so the user knows to un-confirm to re-label.
+      console.warn(r.nProtected > 0
+        ? `box apply: ${r.nProtected} point(s) skipped — inside a confirmed instance (un-confirm to re-label)`
+        : 'box apply: no points inside the box');
       return;
     }
     const segId = Number.isFinite(r.instanceId) ? r.instanceId : -1;
@@ -727,24 +745,30 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       after_instance: r.afterInstance,
     }), selection: new Set() } : s));
     setSelBox(null);
-  }, [selBox, activeClassDef, instances, counts, onChange, setSegState, setSelBox, autoConfirm, presegRapid]);
+  }, [selBox, activeClassDef, instances, counts, onChange, setSegState, setSelBox, autoConfirm, presegRapid, protectedSegIds]);
 
-  // Surface each applied centerline instance in the right Instances panel as
-  // a pointset row (parity with fast-label promotion). Re-applies refresh the
-  // class; instances absorbed by a merge drop their row. Reads the latest
+  // Surface each applied Draw/Beam instance in the right Instances panel as a
+  // pointset row. Re-applies refresh the class AND (for beams) the persisted
+  // OBB selection volume — a stale box would replay into raw exports;
+  // instances absorbed by a Draw merge drop their row. Reads the latest
   // instances through a ref — one Enter can apply several groups back to
   // back, faster than the prop re-renders.
   const instancesRef = useRefLabel(instances);
   instancesRef.current = instances;
-  const onDrawApplied = useCallbackLabel(({ instanceId, classId, mergedFrom }) => {
+  const onToolApplied = useCallbackLabel(({
+    instanceId, classId, mergedFrom = [], source = 'draw', obb = null,
+  }) => {
     const cls = classes.find((c) => c.class_id === classId);
     if (!cls) return;
     const absorbed = new Set(mergedFrom);
     const kept = instancesRef.current.filter(
       (i) => !(i.kind === 'pointset' && absorbed.has(i.segId)));
     const existing = kept.find((i) => i.kind === 'pointset' && i.segId === instanceId);
+    const volume = obb ? {
+      center: [...obb.center], size: [...obb.size], rotation: [...obb.rotation],
+    } : {};
     const next = existing
-      ? kept.map((i) => i === existing ? { ...i, cls: cls.id, color: cls.color } : i)
+      ? kept.map((i) => i === existing ? { ...i, cls: cls.id, color: cls.color, ...volume } : i)
       : [...kept, {
         id: newId(),
         segId: instanceId,
@@ -752,8 +776,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         cls: cls.id,
         label: `${cls.label} #${instanceId}`,
         color: cls.color,
-        source: 'draw',
-        confirmed: autoConfirmFor('draw'),
+        source,
+        confirmed: autoConfirmFor(source),
+        ...volume,
       }];
     instancesRef.current = next;
     onChange(next);
@@ -856,9 +881,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   useEffectLabel(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-      // Fast labeling / Draw sub-modes own the keyboard while active.
-      // DrawMode's DrawKeys runs in capture phase like FastLabelKeys.
-      if (fastMode || drawMode) return;
+      // Fast labeling / Draw / Beam sub-modes own the keyboard while active.
+      // DrawMode's DrawKeys / BeamMode's BeamKeys run in capture phase like
+      // FastLabelKeys.
+      if (fastMode || subModeOwnsInput) return;
       // Ctrl/Cmd+Enter is tool-agnostic: with a tool selection it opens the
       // class picker to apply; otherwise (Box tool) it toggles the confirmed
       // flag on the selected instance.
@@ -917,7 +943,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, applyBox, fastMode, drawMode]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, applyBox, fastMode, subModeOwnsInput]);
 
   return (
     <div className="mode-root label">
@@ -1016,7 +1042,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           pointSize={pointSize} setPointSize={setPointSize}
           activeClass={activeClass} setActiveClass={setActiveClass}
           onExit={() => setActiveTool('presegment')}
-          onDrawApplied={onDrawApplied}
+          onToolApplied={onToolApplied}
+          protectInstances={protectedSegIds}
+          activeSessionId={activeSessionId}
           hasBox={!!selBox} onDrawBox={toggleBoxSelect}
           transformMode={transformMode} setTransformMode={setTransformMode}
           onAutoFit={autoFitBox}

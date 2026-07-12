@@ -99,13 +99,37 @@ class SegmentSession:
         self, indices: np.ndarray,
         target_inst: Optional[int],
         target_class: Optional[int],
+        protect_instances: Optional[list[int]] = None,
     ) -> dict:
         """Brush op. target_inst=None + target_class=None → erase to (-1, -1).
-        target_inst<0 + target_class>=0 → allocate a new instance id."""
-        return self._apply("reassign", indices, dict(
+        target_inst<0 + target_class>=0 → allocate a new instance id.
+
+        protect_instances: instance ids that must not be overwritten
+        ("confirmed = locked" — an overextended box may not steal points that
+        already belong to a confirmed instance). Candidate points whose current
+        instance is protected are dropped before the write; the write's own
+        target_inst is never protected (re-applying an existing box). The result
+        carries `n_protected` (how many candidates were skipped)."""
+        indices = np.asarray(indices, dtype=np.int32)
+        n_candidate = int(indices.size)
+        if protect_instances:
+            protect = {int(v) for v in protect_instances}
+            protect.discard(-1)  # unlabeled points are always labelable
+            if target_inst is not None:
+                protect.discard(int(target_inst))  # re-apply never locks itself out
+            if protect:
+                keep = ~np.isin(self.instance_ids[indices], list(protect))
+                indices = indices[keep]
+        n_protected = n_candidate - int(indices.size)
+        if n_protected and indices.size == 0:
+            # Everything inside was locked: no mutation, no fresh id, not dirty.
+            return {"op": "reassign", "n_affected": 0, "n_protected": n_protected}
+        out = self._apply("reassign", indices, dict(
             target_inst=None if target_inst is None else int(target_inst),
             target_class=None if target_class is None else int(target_class),
         ))
+        out["n_protected"] = n_protected
+        return out
 
     def undo(self) -> Optional[dict]:
         if not self._undo:

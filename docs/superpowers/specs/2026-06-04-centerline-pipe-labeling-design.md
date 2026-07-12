@@ -105,6 +105,11 @@ class+instance — later applies overwrite earlier ones where tubes overlap
 (latest wins). With the blank-session workflow this is the natural behavior,
 and undo covers mistakes.
 
+> **As-built carve-out (2026-07-12):** last-write-wins holds only for
+> unconfirmed/unlabeled points. Points belonging to a **confirmed** instance are
+> never overwritten — `apply-shape`/`centerline-apply` carry `protect_instances`
+> and `apply_reassign` skips them. See the "Confirmed = locked" note in CLAUDE.md.
+
 ## Architecture
 
 Frontend owns the drawing UX; backend owns extraction over the full-resolution

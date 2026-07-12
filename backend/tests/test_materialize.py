@@ -58,6 +58,21 @@ def test_collect_volumes_box_and_tube():
     assert obb["seq"] == 2 and obb["shape"]["size"] == [1, 1, 1]
 
 
+def test_collect_volumes_beam_source_is_obb():
+    instances = [
+        {"source": "beam", "segId": 7, "seq": 3,
+         "center": [1.0, 0.0, 0.0], "size": [2.0, 0.2, 0.2],
+         "rotation": [0.0, 0.0, 0.5]},
+        # Beam row without a persisted OBB (defensive): skipped, not crashed.
+        {"source": "beam", "segId": 8, "seq": 4},
+    ]
+    vols = collect_volumes(instances, {"paths": []})
+    assert len(vols) == 1
+    assert vols[0] == {"kind": "obb", "instance_id": 7, "seq": 3,
+                       "shape": {"center": [1.0, 0.0, 0.0], "size": [2.0, 0.2, 0.2],
+                                 "rotation": [0.0, 0.0, 0.5]}}
+
+
 # ---------------------------------------------------------------------------
 # Regime-B max-seq replay rule
 # ---------------------------------------------------------------------------
@@ -419,3 +434,70 @@ def test_replay_multi_axis_rotated_box_labels_exactly_the_drawn_volume():
     assert expected_inside.any() and not expected_inside.all()  # non-trivial
     np.testing.assert_array_equal(inst == 7, expected_inside)
     assert (cls[expected_inside] == 3).all()
+
+
+def test_replay_skew_beam_labels_exactly_the_swept_volume():
+    # Same end-to-end guarantee as the box test above, for a beam: the
+    # frame->euler construction (frontend beam-graph.js, mirrored in
+    # test_shapes._beam_frame / _euler_xyz_from_basis) must select exactly
+    # its swept box on apply (shape_indices) and on replay at a denser,
+    # foreign density (build_replay_index/replay_labels) — both go through
+    # the same obb_indices as the box path, since a beam is just an OBB.
+    from tests.test_shapes import _beam_frame, _euler_xyz_from_basis
+    from labeling.shapes import shape_indices
+
+    a = np.array([0.2, 0.1, -0.3])
+    b = np.array([1.8, 1.2, 0.9])
+    width = 0.4
+    u, v, w = _beam_frame(a, b)
+    length = np.linalg.norm(b - a)
+
+    shape = {
+        "type": "obb",
+        "center": ((a + b) / 2).tolist(),
+        "size": [float(length), width, width],
+        "rotation": _euler_xyz_from_basis(u, v, w),
+    }
+
+    # collect_volumes picks up the beam instance row as an "obb" volume.
+    instances = [{"id": "beam-1", "source": "beam", "kind": "pointset",
+                  "segId": 11, "seq": 4,
+                  "center": shape["center"], "size": shape["size"],
+                  "rotation": shape["rotation"]}]
+    vols = collect_volumes(instances, {"paths": []})
+    assert len(vols) == 1
+    assert vols[0] == {"kind": "obb", "instance_id": 11, "seq": 4,
+                        "shape": {"center": shape["center"], "size": shape["size"],
+                                  "rotation": shape["rotation"]}}
+
+    rng = np.random.default_rng(2)
+    scan_pos = rng.uniform(-1, 3, (500, 3)).astype(np.float32)
+    raw_pos = rng.uniform(-1, 3, (8000, 3)).astype(np.float32)
+
+    # Apply at scan resolution exactly as POST /api/segment/apply-shape does.
+    inside_scan = shape_indices(scan_pos.reshape(-1), shape)
+    work_inst = np.full(500, -1, dtype=np.int32)
+    work_inst[inside_scan] = 11
+
+    idx = _index(scan_pos, work_inst, vols, {11: 4}, {11: 6})
+    cls, inst = replay_labels(idx, raw_pos)
+
+    # Independent reference: containment straight from the beam frame, the
+    # spec's own containment definition (mirrors test_shapes' ground truth).
+    rel = raw_pos.astype(np.float64) - a
+    du, dv, dw = rel @ u, rel @ v, rel @ w
+    # float32 points on float64 boundaries: the ground truth above uses the raw
+    # frame directly, while the code path round-trips frame -> euler -> matrix in
+    # float, so boundary points may legitimately flip between the two. Only
+    # strict inside/outside (outside this epsilon shell) is asserted (mirrors
+    # test_shapes.py).
+    margin = 1e-5
+    strict_inside = (du >= margin) & (du <= length - margin) \
+        & (np.abs(dv) <= width / 2 - margin) & (np.abs(dw) <= width / 2 - margin)
+    strict_outside = (du < -margin) | (du > length + margin) \
+        | (np.abs(dv) > width / 2 + margin) | (np.abs(dw) > width / 2 + margin)
+
+    assert strict_inside.any() and strict_outside.any()  # non-trivial split
+    assert (inst[strict_inside] == 11).all()
+    assert (cls[strict_inside] == 6).all()
+    assert (inst[strict_outside] != 11).all()
