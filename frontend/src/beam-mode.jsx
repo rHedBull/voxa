@@ -119,6 +119,17 @@ function BeamOverlay({ viewerRef, beam, setBeam, classes, defaultClassId, showCo
       c.geometry?.dispose?.(); c.material?.dispose?.();
       group.remove(c);
     }
+    const addBoxEdges = (mesh, color, opacity = 0.9) => {
+      // Crisp wireframe silhouette — translucent class-colored fill alone is
+      // unreadable on grey clouds (worst case: the grey Beam class).
+      const line = new THREE.LineSegments(
+        new THREE.EdgesGeometry(mesh.geometry),
+        new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false }));
+      line.raycast = () => {};
+      line.position.copy(mesh.position);
+      line.quaternion.copy(mesh.quaternion);
+      group.add(line);
+    };
     const addRimShell = (mesh, grow, color = 0xffffff, opacity = 0.55) => {
       // White back-side shell = selection rim (borrowed from draw-mode).
       // Never swallows picks: raycast is a no-op.
@@ -150,15 +161,18 @@ function BeamOverlay({ viewerRef, beam, setBeam, classes, defaultClassId, showCo
     for (const e of beam.edges) {
       const cls = classes.find((k) => k.class_id === e.classId);
       const isSel = beam.selection?.kind === 'edge' && beam.selection.id === e.id;
+      const color = new THREE.Color(cls?.color || '#60a5fa');
       const mesh = makeBeamBox(
         nodePos(beam, e.a), nodePos(beam, e.b), e.width, {
-          color: new THREE.Color(cls?.color || '#60a5fa'),
-          transparent: true, depthWrite: false,
-          opacity: isSel ? 0.40 : 0.25,
+          color, transparent: true, depthWrite: false,
+          opacity: isSel ? 0.45 : 0.32,
         });
       if (!mesh) continue;
       mesh.userData.beamEdge = e.id;
       group.add(mesh);
+      // Lightened toward white so the outline reads even when the class
+      // color is itself a grey.
+      addBoxEdges(mesh, color.clone().lerp(new THREE.Color(0xffffff), 0.35));
       if (isSel) addRimShell(mesh, Math.max(0.02, e.width * 0.15));
     }
     // Nodes. Pick priority (node sphere > beam box > cloud) comes from the
