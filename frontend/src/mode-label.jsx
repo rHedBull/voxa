@@ -52,7 +52,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   // Per-tool auto-confirm (added here to avoid a forward reference in Tasks 8/9;
   // threaded into apply paths in Task 10).
-  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false });
+  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false, sam: false });
   const autoConfirmFor = (tool) =>
     tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
   // Stateful so PresegmentButton can flip to 'instance' after a RANSAC

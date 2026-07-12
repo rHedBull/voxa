@@ -201,15 +201,23 @@ export default function SamMode({
             onClick={() => setMode('concept')}>Concept</button>
         </div>
 
-        {mode === 'box' ? (
-          <p className="tool-opt-hint">Shift-drag a rectangle over the cloud to segment it.</p>
-        ) : (
-          <div className="ins-row" style={{ marginTop: 6 }}>
-            <input className="ins-input" type="text" placeholder="prompt (e.g. pipe)"
-              value={text} onChange={(e) => setText(e.target.value)} />
+        {/* Text is visible in BOTH modes: in concept it's the prompt, in box it's
+            an optional SAM refinement. Always shown so a box capture never carries
+            hidden/stale text (the sidecar forwards req.text in box mode too). */}
+        <div className="ins-row" style={{ marginTop: 6 }}>
+          <input className="ins-input" type="text"
+            placeholder={mode === 'concept' ? 'prompt (e.g. pipe)' : 'optional text refinement'}
+            value={text} onChange={(e) => setText(e.target.value)} />
+          {mode === 'concept' && (
             <button className="ghost-btn" disabled={busy || !text.trim()}
               onClick={() => doCapture('concept', null)}>Segment all</button>
-          </div>
+          )}
+        </div>
+        {mode === 'box' && (
+          <p className="tool-opt-hint">
+            Shift-drag a rectangle over the cloud to segment it
+            {text.trim() ? ' (refined by the text above)' : ''}.
+          </p>
         )}
 
         {busy && <p className="tool-opt-hint">Working…</p>}

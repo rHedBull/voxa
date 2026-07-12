@@ -10,7 +10,12 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-BPE_PATH = "/home/hendrik/anaconda3/lib/python3.12/site-packages/clip/bpe_simple_vocab_16e6.txt.gz"
+import os
+
+BPE_PATH = os.environ.get(
+    "SAM_BPE_PATH",
+    "/home/hendrik/anaconda3/lib/python3.12/site-packages/clip/bpe_simple_vocab_16e6.txt.gz",
+)
 
 
 def build_processor(device: str = "cuda", confidence_threshold: float = 0.25):
