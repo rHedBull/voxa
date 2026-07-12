@@ -662,9 +662,8 @@ import numpy as np
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.core import _state, _require_seg
+from app.core import _state, _require_seg, _serialize_apply, _coerce_class_id  # all in app.core
 from app.schemas import SamCaptureRequest, SamProjectRequest
-from routes.segment import _serialize_apply, _coerce_class_id  # reuse existing helpers
 
 router = APIRouter()
 _TIMEOUT = 120.0
@@ -806,11 +805,13 @@ export function capturePayload({ view, fov, canvas, mode, box, text }) {
 ```javascript
   { id: 'sam',        icon: '✦', label: 'SAM' },
 ```
-Extend `toolAvailable`: `sam` needs a session **and** `raw_source_available` (thread the flag from the load response — see mode-label wiring, Task 11):
+Extend `toolAvailable` — add `rawSourceAvailable` to its destructured second arg and gate `sam` on it:
 ```javascript
-  if (id === 'sam') return !!segState && !!isAnnotated && !!ctx.rawSourceAvailable;
+export function toolAvailable(id, { segState, isAnnotated, rawSourceAvailable }) {
+  if (id === 'sam') return !!segState && !!isAnnotated && !!rawSourceAvailable;
+  // ...existing draw/beam/default cases unchanged...
 ```
-(Add `rawSourceAvailable` to the ctx object passed to `toolAvailable`; default false.)
+**Two call sites** must pass the new flag: `tool-rail.jsx:9` (a `ctx` object) and `mode-label.jsx:117` (an inline `{ segState, isAnnotated }`) — add `rawSourceAvailable` to both (default false when absent).
 
 - [ ] **Step 6: Add api methods** — `frontend/src/api.js`, near `applyShape`:
 
@@ -852,7 +853,7 @@ git commit -m "feat(sam): frontend tool registration, api client, pure-fn utils"
 `sam-mode.jsx` owns the interaction, modeled on `beam-mode.jsx`/`draw-mode.jsx` (capture-phase key/mouse handling, a left-rail panel). No automated test (interaction/DOM heavy — covered by Task 12 browser verification); keep all pure logic in `sam-util.js`.
 
 - [ ] **Step 1: Implement `sam-mode.jsx`** with:
-  - **Panel state:** `mode` ('box'|'concept'), `text`, `capture` (`{captureId, overlayPng, masks}` | null), `chosen` (Set of mask_id), `autoConfirm`, `busy`, `error`.
+  - **Panel state:** `mode` ('box'|'concept'), `text`, `capture` (`{captureId, overlayPng, masks}` | null — note the api returns `capture_id`/`overlay_png_b64`/`masks`; map to these camelCase keys), `chosen` (Set of mask_id), `autoConfirm`, `busy`, `error`.
   - **Box drag:** a canvas overlay `<div>` that, while `mode==='box'`, captures `mousedown`→`mousemove`→`mouseup` **only when Shift is held** (Shift suppresses orbit; plain drag falls through to the viewer's orbit). Draw a rubber-band rectangle. On mouseup: `normalizeBox` → `capturePayload({view: viewer.scene.view, fov: viewer.scene.cameraP.fov, canvas})` → `api.samCapture(...)` → set `capture`, preselect mask 0.
   - **Concept:** text input + **Segment all** button → `api.samCapture({mode:'concept', text})`.
   - **Mask-review panel:** show `overlayPng` (`<img>`, click-to-enlarge like PoC), and a checkbox list of `masks` (`mask_id` + score); box mode preselects the single mask, concept mode multi-select.
