@@ -159,12 +159,16 @@ class CenterlineApplyRequest(BaseModel):
     target_class: int | str
     target_inst: int = -1
     merged_from: list[int] = []
+    protect_instances: list[int] = []  # see ApplyShapeRequest
 
 class ApplyShapeRequest(BaseModel):
     shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
     target_class: int | str
     target_inst: int = -1
     merged_from: list[int] = []
+    # Instance ids that must not be overwritten ("confirmed = locked"): points
+    # inside the shape that belong to these instances are skipped, not stolen.
+    protect_instances: list[int] = []
 
 class SegmentStateResponse(BaseModel):
     """Snapshot of the in-memory segment session, returned to the frontend

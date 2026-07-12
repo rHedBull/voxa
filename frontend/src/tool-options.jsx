@@ -46,6 +46,7 @@ function PresegOptions({
 function DrawOptions({
   viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
   activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
+  protectInstances,
 }) {
   return (
     <div className="tool-options tool-options-draw">
@@ -62,6 +63,7 @@ function DrawOptions({
           if (cls) setActiveClass(cls.id);
         }}
         onApplied={onToolApplied}
+        protectInstances={protectInstances}
       />
       <AutoConfirmToggle tool="draw" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
     </div>
@@ -71,7 +73,7 @@ function DrawOptions({
 function BeamOptions({
   viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
   activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
-  activeSessionId,
+  activeSessionId, protectInstances,
 }) {
   return (
     <div className="tool-options tool-options-beam">
@@ -93,6 +95,7 @@ function BeamOptions({
           if (cls) setActiveClass(cls.id);
         }}
         onApplied={onToolApplied}
+        protectInstances={protectInstances}
         sessionId={activeSessionId}
       />
       <AutoConfirmToggle tool="beam" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />

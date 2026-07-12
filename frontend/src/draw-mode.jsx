@@ -319,11 +319,14 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClassId, hideAp
 
 export default function DrawMode({
   viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
-  defaultClassId, onClassChange, onApplied,
+  defaultClassId, onClassChange, onApplied, protectInstances = [],
 }) {
   const [draw, setDraw] = useState(() => initDrawState());
   const drawLiveRef = useRef(draw);
   drawLiveRef.current = draw;
+  // Read the latest confirmed-lock set at apply time (async), not closure-stale.
+  const protectInstancesRef = useRef(protectInstances);
+  protectInstancesRef.current = protectInstances;
   // Applied paths auto-hide by default — same default as "hide confirmed".
   const [hideApplied, setHideApplied] = useState(true);
   const [toast, setToast] = useState(null);
@@ -374,13 +377,16 @@ export default function DrawMode({
           targetClass: call.classId,
           targetInst: call.targetInst,
           mergedFrom: call.mergedFrom,
+          protectInstances: protectInstancesRef.current,
         });
       } catch (err) {
         showToast(`apply failed: ${err.message}`);
         continue;                       // surface and move on; state unchanged for this group
       }
       if (r.nAffected === 0) {
-        showToast('no points in tube');
+        showToast(r.nProtected > 0
+          ? `${r.nProtected} point(s) locked in a confirmed instance`
+          : 'no points in tube');
         continue;
       }
       setDraw((cur) => markApplied(cur, call.instKey, r.instanceId));

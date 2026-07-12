@@ -430,6 +430,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     [instances],
   );
 
+  // "Confirmed = locked": instance ids a volume apply (Box/Draw/Beam) must not
+  // overwrite. Sent to apply-shape so an overextended box can't steal points
+  // that already belong to a confirmed instance. Un-confirm to re-label them.
+  const protectedSegIds = useMemoLabel(
+    () => instances.filter((i) => i.confirmed && Number.isFinite(i.segId)).map((i) => i.segId),
+    [instances],
+  );
+
   // Always populated when there are confirmed instances, regardless of the
   // hide toggle. The Viewer uses it to compute "points labeled / left" stats
   // as well as to optionally NaN positions.
@@ -693,6 +701,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       r = await VoxaAPI.applyShape({
         shape: { type: 'obb', center: selBox.center, size: selBox.size, rotation: selBox.rotation },
         targetClass: targetCls.id,
+        protectInstances: protectedSegIds,
       });
     } catch (err) {
       console.error('box apply failed:', err);
@@ -702,7 +711,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     // full-res points (parity with the Draw tool's empty-tube guard). Keep the
     // box so the user can reposition it, and don't create an empty instance.
     if (!r.indices || r.nAffected === 0) {
-      console.warn('box apply: no points inside the box');
+      // Distinguish a geometrically-empty box from one that only covered
+      // confirmed (locked) points, so the user knows to un-confirm to re-label.
+      console.warn(r.nProtected > 0
+        ? `box apply: ${r.nProtected} point(s) skipped — inside a confirmed instance (un-confirm to re-label)`
+        : 'box apply: no points inside the box');
       return;
     }
     const segId = Number.isFinite(r.instanceId) ? r.instanceId : -1;
@@ -732,7 +745,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       after_instance: r.afterInstance,
     }), selection: new Set() } : s));
     setSelBox(null);
-  }, [selBox, activeClassDef, instances, counts, onChange, setSegState, setSelBox, autoConfirm, presegRapid]);
+  }, [selBox, activeClassDef, instances, counts, onChange, setSegState, setSelBox, autoConfirm, presegRapid, protectedSegIds]);
 
   // Surface each applied Draw/Beam instance in the right Instances panel as a
   // pointset row. Re-applies refresh the class AND (for beams) the persisted
@@ -1030,6 +1043,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           activeClass={activeClass} setActiveClass={setActiveClass}
           onExit={() => setActiveTool('presegment')}
           onToolApplied={onToolApplied}
+          protectInstances={protectedSegIds}
           activeSessionId={activeSessionId}
           hasBox={!!selBox} onDrawBox={toggleBoxSelect}
           transformMode={transformMode} setTransformMode={setTransformMode}

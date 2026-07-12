@@ -310,11 +310,14 @@ function BeamOverlay({ viewerRef, beam, setBeam, classes, defaultClassId, showCo
 
 export default function BeamMode({
   viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
-  defaultClassId, onClassChange, onApplied, sessionId,
+  defaultClassId, onClassChange, onApplied, sessionId, protectInstances = [],
 }) {
   const [beam, setBeam] = useState(() => initBeamState());
   const beamLiveRef = useRef(beam);
   beamLiveRef.current = beam;
+  // Latest confirmed-lock set, read at apply time (async), not closure-stale.
+  const protectInstancesRef = useRef(protectInstances);
+  protectInstancesRef.current = protectInstances;
   const [showCommitted, setShowCommitted] = useState(true);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
@@ -397,6 +400,7 @@ export default function BeamMode({
           shape: { type: 'obb', ...obb },
           targetClass: edge.classId,
           targetInst: edge.instanceId ?? -1,
+          protectInstances: protectInstancesRef.current,
         });
       } catch (err) {
         showToast(`apply failed: ${err.message}`);
@@ -404,7 +408,9 @@ export default function BeamMode({
         continue;                     // surface and move on; edge stays dirty
       }
       if (r.nAffected === 0) {
-        showToast('no points in beam box');
+        showToast(r.nProtected > 0
+          ? `${r.nProtected} point(s) locked in a confirmed instance`
+          : 'no points in beam box');
         allOk = false;
         continue;                     // no instance allocated for empty beams
       }

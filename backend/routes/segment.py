@@ -87,7 +87,8 @@ def segment_state():
     )
 
 def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
-                      merged_from: list[int]) -> dict:
+                      merged_from: list[int],
+                      protect_instances: list[int] | None = None) -> dict:
     """Shared core for /apply-shape and /centerline-apply: resolve a shape to
     full-res point indices, reassign them, and run the per-shape structure
     persist hook (tube -> update_centerlines; obb -> none)."""
@@ -99,8 +100,16 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     idx = shape_indices(np.asarray(seg.positions), shape)
     if idx.size == 0:
         # Same key-absence contract as _serialize_apply on an empty delta.
-        return {"op": "apply-shape", "n_affected": 0, "dirty": bool(seg.dirty)}
-    out = seg.apply_reassign(idx, target_inst=target_inst, target_class=target_class)
+        return {"op": "apply-shape", "n_affected": 0, "n_protected": 0,
+                "dirty": bool(seg.dirty)}
+    out = seg.apply_reassign(idx, target_inst=target_inst, target_class=target_class,
+                             protect_instances=protect_instances)
+    if out["n_affected"] == 0:
+        # Every point inside the shape belonged to a protected (confirmed)
+        # instance — nothing written, no instance created. Surface n_protected
+        # so the UI can say "skipped N locked points" instead of "empty box".
+        return {"op": "apply-shape", "n_affected": 0,
+                "n_protected": out.get("n_protected", 0), "dirty": bool(seg.dirty)}
     # new_instance_id is only present on fresh allocation (target_inst < 0);
     # on re-apply the requested id is reused.
     instance_id = out.get("new_instance_id", target_inst)
@@ -127,7 +136,8 @@ def apply_shape(req: ApplyShapeRequest):
         raise HTTPException(400, str(e))
     try:
         return _apply_shape_core(seg, req.shape, req.target_inst,
-                                 target_class, req.merged_from)
+                                 target_class, req.merged_from,
+                                 req.protect_instances)
     except ValueError as e:            # unknown shape type
         raise HTTPException(400, str(e))
 
@@ -147,7 +157,7 @@ def centerline_apply(req: CenterlineApplyRequest):
     paths = [p.model_dump() for p in req.paths]
     shape = {"type": "tube", "paths": paths}
     return _apply_shape_core(seg, shape, req.target_inst, target_class,
-                             req.merged_from)
+                             req.merged_from, req.protect_instances)
 
 def _require_session_seg():
     """Active SegmentSession that has a session dir (409 otherwise) — shared

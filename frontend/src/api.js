@@ -243,12 +243,13 @@ export const VoxaAPI = {
     const j = await r.json();
     return j.presegs;
   },
-  async applyShape({ shape, targetClass, targetInst = -1, mergedFrom = [] }) {
+  async applyShape({ shape, targetClass, targetInst = -1, mergedFrom = [], protectInstances = [] }) {
     const body = {
       shape,
       target_class: targetClass,
       target_inst: targetInst,
       merged_from: mergedFrom,
+      protect_instances: protectInstances,
     };
     const r = await fetch('/api/segment/apply-shape', {
       method: 'POST',
@@ -259,8 +260,8 @@ export const VoxaAPI = {
     const j = await r.json();
     return { ..._decodeApplyResponse(j), instanceId: j.instance_id ?? null };
   },
-  async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [] }) {
-    return this.applyShape({ shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom });
+  async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [], protectInstances = [] }) {
+    return this.applyShape({ shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom, protectInstances });
   },
   async getCenterlines() {
     const r = await fetch('/api/segment/centerlines');
@@ -312,6 +313,7 @@ function _decodeApplyResponse(j) {
   return {
     op: j.op,
     nAffected: j.n_affected,
+    nProtected: j.n_protected ?? 0,
     dirty: j.dirty,
     newInstanceId: j.new_instance_id ?? null,
     indices: j.indices ? b64ToInt32(j.indices) : null,

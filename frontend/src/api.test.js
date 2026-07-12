@@ -320,6 +320,30 @@ describe('centerline API', () => {
     expect(r.nAffected).toBe(3);
   });
 
+  it('applyShape forwards protectInstances as body.protect_instances', async () => {
+    let capturedOpts;
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      capturedOpts = opts;
+      return { ok: true, json: async () => ({ op: 'reassign', n_affected: 0, dirty: true }) };
+    }));
+    await VoxaAPI.applyShape({
+      shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
+      targetClass: 'pipe', protectInstances: [3, 7],
+    });
+    expect(JSON.parse(capturedOpts.body).protect_instances).toEqual([3, 7]);
+  });
+
+  it('applyShape decodes n_protected onto the response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, json: async () => ({ op: 'reassign', n_affected: 0, n_protected: 5, dirty: true }),
+    })));
+    const r = await VoxaAPI.applyShape({
+      shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
+      targetClass: 0,
+    });
+    expect(r.nProtected).toBe(5);
+  });
+
   it('getCenterlines returns the stored paths', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, json: async () => ({ paths: [{ instance_id: 7 }] }),
