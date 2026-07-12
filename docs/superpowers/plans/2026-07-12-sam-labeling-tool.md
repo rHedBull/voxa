@@ -617,46 +617,48 @@ class SamProjectRequest(BaseModel):
 
 - [ ] **Step 2: Write the failing proxy test** (mock the sidecar HTTP with monkeypatch)
 
+Use the EXISTING fixture `client_with_loaded_annotated_scene` (in `backend/tests/conftest.py`) — it loads a synthetic annotated scene + active session into `_state` and returns a `TestClient`. This is exactly what `test_apply_shape.py` uses. The loaded scene has ~8 points and a config with class `"pipe"`, so sidecar-returned indices `[0,1,2]` are valid and `target_class:"pipe"` coerces.
+
 ```python
-# backend/tests/test_sam_proxy.py — conftest already sets VOXA_DATA_DIR before importing main
-import base64, numpy as np, pytest
-from fastapi.testclient import TestClient
+# backend/tests/test_sam_proxy.py
+import base64
+import numpy as np
 
-# Assumes a fixture that loads a small annotated session into _state (reuse the
-# existing session fixture used by test_segment / test_apply_shape). Selected
-# indices are applied via apply_reassign; assert an unconfirmed pointset results.
+class _Src:                       # stub of the resolved SceneSource
+    extras = {"source_laz_path": "/x.laz"}
+    source_path = "/y.ply"
 
-def test_project_applies_indices_with_protection(monkeypatch, seg_session):
-    import main
-    from app import core
-    core._state["scene"] = "scanA"; core._state["source_fp"] = "fp1"
-    # fake sidecar responses
-    idx = np.array([0,1,2], np.int32)
-    def fake_post(url, json, **kw):
-        class R:
-            status_code = 200
-            def json(self): 
-                if url.endswith("/capture"): return {"capture_id":"c1","overlay_png_b64":"x","masks":[{"mask_id":0,"score":0.9}]}
-                return {"instances":[{"mask_id":0,"scan_indices_b64":base64.b64encode(idx.tobytes()).decode()}]}
-            def raise_for_status(self): pass
-        return R()
+def _fake_post(url, json, **kw):  # stub sidecar: /capture then /project
+    class R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            if url.endswith("/capture"):
+                return {"capture_id": "c1", "overlay_png_b64": "x",
+                        "masks": [{"mask_id": 0, "score": 0.9}]}
+            idx = np.array([0, 1, 2], np.int32)
+            return {"instances": [{"mask_id": 0,
+                    "scan_indices_b64": base64.b64encode(idx.tobytes()).decode()}]}
+    return R()
+
+def test_capture_then_project(client_with_loaded_annotated_scene, monkeypatch):
+    client = client_with_loaded_annotated_scene
     monkeypatch.setenv("VOXA_SAM_SIDECAR_URL", "http://side")
-    monkeypatch.setattr("routes.sam.httpx.post", fake_post)
-    # voxa resolves raw+scan.ply paths; stub it so the test doesn't need a real raw cloud
-    class _Src: extras = {"source_laz_path": "/x.laz"}; source_path = "/y.ply"
-    monkeypatch.setattr("routes.sam._resolve", lambda scene: _Src())
-    c = TestClient(main.app)
-    r = c.post("/api/sam/capture", json={"camera":{"pos":[0,0,0],"target":[0,0,1],"fov":60,"W":128,"H":128},"mode":"box","box":[0.5,0.5,0.4,0.4]})
+    monkeypatch.setattr("routes.sam.httpx.post", _fake_post)
+    monkeypatch.setattr("routes.sam._resolve", lambda scene: _Src())  # no real raw cloud
+    cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
+    r = client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
     assert r.status_code == 200 and r.json()["capture_id"] == "c1"
-    r2 = c.post("/api/sam/project", json={"capture_id":"c1","mask_ids":[0],"target_class":1,"protect_instances":[]})
+    r2 = client.post("/api/sam/project",
+                     json={"capture_id": "c1", "mask_ids": [0], "target_class": "pipe", "protect_instances": []})
     assert r2.status_code == 200
-    assert r2.json()["instances"][0]["n_affected"] >= 0   # applied through apply_reassign
+    assert r2.json()["instances"][0]["n_affected"] >= 0   # went through apply_reassign
 
-def test_missing_sidecar_url_503(monkeypatch, seg_session):
+def test_missing_sidecar_url_503(client_with_loaded_annotated_scene, monkeypatch):
+    client = client_with_loaded_annotated_scene
     monkeypatch.delenv("VOXA_SAM_SIDECAR_URL", raising=False)
-    import main
-    c = TestClient(main.app)
-    r = c.post("/api/sam/capture", json={"camera":{"pos":[0,0,0],"target":[0,0,1],"fov":60,"W":128,"H":128},"mode":"box","box":[0.5,0.5,0.4,0.4]})
+    cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
+    r = client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
     assert r.status_code == 503
 ```
 
