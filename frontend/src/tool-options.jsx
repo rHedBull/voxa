@@ -1,6 +1,7 @@
 import { PresegmentList } from './segment-tools.jsx';
 import DrawMode from './draw-mode.jsx';
 import BeamMode from './beam-mode.jsx';
+import SamMode from './sam-mode.jsx';
 
 function AutoConfirmToggle({ tool, autoConfirm, setAutoConfirm }) {
   return (
@@ -103,6 +104,26 @@ function BeamOptions({
   );
 }
 
+function SamOptions({
+  viewerRef, classes, activeClass, protectInstances,
+  onToolApplied, autoConfirm, setAutoConfirm, activeSessionId,
+}) {
+  return (
+    <div className="tool-options tool-options-sam">
+      <SamMode
+        key={activeSessionId}
+        viewerRef={viewerRef}
+        classes={classes}
+        defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
+        onApplied={onToolApplied}
+        protectInstances={protectInstances}
+        autoConfirm={autoConfirm}
+      />
+      <AutoConfirmToggle tool="sam" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
+    </div>
+  );
+}
+
 function BoxOptions({
   autoConfirm, setAutoConfirm, hasBox, onDrawBox, onApply,
   transformMode, setTransformMode, onAutoFit,
@@ -145,6 +166,7 @@ export default function ToolOptions(props) {
   if (activeTool === 'presegment') return <PresegOptions {...props} />;
   if (activeTool === 'draw') return <DrawOptions {...props} />;
   if (activeTool === 'beam') return <BeamOptions {...props} />;
+  if (activeTool === 'sam') return <SamOptions {...props} />;
   if (activeTool === 'box') return <BoxOptions {...props} />;
   return null;
 }

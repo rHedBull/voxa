@@ -10,9 +10,9 @@ describe('normalizeBox', () => {
 });
 
 describe('capturePayload', () => {
-  it('assembles camera pose from a viewer view', () => {
-    const view = { position: {toArray:()=>[1,2,3]}, getPivot:()=>({toArray:()=>[4,5,6]}) };
-    const p = capturePayload({ view, fov: 60, canvas: { width: 1000, height: 800 },
+  it('assembles camera pose from a plain viewer pose', () => {
+    const pose = { pos: [1, 2, 3], target: [4, 5, 6], fov: 60 };
+    const p = capturePayload({ pose, canvas: { width: 1000, height: 800 },
                                mode: 'box', box: [0.4,0.5,0.4,0.5], text: null });
     expect(p.camera).toEqual({ pos:[1,2,3], target:[4,5,6], fov:60, W:1000, H:800 });
     expect(p.mode).toBe('box'); expect(p.box).toEqual([0.4,0.5,0.4,0.5]);

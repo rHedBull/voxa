@@ -7,10 +7,10 @@ export function normalizeBox({ x0, y0, x1, y1 }, canvas) {
   return [ (lx + hx) / 2 / W, (ly + hy) / 2 / H, (hx - lx) / W, (hy - ly) / H ];
 }
 
-export function capturePayload({ view, fov, canvas, mode, box, text }) {
+export function capturePayload({ pose, canvas, mode, box, text }) {
   return {
-    camera: { pos: view.position.toArray(), target: view.getPivot().toArray(),
-              fov, W: canvas.width, H: canvas.height },
+    camera: { pos: pose.pos, target: pose.target, fov: pose.fov,
+              W: canvas.width, H: canvas.height },
     mode, box: box ?? null, text: text ?? null,
   };
 }
