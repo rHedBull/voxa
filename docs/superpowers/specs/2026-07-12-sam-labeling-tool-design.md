@@ -59,13 +59,35 @@ server, adapted. Runs outside voxa so voxa's lean `.venv` and `npm run dev` are
 untouched, CUDA and the ~2.8GB raw cloud stay isolated, and SAM's slow model load
 is paid once at sidecar startup.
 
-Loads once at startup, for the active scan:
-- the SAM3 image model + processor (`build_processor`, from the PoC),
+Holds, per loaded scan:
+- the SAM3 image model + processor (`build_processor`, from the PoC) — loaded once
+  at startup, scan-independent,
 - the **raw cloud** (188M xyz+rgb, resolved via `derivation→sources.json`; cached
   to `.npy` like the PoC) — used to render the image and the occlusion depth-buffer,
 - the scan's **`scan.ply`** (the *same file* voxa's session labels against) — the
   projection/selection target, so returned indices align 1:1 with voxa's working
   arrays.
+
+**Sidecar ↔ scan identity (correctness-critical).** The sidecar is a separate
+long-lived process; voxa's active scan can change under it (scene/session switch).
+If the sidecar's `scan.ply` ever disagrees with voxa's active session, `/project`
+returns indices in the wrong point order and `apply_reassign` silently writes labels
+onto the wrong points — the "labeled scans are precious" corruption the project
+guards against. So the raw-cloud + `scan.ply` are **loaded lazily, keyed by the
+scan's source fingerprint**, and *every* `/capture` and `/project` call carries
+`{scan_id, source_fingerprint}` (voxa's proxy fills these from the active session,
+reusing the existing session-pin fingerprint). Rules, all fail-loud:
+- Sidecar has nothing loaded, or a *different* `scan_id` → it (re)loads that scan
+  (dropping the previous one) before serving; `/capture` returns a "loading" state
+  the panel shows.
+- `scan_id` matches but `source_fingerprint` differs → **409** `{diverged:"source"}`,
+  surfaced as a blocking banner (mirrors voxa's existing preseg/source-divergence
+  409). Never serve a mismatched cloud.
+- `capture_id` staleness is the *within-scan* guard (a newer capture replaced the
+  stashed render); the fingerprint check is the *cross-scan* guard. Both required.
+
+Sidecar address is configured on the voxa side via `VOXA_SAM_SIDECAR_URL`
+(following the `VOXA_*` convention); absent → SAM tool disabled with a tooltip.
 
 Endpoints (stateful across the two calls of one interaction, stateless across
 interactions — one live `capture_id` at a time):
@@ -85,13 +107,17 @@ interactions — one live `capture_id` at a time):
 - `POST /project` — body `{capture_id, mask_ids:[...]}`.
   1. For each chosen mask: project `scan.ply` through the stored camera, keep the
      scan-res points that fall inside the mask **and** pass the raw depth-buffer
-     occlusion test (nearest-wins, splatted).
+     occlusion test (nearest-wins, splatted; reuse the PoC's tolerances —
+     `tol_rel=0.01`, `tol_abs=0.15`, `splat=2` — as tunables, not new magic numbers).
   2. Return `{instances:[{mask_id, scan_indices}]}` (int32 indices into `scan.ply`
      order).
   Stale `capture_id` (a newer capture replaced it) → 409.
 
 Occlusion is tested against the **raw** depth-buffer even though we select
 scan-res points — so occlusion is dense-accurate while labels stay scan-res.
+
+Tunables (surface in the plan, don't hard-code silently): the occlusion tolerances
+above, and the concept-mode mask score threshold (PoC default `min_score=0.3`).
 
 ### B. voxa backend proxy (`backend/routes/sam.py`, new)
 
