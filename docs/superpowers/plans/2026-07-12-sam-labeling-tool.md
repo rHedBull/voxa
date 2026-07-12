@@ -384,7 +384,7 @@ class ScanStore:
         self.scan_id = scan_id; self.fingerprint = fingerprint
 ```
 
-The real loader (wired in `main.py`, Task 6) resolves the raw LAZ + `scan.ply` paths for a `scan_id` and calls `cloud.load_raw` / `cloud.load_scan_ply`. Path resolution reads the scan's `derivation→sources.json` (raw) and `source/scan.ply`; the scan root comes from `$VOXA_LIDAR_ROOT/annotated/<name>/` (mirror `backend/scene_registry.py`). Encapsulate as `sam_sidecar/resolve.py` if it grows.
+The real loader (wired in `main.py`, Task 6) takes the raw-LAZ + `scan.ply` paths and calls `cloud.load_raw` / `cloud.load_scan_ply`. **voxa's proxy passes those paths** (it already resolves them for export via `_resolve(scene).extras["source_laz_path"]` and `.source_path`) — the sidecar does NOT re-resolve. Task 6 updates `ensure` to forward the paths to the loader.
 
 - [ ] **Step 5: Run the test.** `pytest tests/test_scan_store.py -v` → 3 PASS.
 - [ ] **Step 6: Commit**
@@ -428,11 +428,12 @@ git commit -m "feat(sam-sidecar): SAM3 box + concept wrappers"
 ## Task 6: Sidecar FastAPI app (`/capture`, `/project`, `/health`)
 
 **Files:**
-- Create: `sam_sidecar/main.py`, `sam_sidecar/resolve.py`, `sam_sidecar/run.sh`
+- Create: `sam_sidecar/main.py`, `sam_sidecar/run.sh` (NO `resolve.py` — paths arrive in the request)
+- Modify: `sam_sidecar/scan_store.py` + `sam_sidecar/tests/test_scan_store.py` (loader path-forwarding, see note after Step 3)
 - Test: `sam_sidecar/tests/test_api.py` (mask logic with a monkeypatched SAM; no CUDA)
 
 Endpoint contract (from spec):
-- `POST /capture` `{scan_id, source_fingerprint, camera:{pos,target,fov,W,H}, mode:"box"|"concept", box?, text?}` → `{capture_id, overlay_png_b64, masks:[{mask_id, score}]}`. Renders raw, runs SAM, stashes `{depth, masks, camera}` under a fresh `capture_id` (replaces prior). `pos`/`target` are in **native** coords (voxa added `recenter_offset` before calling).
+- `POST /capture` `{scan_id, source_fingerprint, raw_laz_path, scan_ply_path, camera:{pos,target,fov,W,H}, mode:"box"|"concept", box?, text?}` → `{capture_id, overlay_png_b64, masks:[{mask_id, score}]}`. Renders raw, runs SAM, stashes `{depth, masks, camera}` under a fresh `capture_id` (replaces prior). `pos`/`target` are in **native** coords (voxa added `recenter_offset` before calling); `raw_laz_path`/`scan_ply_path` are resolved by voxa's proxy (Task 7).
 - `POST /project` `{scan_id, source_fingerprint, capture_id, mask_ids:[...]}` → `{instances:[{mask_id, scan_indices_b64}]}` (b64 int32). Stale `capture_id` → 409; `FingerprintMismatch` → 409 `{diverged:"source"}`.
 
 - [ ] **Step 1: Write the failing API test** (monkeypatch SAM so no CUDA is needed)
@@ -447,15 +448,18 @@ def _make_client(monkeypatch):
     g = np.linspace(-1, 1, 60); xx, zz = np.meshgrid(g, g)
     wall = np.column_stack([xx.ravel(), np.zeros(xx.size), zz.ravel()]).astype(np.float32)
     rgb = np.tile(np.array([180,180,180], np.uint8), (wall.shape[0],1))
-    main.STORE._loader = lambda sid: (wall, rgb, wall.copy())
+    main.STORE._loader = lambda sid, *_: (wall, rgb, wall.copy())   # ignores paths
     # fake SAM: a full-frame mask, score 0.9
     monkeypatch.setattr(main, "_sam_box", lambda img, box, text: (np.ones(img.size[::-1], bool), 0.9))
     return TestClient(main.app)
 
+# required-but-faked path fields on every /capture body
+_PATHS = {"raw_laz_path": "x.laz", "scan_ply_path": "y.ply"}
+
 def test_capture_then_project(monkeypatch):
     c = _make_client(monkeypatch)
     cam = {"pos": [0,-5,0], "target": [0,0,0], "fov": 60.0, "W": 128, "H": 128}
-    r = c.post("/capture", json={"scan_id":"A","source_fingerprint":"fp","camera":cam,
+    r = c.post("/capture", json={"scan_id":"A","source_fingerprint":"fp",**_PATHS,"camera":cam,
                                  "mode":"box","box":[0.5,0.5,0.6,0.6]})
     assert r.status_code == 200
     cap = r.json(); assert cap["masks"] and "capture_id" in cap
@@ -469,15 +473,15 @@ def test_capture_then_project(monkeypatch):
 def test_stale_capture_id_409(monkeypatch):
     c = _make_client(monkeypatch)
     cam = {"pos":[0,-5,0],"target":[0,0,0],"fov":60.0,"W":128,"H":128}
-    c.post("/capture", json={"scan_id":"A","source_fingerprint":"fp","camera":cam,"mode":"box","box":[0.5,0.5,0.6,0.6]})
+    c.post("/capture", json={"scan_id":"A","source_fingerprint":"fp",**_PATHS,"camera":cam,"mode":"box","box":[0.5,0.5,0.6,0.6]})
     r = c.post("/project", json={"scan_id":"A","source_fingerprint":"fp","capture_id":"stale","mask_ids":[0]})
     assert r.status_code == 409
 
 def test_fingerprint_mismatch_409(monkeypatch):
     c = _make_client(monkeypatch)
     cam = {"pos":[0,-5,0],"target":[0,0,0],"fov":60.0,"W":128,"H":128}
-    c.post("/capture", json={"scan_id":"A","source_fingerprint":"fp","camera":cam,"mode":"box","box":[0.5,0.5,0.6,0.6]})
-    r = c.post("/capture", json={"scan_id":"A","source_fingerprint":"DIFF","camera":cam,"mode":"box","box":[0.5,0.5,0.6,0.6]})
+    c.post("/capture", json={"scan_id":"A","source_fingerprint":"fp",**_PATHS,"camera":cam,"mode":"box","box":[0.5,0.5,0.6,0.6]})
+    r = c.post("/capture", json={"scan_id":"A","source_fingerprint":"DIFF",**_PATHS,"camera":cam,"mode":"box","box":[0.5,0.5,0.6,0.6]})
     assert r.status_code == 409 and r.json()["detail"].get("diverged") == "source"
 ```
 
@@ -493,14 +497,16 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel
 
-import cloud, resolve
+import cloud
 from render import render_view
 from backproject import select_in_mask
 from reproject import look_at_view
 from scan_store import ScanStore, FingerprintMismatch
 
-STORE = ScanStore(loader=lambda sid: (
-    *cloud.load_raw(resolve.raw_laz(sid)), cloud.load_scan_ply(resolve.scan_ply(sid))))
+# voxa's proxy passes the resolved raw-LAZ + scan.ply paths (it already resolves
+# them for export) — the sidecar does NOT re-resolve. DRY, single source of truth.
+STORE = ScanStore(loader=lambda sid, raw, ply: (
+    *cloud.load_raw(raw), cloud.load_scan_ply(ply)))
 CAPTURES: dict = {}          # one live capture_id at a time
 _PROC = {"proc": None}       # lazy SAM processor
 
@@ -519,14 +525,15 @@ app = FastAPI()
 class Camera(BaseModel):
     pos: list[float]; target: list[float]; fov: float; W: int; H: int
 class CaptureReq(BaseModel):
-    scan_id: str; source_fingerprint: str; camera: Camera
+    scan_id: str; source_fingerprint: str; raw_laz_path: str; scan_ply_path: str
+    camera: Camera
     mode: str; box: list[float] | None = None; text: str | None = None
 class ProjectReq(BaseModel):
     scan_id: str; source_fingerprint: str; capture_id: str; mask_ids: list[int]
 
-def _ensure(scan_id, fp):
+def _ensure(scan_id, fp, raw=None, ply=None):
     try:
-        STORE.ensure(scan_id, fp)
+        STORE.ensure(scan_id, fp, raw, ply)     # paths used only when (re)loading
     except FingerprintMismatch as e:
         raise HTTPException(409, {"diverged": "source", "detail": str(e)})
 
@@ -535,7 +542,7 @@ def health(): return {"ok": True, "scan_id": STORE.scan_id}
 
 @app.post("/capture")
 def capture(req: CaptureReq):
-    _ensure(req.scan_id, req.source_fingerprint)
+    _ensure(req.scan_id, req.source_fingerprint, req.raw_laz_path, req.scan_ply_path)
     cam = req.camera
     view = look_at_view(cam.pos, cam.target, up=(0.0, 0.0, 1.0))
     color, depth = render_view(STORE.raw_xyz, STORE.raw_rgb, view, cam.fov, cam.W, cam.H)
@@ -569,13 +576,15 @@ def project(req: ProjectReq):
     return {"instances": out}
 ```
 
-Add helpers `_resize(mask,H,W)` (NEAREST resize to render size, like PoC), `_overlay_png(color, masks)` (multi-color wash → data-URL b64, palette from PoC `_palette`). Wrap `HTTPException(409, {...})` so the dict reaches `detail` — FastAPI serializes dict details as JSON. `resolve.py`: `raw_laz(scan_id)` and `scan_ply(scan_id)` resolve paths under `$VOXA_LIDAR_ROOT/annotated/<name>/` (strip an `annotated/` tier prefix if present). `run.sh`: `exec /home/hendrik/anaconda3/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8011`.
+Add helpers `_resize(mask,H,W)` (NEAREST resize to render size, like PoC), `_overlay_png(color, masks)` (multi-color wash → data-URL b64, palette from PoC `_palette`). Wrap `HTTPException(409, {...})` so the dict reaches `detail` — FastAPI serializes dict details as JSON. **No `resolve.py`** — the raw-LAZ + scan.ply paths arrive in the request (voxa resolves them; Task 7). `run.sh`: `exec /home/hendrik/anaconda3/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8011`.
+
+**Also update `scan_store.py` (from Task 4) to forward paths to the loader** — `ensure(self, scan_id, fingerprint, raw_laz_path=None, scan_ply_path=None)`, and when (re)loading call `self._loader(scan_id, raw_laz_path, scan_ply_path)`. Update the three fake loaders in `tests/test_scan_store.py` to accept the extra args (`def _fake_loader(scan_id, *_):` / `def loader(sid, *_):`) so the existing 3 tests still pass. Re-run `pytest tests/test_scan_store.py -v` → 3 PASS.
 
 - [ ] **Step 4: Run the test.** `pytest tests/test_api.py -v` → 3 PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add sam_sidecar/main.py sam_sidecar/resolve.py sam_sidecar/run.sh sam_sidecar/tests/test_api.py
+git add sam_sidecar/main.py sam_sidecar/run.sh sam_sidecar/tests/test_api.py sam_sidecar/scan_store.py sam_sidecar/tests/test_scan_store.py
 git commit -m "feat(sam-sidecar): /capture + /project endpoints with identity guard"
 ```
 
@@ -633,6 +642,9 @@ def test_project_applies_indices_with_protection(monkeypatch, seg_session):
         return R()
     monkeypatch.setenv("VOXA_SAM_SIDECAR_URL", "http://side")
     monkeypatch.setattr("routes.sam.httpx.post", fake_post)
+    # voxa resolves raw+scan.ply paths; stub it so the test doesn't need a real raw cloud
+    class _Src: extras = {"source_laz_path": "/x.laz"}; source_path = "/y.ply"
+    monkeypatch.setattr("routes.sam._resolve", lambda scene: _Src())
     c = TestClient(main.app)
     r = c.post("/api/sam/capture", json={"camera":{"pos":[0,0,0],"target":[0,0,1],"fov":60,"W":128,"H":128},"mode":"box","box":[0.5,0.5,0.4,0.4]})
     assert r.status_code == 200 and r.json()["capture_id"] == "c1"
@@ -662,7 +674,7 @@ import numpy as np
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.core import _state, _require_seg, _serialize_apply, _coerce_class_id  # all in app.core
+from app.core import _state, _require_seg, _serialize_apply, _coerce_class_id, _resolve  # all in app.core
 from app.schemas import SamCaptureRequest, SamProjectRequest
 
 router = APIRouter()
@@ -679,13 +691,21 @@ def _identity() -> dict:
 
 @router.post("/api/sam/capture")
 def sam_capture(req: SamCaptureRequest):
+    base = _sidecar_url()                       # fail fast on missing config (503)
     off = _state.get("recenter_offset") or [0.0, 0.0, 0.0]
     cam = dict(req.camera)
     cam["pos"] = [p + o for p, o in zip(cam["pos"], off)]        # recentered → native
     cam["target"] = [p + o for p, o in zip(cam["target"], off)]
-    body = {**_identity(), "camera": cam, "mode": req.mode, "box": req.box, "text": req.text}
+    # voxa resolves the raw-LAZ + scan.ply paths (same source it uses for export)
+    # and hands them to the sidecar, so the sidecar never re-resolves.
+    src = _resolve(_state.get("scene"))
+    raw_laz_path = src.extras.get("source_laz_path")
+    if not raw_laz_path:
+        raise HTTPException(409, {"diverged": "source", "detail": "no raw cloud for this scan"})
+    body = {**_identity(), "raw_laz_path": raw_laz_path, "scan_ply_path": src.source_path,
+            "camera": cam, "mode": req.mode, "box": req.box, "text": req.text}
     try:
-        r = httpx.post(f"{_sidecar_url()}/capture", json=body, timeout=_TIMEOUT)
+        r = httpx.post(f"{base}/capture", json=body, timeout=_TIMEOUT)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"SAM sidecar unreachable: {e}")
     if r.status_code == 409:
@@ -695,10 +715,11 @@ def sam_capture(req: SamCaptureRequest):
 
 @router.post("/api/sam/project")
 def sam_project(req: SamProjectRequest):
+    base = _sidecar_url()
     seg = _require_seg()
     body = {**_identity(), "capture_id": req.capture_id, "mask_ids": req.mask_ids}
     try:
-        r = httpx.post(f"{_sidecar_url()}/project", json=body, timeout=_TIMEOUT)
+        r = httpx.post(f"{base}/project", json=body, timeout=_TIMEOUT)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"SAM sidecar unreachable: {e}")
     if r.status_code == 409:
