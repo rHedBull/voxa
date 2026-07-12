@@ -11,7 +11,7 @@ import { normalizeBox, capturePayload } from './sam-util.js';
 
 // Shift-drag rubber-band capture over the viewer canvas. Shift is the "select"
 // modifier — without it the mousedown falls through so the viewer orbits.
-function SamOverlay({ viewerRef, mode, onBox }) {
+function SamOverlay({ viewerRef, mode, busyRef, onBox }) {
   const [rect, setRect] = useState(null); // page-space {left,top,w,h} while dragging
   const dragRef = useRef(null);           // { canvasRect, x0, y0 }
   const onBoxRef = useRef(onBox);
@@ -26,6 +26,7 @@ function SamOverlay({ viewerRef, mode, onBox }) {
 
     const onDown = (e) => {
       if (e.button !== 0 || !e.shiftKey || modeRef.current !== 'box') return;
+      if (busyRef.current) return;   // a SAM request is already in flight
       // Shift-drag is ours: suppress orbit and start the rubber-band.
       e.preventDefault();
       e.stopPropagation();
@@ -61,16 +62,16 @@ function SamOverlay({ viewerRef, mode, onBox }) {
       onBoxRef.current?.(box);
     };
 
-    dom.addEventListener('mousedown', onDown, true);
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    dom.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
     return () => {
-      dom.removeEventListener('mousedown', onDown, true);
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      dom.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
       v.setOrbitEnabled?.(true);
     };
-  }, [viewerRef]);
+  }, [viewerRef, busyRef]);
 
   if (!rect) return null;
   return (
@@ -98,6 +99,10 @@ export default function SamMode({
   protectInstancesRef.current = protectInstances;
   const textRef = useRef(text);
   textRef.current = text;
+  // At most one in-flight SAM request at a time: read synchronously (not
+  // through the async-stale `busy` state) at each entry point.
+  const busyRef = useRef(false);
+  busyRef.current = busy;
 
   // Switching mode drops any pending review (a box mask doesn't belong to a
   // concept prompt and vice versa).
@@ -107,10 +112,12 @@ export default function SamMode({
   }, [mode]);
 
   const doCapture = useCallback(async (capMode, box) => {
+    if (busyRef.current) return;
     const v = viewerRef.current;
     const pose = v?.cameraPose?.();
     const canvas = v?.domElement?.();
     if (!pose || !canvas) { setError('viewer not ready'); return; }
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     const payload = capturePayload({
@@ -118,22 +125,26 @@ export default function SamMode({
     });
     try {
       const cap = await VoxaAPI.samCapture(payload);
+      const masks = cap.masks || [];
       setCapture({
         captureId: cap.capture_id,
         overlayPng: cap.overlay_png_b64,
-        masks: cap.masks,
+        masks,
       });
       setChosen(new Set(
-        capMode === 'box' && cap.masks.length ? [cap.masks[0].mask_id] : []));
+        capMode === 'box' && masks.length ? [masks[0].mask_id] : []));
     } catch (e) {
       setError(String(e.message || e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }, [viewerRef]);
 
   const doProject = useCallback(async () => {
+    if (busyRef.current) return;
     if (!capture || chosen.size === 0) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -154,6 +165,7 @@ export default function SamMode({
     } catch (e) {
       setError(String(e.message || e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }, [capture, chosen, defaultClassId, onApplied]);
@@ -168,7 +180,8 @@ export default function SamMode({
 
   return (
     <>
-      <SamOverlay viewerRef={viewerRef} mode={mode} onBox={(box) => doCapture('box', box)} />
+      <SamOverlay viewerRef={viewerRef} mode={mode} busyRef={busyRef}
+        onBox={(box) => doCapture('box', box)} />
       <div className="sam-panel" style={{ marginTop: 10 }}>
         {error && (
           <div className="sam-error" style={{
