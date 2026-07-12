@@ -114,10 +114,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Never leave an unavailable tool active (e.g. after switching to a scene
   // with no segState or a non-annotated scan).
   useEffectLabel(() => {
-    if (!toolAvailable(activeTool, { segState, isAnnotated })) {
-      setActiveTool(defaultTool({ segState, isAnnotated }));
+    const ctx = { segState, isAnnotated, rawSourceAvailable: cloud?.rawSourceAvailable };
+    if (!toolAvailable(activeTool, ctx)) {
+      setActiveTool(defaultTool(ctx));
     }
-  }, [segState, isAnnotated, activeTool]);
+  }, [segState, isAnnotated, activeTool, cloud?.rawSourceAvailable]);
 
   // The box-select gizmo belongs to the Box tool only; leaving Box must clear it
   // so a stale box + gizmo can't render over / hijack Presegment or Draw.
@@ -1088,7 +1089,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         <div className="vp-hud-top">
           <div className="hud-group">
             <ToolRail activeTool={activeTool} onSelect={setActiveTool}
-              ctx={{ segState, isAnnotated }} />
+              ctx={{ segState, isAnnotated, rawSourceAvailable: cloud?.rawSourceAvailable }} />
           </div>
           <div className="hud-group">
             {labelStats.total > 0 && (
