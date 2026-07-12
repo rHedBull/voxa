@@ -170,6 +170,18 @@ class ApplyShapeRequest(BaseModel):
     # inside the shape that belong to these instances are skipped, not stolen.
     protect_instances: list[int] = []
 
+class SamCaptureRequest(BaseModel):
+    camera: dict                      # {pos,target,fov,W,H} in the recentered frame
+    mode: str                         # "box" | "concept"
+    box: list[float] | None = None
+    text: str | None = None
+
+class SamProjectRequest(BaseModel):
+    capture_id: str
+    mask_ids: list[int]
+    target_class: int | str
+    protect_instances: list[int] = []
+
 class SegmentStateResponse(BaseModel):
     """Snapshot of the in-memory segment session, returned to the frontend
     on page reload so the user doesn't have to re-run preseg every time
