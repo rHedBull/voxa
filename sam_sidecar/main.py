@@ -12,6 +12,7 @@ voxa's proxy resolves scan paths and passes them straight through in the
 from __future__ import annotations
 
 import base64, colorsys, io, uuid
+from typing import Literal
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from PIL import Image
@@ -23,8 +24,12 @@ from backproject import select_in_mask
 from reproject import look_at_view
 from scan_store import ScanStore, FingerprintMismatch
 
+# Single-process, single-worker dev sidecar: these module globals are shared,
+# unlocked state. Run under one uvicorn worker only. `CAPTURES` holds just the
+# latest capture — a new /capture drops any prior one (last-capture-wins), so
+# two concurrent clients would race and the loser's /project would 409.
 STORE = ScanStore(loader=lambda sid, raw, ply: (*cloud.load_raw(raw), cloud.load_scan_ply(ply)))
-CAPTURES: dict = {}          # one live capture_id at a time
+CAPTURES: dict = {}          # at most one live capture_id (cleared each /capture)
 _PROC = {"proc": None}
 
 
@@ -52,7 +57,7 @@ class Camera(BaseModel):
 class CaptureReq(BaseModel):
     scan_id: str; source_fingerprint: str; raw_laz_path: str; scan_ply_path: str
     camera: Camera
-    mode: str; box: list[float] | None = None; text: str | None = None
+    mode: Literal["box", "concept"]; box: list[float] | None = None; text: str | None = None
 
 
 class ProjectReq(BaseModel):
@@ -126,9 +131,12 @@ def project(req: ProjectReq):
     cap = CAPTURES.get(req.capture_id)
     if cap is None: raise HTTPException(409, "stale or unknown capture_id")
     cam = cap["camera"]; view = look_at_view(cam["pos"], cam["target"], up=(0.0, 0.0, 1.0))
+    n_masks = len(cap["masks"])
+    bad = [mid for mid in req.mask_ids if mid < 0 or mid >= n_masks]
+    if bad:                                  # fail loud — never silently drop a pick
+        raise HTTPException(400, f"mask_ids {bad} out of range for capture with {n_masks} masks")
     out = []
     for mid in req.mask_ids:
-        if mid < 0 or mid >= len(cap["masks"]): continue
         sel = select_in_mask(STORE.scan_xyz, view, cam["fov"], cam["W"], cam["H"],
                              cap["masks"][mid], cap["depth"])
         out.append({"mask_id": mid, "scan_indices_b64": base64.b64encode(sel.tobytes()).decode()})
