@@ -48,8 +48,11 @@ def test_capture_applies_georef_offset_zup(client_with_loaded_annotated_scene, m
     monkeypatch.setattr("routes.sam.httpx.post", _capture_post)
     cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
     client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
-    # georef [100,200,5]_zup -> [100,5,-200]_yup, plus recenter [1,1,1]_yup -> [101, 6, -199]
-    assert sent["camera"]["pos"] == [101.0, 6.0, -199.0]
+    # off = recenter[1,1,1]_yup + georef[100,200,5]_zup rotated to yup [100,5,-200] = [101,6,-199]_yup
+    # pos [0,0,0] + off = [101,6,-199]_yup -> rotated back to native Z-up (x,-z,y) -> [101,199,6]
+    assert sent["camera"]["pos"] == [101.0, 199.0, 6.0]
+    # target [0,0,1] + off = [101,6,-198]_yup -> (x,-z,y) -> [101,198,6]
+    assert sent["camera"]["target"] == [101.0, 198.0, 6.0]
     assert sent["scan_ply_offset_m"] == [100.0, 200.0, 5.0]   # sidecar wants raw/native order
 
 def test_missing_sidecar_url_503(client_with_loaded_annotated_scene, monkeypatch):

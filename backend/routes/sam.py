@@ -8,7 +8,7 @@ import numpy as np
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.core import _state, _require_seg, _serialize_apply, _coerce_class_id, _resolve
+from app.core import _state, _require_seg, _serialize_apply, _coerce_class_id, _resolve, _y_up_to_z_up_xyz
 from app.schemas import SamCaptureRequest, SamProjectRequest
 
 router = APIRouter()
@@ -36,8 +36,18 @@ def sam_capture(req: SamCaptureRequest):
     georef_yup = [georef[0], georef[2], -georef[1]] if src.extras.get("is_z_up") else georef
     off = [r + g for r, g in zip(recenter, georef_yup)]
     cam = dict(req.camera)
-    cam["pos"] = [p + o for p, o in zip(cam["pos"], off)]        # recentered → native
-    cam["target"] = [p + o for p, o in zip(cam["target"], off)]
+    pos_yup = [p + o for p, o in zip(cam["pos"], off)]            # recentered → native, still Y-up
+    tgt_yup = [p + o for p, o in zip(cam["target"], off)]
+    # The sidecar renders raw_xyz in its native frame (Z-up for a LAZ-derived scan) and
+    # hardcodes up=(0,0,1) for that reason — voxa's camera is Y-up internally, so it must
+    # be rotated back to Z-up here, not just offset, or pos/target land nowhere near the cloud.
+    if src.extras.get("is_z_up"):
+        pos_native = _y_up_to_z_up_xyz(np.array([pos_yup]))[0].tolist()
+        tgt_native = _y_up_to_z_up_xyz(np.array([tgt_yup]))[0].tolist()
+    else:
+        pos_native, tgt_native = pos_yup, tgt_yup
+    cam["pos"] = pos_native
+    cam["target"] = tgt_native
     raw_laz_path = src.extras.get("source_laz_path")
     if not raw_laz_path:
         raise HTTPException(409, {"diverged": "source", "detail": "no raw cloud for this scan"})
