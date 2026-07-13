@@ -105,7 +105,7 @@ function BeamOptions({
 }
 
 function SamOptions({
-  viewerRef, classes, activeClass, protectInstances,
+  viewerRef, classes, activeClass, protectInstances, setSegState,
   onToolApplied, autoConfirm, setAutoConfirm, activeSessionId,
 }) {
   return (
@@ -114,6 +114,7 @@ function SamOptions({
         key={activeSessionId}
         viewerRef={viewerRef}
         classes={classes}
+        setSegState={setSegState}
         defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
         onApplied={onToolApplied}
         protectInstances={protectInstances}

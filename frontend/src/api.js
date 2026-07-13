@@ -275,7 +275,14 @@ export const VoxaAPI = {
                              target_class: targetClass, protect_instances: protectInstances }),
     });
     if (!r.ok) throw new Error(`samProject failed: ${r.status} ${await r.text()}`);
-    return r.json();
+    const j = await r.json();
+    return {
+      instances: (j.instances || []).map((inst) => ({
+        maskId: inst.mask_id,
+        ..._decodeApplyResponse(inst),
+        instanceId: inst.new_instance_id ?? null,
+      })),
+    };
   },
   async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [], protectInstances = [] }) {
     return this.applyShape({ shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom, protectInstances });

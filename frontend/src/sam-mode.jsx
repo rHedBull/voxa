@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { VoxaAPI } from './api.js';
 import { normalizeBox, capturePayload } from './sam-util.js';
+import { applyDelta } from './segment-state.js';
 
 // Shift-drag rubber-band capture over the viewer canvas. Shift is the "select"
 // modifier — without it the mousedown falls through so the viewer orbits.
@@ -85,7 +86,7 @@ function SamOverlay({ viewerRef, mode, busyRef, onBox }) {
 }
 
 export default function SamMode({
-  viewerRef, classes, defaultClassId, onApplied,
+  viewerRef, classes, defaultClassId, onApplied, setSegState,
   protectInstances = [], autoConfirm,
 }) {
   const [mode, setMode] = useState('box');      // 'box' | 'concept'
@@ -155,8 +156,15 @@ export default function SamMode({
         protectInstances: protectInstancesRef.current,
       });
       for (const inst of res.instances || []) {
-        if (inst.new_instance_id != null) {
-          onApplied?.({ instanceId: inst.new_instance_id,
+        if (inst.indices) {
+          setSegState?.((s) => (s ? applyDelta(s, {
+            indices: inst.indices,
+            after_class: inst.afterClass,
+            after_instance: inst.afterInstance,
+          }) : s));
+        }
+        if (inst.instanceId != null) {
+          onApplied?.({ instanceId: inst.instanceId,
                         classId: defaultClassId, source: 'sam' });
         }
       }
@@ -168,7 +176,7 @@ export default function SamMode({
       busyRef.current = false;
       setBusy(false);
     }
-  }, [capture, chosen, defaultClassId, onApplied]);
+  }, [capture, chosen, defaultClassId, onApplied, setSegState]);
 
   const toggleMask = useCallback((maskId) => {
     setChosen((prev) => {

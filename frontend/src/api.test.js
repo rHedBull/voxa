@@ -344,6 +344,32 @@ describe('centerline API', () => {
     expect(r.nProtected).toBe(5);
   });
 
+  it('samProject decodes each instance delta so segState can be patched', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        instances: [{
+          mask_id: 0, op: 'reassign', n_affected: 2, dirty: true,
+          new_instance_id: 42,
+          indices: encodeInt32([10, 20]),
+          after_class: encodeInt8([1, 1]),
+          after_instance: encodeInt32([42, 42]),
+        }],
+      }),
+    })));
+    const r = await VoxaAPI.samProject({
+      captureId: 'c1', maskIds: [0], targetClass: 1,
+    });
+    expect(r.instances).toHaveLength(1);
+    const inst = r.instances[0];
+    expect(inst.maskId).toBe(0);
+    expect(inst.instanceId).toBe(42);
+    expect(inst.indices).toBeInstanceOf(Int32Array);
+    expect(Array.from(inst.indices)).toEqual([10, 20]);
+    expect(Array.from(inst.afterClass)).toEqual([1, 1]);
+    expect(Array.from(inst.afterInstance)).toEqual([42, 42]);
+  });
+
   it('getCenterlines returns the stored paths', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, json: async () => ({ paths: [{ instance_id: 7 }] }),
