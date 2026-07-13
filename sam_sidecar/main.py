@@ -89,6 +89,12 @@ def _resize(mask: np.ndarray, H: int, W: int) -> np.ndarray:
     return np.array(resized) > 127
 
 
+def _png_data_uri(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
 def _overlay_png(color: np.ndarray, masks: list[np.ndarray]) -> str:
     """Wash each mask over `color` in a distinct palette color, alpha-composited."""
     base = Image.fromarray(color, "RGB").convert("RGBA")
@@ -97,9 +103,17 @@ def _overlay_png(color: np.ndarray, masks: list[np.ndarray]) -> str:
     for i, col in zip(range(len(masks)), _palette(len(masks))):
         overlay[masks[i]] = (col[0], col[1], col[2], 130)
     over = Image.alpha_composite(base, Image.fromarray(overlay, "RGBA")).convert("RGB")
-    buf = io.BytesIO()
-    over.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    return _png_data_uri(over)
+
+
+def _index_png(H: int, W: int, masks: list[np.ndarray]) -> str:
+    """Per-pixel mask index (1-based, 0 = none), lossless PNG. Same last-write-wins
+    overlap order as _overlay_png, so a client hit-testing a click against this map
+    always picks the mask that's visibly on top in the overlay — up to 254 masks."""
+    idx = np.zeros((H, W), dtype=np.uint8)
+    for i, m in enumerate(masks[:254]):
+        idx[m] = i + 1
+    return _png_data_uri(Image.fromarray(idx, "L"))
 
 
 @app.get("/health")
@@ -124,6 +138,7 @@ def capture(req: CaptureReq):
     CAPTURES.clear()
     CAPTURES[cid] = {"depth": depth, "masks": masks, "camera": cam.model_dump()}
     return {"capture_id": cid, "overlay_png_b64": _overlay_png(color, masks),
+            "mask_index_png_b64": _index_png(cam.H, cam.W, masks),
             "masks": [{"mask_id": i, "score": float(insts[i][1])} for i in range(len(masks))]}
 
 

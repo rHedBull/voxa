@@ -33,7 +33,12 @@ normally don't call it directly. Contract:
   camera:{pos,target,fov,W,H}, mode:"box"|"concept", box?, text?}` → renders the
   raw cloud from the (native-frame) camera, runs SAM (box → best mask; concept →
   all instances of the text prompt), stashes the render + masks under a fresh
-  `capture_id`, and returns `{capture_id, overlay_png_b64, masks:[{mask_id, score}]}`.
+  `capture_id`, and returns `{capture_id, overlay_png_b64, mask_index_png_b64,
+  masks:[{mask_id, score}]}`. `overlay_png_b64` is the human-viewable wash (each mask
+  alpha-composited in a distinct palette color); `mask_index_png_b64` is a lossless
+  per-pixel index map (grayscale, value = mask index + 1, 0 = background, same
+  last-write-wins overlap order as the overlay) that the frontend decodes to hit-test
+  a click on the image against a specific mask_id — see `frontend/src/sam-mode.jsx`.
   **No projection, no state mutation.** Only one live `capture_id` at a time.
 - `POST /project` — `{scan_id, source_fingerprint, capture_id, mask_ids:[...]}` →
   for each chosen mask, projects `scan.ply` through the stored camera and keeps the

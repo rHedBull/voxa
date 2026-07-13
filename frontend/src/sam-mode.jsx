@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { VoxaAPI } from './api.js';
-import { normalizeBox, capturePayload } from './sam-util.js';
+import { normalizeBox, capturePayload, maskColor, containPixel } from './sam-util.js';
 import { applyDelta } from './segment-state.js';
 
 // Shift-drag rubber-band capture over the viewer canvas. Shift is the "select"
@@ -85,6 +85,101 @@ function SamOverlay({ viewerRef, mode, busyRef, onBox }) {
   );
 }
 
+// Large centered review modal — the box-drag/concept capture returns an
+// overlay image the size of the viewport and N masks; squeezing that into
+// the 280px tool-options rail made it unreadable and gave no way to tell
+// which list row was which colored blob. Shown big, with swatches that
+// mirror the sidecar's per-mask palette (see sam-util.js::maskColor).
+function SamReviewModal({ capture, chosen, busy, onToggle, onSelectOnly, onProject, onCancel }) {
+  const imgRef = useRef(null);
+  const indexCanvasRef = useRef(null);   // offscreen decode of mask_index_png_b64
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  // Decode the per-pixel mask-index map once per capture so a click on the
+  // (baked, flat) overlay image can be hit-tested against a specific mask_id —
+  // color-matching 20 palette hues by eye doesn't scale, clicking the object does.
+  useEffect(() => {
+    indexCanvasRef.current = null;
+    if (!capture.indexPng) return undefined;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      indexCanvasRef.current = c;
+    };
+    img.src = capture.indexPng;
+    return () => { cancelled = true; };
+  }, [capture.indexPng]);
+
+  const onImageClick = useCallback((e) => {
+    const idxCanvas = indexCanvasRef.current;
+    const imgEl = imgRef.current;
+    if (!idxCanvas || !imgEl) return;
+    const rect = imgEl.getBoundingClientRect();
+    const px = containPixel({
+      boxW: rect.width, boxH: rect.height,
+      natW: imgEl.naturalWidth, natH: imgEl.naturalHeight,
+      x: e.clientX - rect.left, y: e.clientY - rect.top,
+    });
+    if (!px) return;
+    const [sx, sy] = px;
+    const val = idxCanvas.getContext('2d').getImageData(sx, sy, 1, 1).data[0];
+    if (val === 0) return;              // background — no mask under the click
+    const maskId = val - 1;             // index PNG is 1-based; mask_id is 0-based
+    // Plain click = select just this mask; Ctrl/Cmd/Shift+click = add/remove it from
+    // the current selection — matches the additive-select convention used elsewhere
+    // (draw-mode.jsx, mode-label.jsx: e.shiftKey || e.ctrlKey || e.metaKey).
+    if (e.ctrlKey || e.metaKey || e.shiftKey) onToggle(maskId);
+    else onSelectOnly(maskId);
+  }, [onToggle, onSelectOnly]);
+
+  return (
+    <div className="sam-review-overlay" onClick={onCancel}>
+      <div className="sam-review-card" onClick={(e) => e.stopPropagation()}>
+        <div className="sam-review-head">
+          <b>SAM masks — {capture.masks.length} found</b>
+          <button className="ew-x" onClick={onCancel} title="Close (Esc)">✕</button>
+        </div>
+        <div className="sam-review-body">
+          <div className="sam-review-imgcol">
+            <img ref={imgRef} src={capture.overlayPng} alt="SAM masks"
+              className="sam-review-img" onClick={onImageClick} />
+            <p className="tool-opt-hint">
+              Click a mask to select it; Ctrl/Cmd/Shift+click to add or remove it from the selection.
+            </p>
+          </div>
+          <div className="sam-review-list">
+            {capture.masks.map((m) => (
+              <label key={m.mask_id} className="sam-mask-row">
+                <input type="checkbox" checked={chosen.has(m.mask_id)}
+                  onChange={() => onToggle(m.mask_id)} />
+                <span className="sam-mask-swatch" style={{ background: maskColor(m.mask_id) }} />
+                <span className="inst-text">
+                  <b>mask #{m.mask_id}</b>{' '}
+                  <em>{typeof m.score === 'number' ? m.score.toFixed(3) : ''}</em>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="sam-review-actions">
+          <button className="ghost-btn" onClick={onCancel}>Cancel</button>
+          <button className="ghost-btn" disabled={chosen.size === 0 || busy}
+            onClick={onProject}>Project selected</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SamMode({
   viewerRef, classes, defaultClassId, onApplied, setSegState,
   protectInstances = [], autoConfirm,
@@ -130,6 +225,7 @@ export default function SamMode({
       setCapture({
         captureId: cap.capture_id,
         overlayPng: cap.overlay_png_b64,
+        indexPng: cap.mask_index_png_b64 || null,
         masks,
       });
       setChosen(new Set(
@@ -186,6 +282,8 @@ export default function SamMode({
     });
   }, []);
 
+  const selectOnlyMask = useCallback((maskId) => setChosen(new Set([maskId])), []);
+
   return (
     <>
       <SamOverlay viewerRef={viewerRef} mode={mode} busyRef={busyRef}
@@ -229,31 +327,13 @@ export default function SamMode({
         )}
 
         {busy && <p className="tool-opt-hint">Working…</p>}
-
-        {capture && (
-          <div style={{ marginTop: 10 }}>
-            <img src={capture.overlayPng} alt="SAM masks"
-              style={{ width: '100%', borderRadius: 6, display: 'block' }} />
-            <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 6 }}>
-              {capture.masks.map((m) => (
-                <label key={m.mask_id} className="inst-row"
-                  style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={chosen.has(m.mask_id)}
-                    onChange={() => toggleMask(m.mask_id)} />
-                  <span className="inst-text">
-                    <b>mask #{m.mask_id}</b>{' '}
-                    <em>{typeof m.score === 'number' ? m.score.toFixed(3) : ''}</em>
-                  </span>
-                </label>
-              ))}
-            </div>
-            <div className="ins-actions">
-              <button className="ghost-btn" disabled={chosen.size === 0 || busy}
-                onClick={doProject}>Project selected</button>
-            </div>
-          </div>
-        )}
       </div>
+
+      {capture && (
+        <SamReviewModal capture={capture} chosen={chosen} busy={busy}
+          onToggle={toggleMask} onSelectOnly={selectOnlyMask} onProject={doProject}
+          onCancel={() => { setCapture(null); setChosen(new Set()); }} />
+      )}
     </>
   );
 }

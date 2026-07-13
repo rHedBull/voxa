@@ -1,4 +1,5 @@
-import base64, numpy as np
+import base64, io, numpy as np
+from PIL import Image
 from fastapi.testclient import TestClient
 
 def _make_client(monkeypatch):
@@ -25,6 +26,24 @@ def test_capture_then_project(monkeypatch):
     inst = r2.json()["instances"][0]
     sel = np.frombuffer(base64.b64decode(inst["scan_indices_b64"]), np.int32)
     assert sel.size > 0
+
+def test_capture_returns_mask_index_map_for_click_hit_testing(monkeypatch):
+    """/capture must return a per-pixel mask-index PNG so the frontend can hit-test
+    a click on the overlay image against a specific mask_id (see sam-mode.jsx)."""
+    c = _make_client(monkeypatch)
+    cam = {"pos": [0,-5,0], "target": [0,0,0], "fov": 60.0, "W": 128, "H": 128}
+    left = np.zeros((128, 128), bool); left[:, :64] = True
+    right = np.zeros((128, 128), bool); right[:, 64:] = True
+    import main
+    monkeypatch.setattr(main, "_sam_concept", lambda img, text: [(left, 0.9), (right, 0.8)])
+    r = c.post("/capture", json={"scan_id":"A","source_fingerprint":"fp",**_PATHS,"camera":cam,
+                                 "mode":"concept","text":"pipe"})
+    cap = r.json()
+    assert "mask_index_png_b64" in cap
+    idx = np.array(Image.open(io.BytesIO(base64.b64decode(
+        cap["mask_index_png_b64"].split(",", 1)[1]))))
+    assert (idx[:, :64] == 1).all()    # mask_id 0 -> index 1
+    assert (idx[:, 64:] == 2).all()    # mask_id 1 -> index 2
 
 def test_stale_capture_id_409(monkeypatch):
     c = _make_client(monkeypatch)
