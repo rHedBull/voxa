@@ -32,6 +32,26 @@ def test_capture_then_project(client_with_loaded_annotated_scene, monkeypatch):
     assert r2.status_code == 200
     assert r2.json()["instances"][0]["n_affected"] >= 0
 
+def test_capture_applies_georef_offset_zup(client_with_loaded_annotated_scene, monkeypatch):
+    client = client_with_loaded_annotated_scene
+    monkeypatch.setenv("VOXA_SAM_SIDECAR_URL", "http://side")
+    class _SrcZUp(_Src):
+        extras = {"source_laz_path": "/x.laz", "is_z_up": True}
+    monkeypatch.setattr("routes.sam._resolve", lambda scene: _SrcZUp())
+    import routes.sam as sam_route
+    monkeypatch.setitem(sam_route._state, "raw_georef_offset_m", [100.0, 200.0, 5.0])  # x,y,z zup
+    monkeypatch.setitem(sam_route._state, "recenter_offset", [1.0, 1.0, 1.0])           # x,y,z yup
+    sent = {}
+    def _capture_post(url, json, **kw):
+        sent.update(json)
+        return _fake_post(url, json, **kw)
+    monkeypatch.setattr("routes.sam.httpx.post", _capture_post)
+    cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
+    client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
+    # georef [100,200,5]_zup -> [100,5,-200]_yup, plus recenter [1,1,1]_yup -> [101, 6, -199]
+    assert sent["camera"]["pos"] == [101.0, 6.0, -199.0]
+    assert sent["scan_ply_offset_m"] == [100.0, 200.0, 5.0]   # sidecar wants raw/native order
+
 def test_missing_sidecar_url_503(client_with_loaded_annotated_scene, monkeypatch):
     client = client_with_loaded_annotated_scene
     monkeypatch.delenv("VOXA_SAM_SIDECAR_URL", raising=False)

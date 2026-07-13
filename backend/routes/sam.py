@@ -26,18 +26,24 @@ def _identity() -> dict:
 @router.post("/api/sam/capture")
 def sam_capture(req: SamCaptureRequest):
     base = _sidecar_url()                       # fail fast on missing config (503)
-    off = _state.get("recenter_offset") or [0.0, 0.0, 0.0]
-    cam = dict(req.camera)
-    cam["pos"] = [p + o for p, o in zip(cam["pos"], off)]        # recentered → native
-    cam["target"] = [p + o for p, o in zip(cam["target"], off)]
     # voxa resolves the raw-LAZ + scan.ply paths (same source it uses for export)
     # and hands them to the sidecar, so the sidecar never re-resolves.
     src = _resolve(_state.get("scene"))
+    recenter = _state.get("recenter_offset") or [0.0, 0.0, 0.0]      # already Y-up
+    georef = _state.get("raw_georef_offset_m") or [0.0, 0.0, 0.0]    # native frame (Z-up if is_z_up)
+    # georef is copied straight from the raw LAZ's native axis order; rotate it into
+    # Y-up (matching recenter + the camera pose) only if this scan's scan.ply is Z-up.
+    georef_yup = [georef[0], georef[2], -georef[1]] if src.extras.get("is_z_up") else georef
+    off = [r + g for r, g in zip(recenter, georef_yup)]
+    cam = dict(req.camera)
+    cam["pos"] = [p + o for p, o in zip(cam["pos"], off)]        # recentered → native
+    cam["target"] = [p + o for p, o in zip(cam["target"], off)]
     raw_laz_path = src.extras.get("source_laz_path")
     if not raw_laz_path:
         raise HTTPException(409, {"diverged": "source", "detail": "no raw cloud for this scan"})
     body = {**_identity(), "raw_laz_path": raw_laz_path, "scan_ply_path": src.source_path,
-            "camera": cam, "mode": req.mode, "box": req.box, "text": req.text}
+            "camera": cam, "mode": req.mode, "box": req.box, "text": req.text,
+            "scan_ply_offset_m": georef}  # native/raw order; scan_xyz is loaded unrotated
     try:
         r = httpx.post(f"{base}/capture", json=body, timeout=_TIMEOUT)
         r.raise_for_status()
