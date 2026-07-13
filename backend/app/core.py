@@ -44,6 +44,7 @@ _state: dict[str, Any] = {
     "intensity": None,      # full-resolution intensity array (or None)
     "labels": None,         # LabelArrays (or None)
     "recenter_offset": [0.0, 0.0, 0.0],
+    "raw_georef_offset_m": [0.0, 0.0, 0.0],
     "seg": None,            # SegmentSession | None
     "session_id": None,     # active session id (annotated tier) | None
     "source_fp": None,      # fingerprint of the loaded cloud (session creation reads it)

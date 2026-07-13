@@ -92,6 +92,7 @@ def load_scene(req: LoadRequest):
         seg=seg,
         session_id=session_id,
         source_fp=source_fp,   # single home; session creation reads this
+        raw_georef_offset_m=src.extras.get("raw_georef_offset_m") or [0.0, 0.0, 0.0],
     )
 
     positions = sub.points.astype(np.float32)
