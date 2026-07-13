@@ -12,7 +12,8 @@ you can eyeball what SAM saw. This is Task 8 of the plan as a one-command harnes
 Override the scan via --raw / --scan-ply / --url.
 """
 from __future__ import annotations
-import argparse, base64, sys
+import argparse, base64, json, sys
+from pathlib import Path
 import numpy as np
 import httpx
 import laspy
@@ -41,6 +42,17 @@ def interior_pose(laz_path):
     return {"pos": pos.tolist(), "target": tgt.tolist(), "fov": 65.0, "W": 1400, "H": 1050}
 
 
+def scan_ply_offset_m(scan_ply_path: str) -> list[float]:
+    """frame.georef.offset_m from the scan's meta.json (scan_dir/source/scan.ply ->
+    scan_dir/meta.json), or [0,0,0] if the scan has no baked-in offset."""
+    meta_path = Path(scan_ply_path).parent.parent / "meta.json"
+    if not meta_path.exists():
+        return [0.0, 0.0, 0.0]
+    meta = json.loads(meta_path.read_text())
+    offset = ((meta.get("frame") or {}).get("georef") or {}).get("offset_m")
+    return offset or [0.0, 0.0, 0.0]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default="http://127.0.0.1:8011")
@@ -55,12 +67,14 @@ def main() -> int:
     print(f"[smoke] pose (native): pos={[round(x,1) for x in cam['pos']]} "
           f"target={[round(x,1) for x in cam['target']]}")
 
+    offset = scan_ply_offset_m(args.scan_ply)
+    print(f"[smoke] scan_ply_offset_m={offset}")
     cap_body = {
         "scan_id": "smoke", "source_fingerprint": "smoke-fp",
         "raw_laz_path": args.raw, "scan_ply_path": args.scan_ply,
         "camera": cam, "mode": args.mode,
         "box": None if args.mode == "concept" else [0.5, 0.5, 0.5, 0.5],
-        "text": args.text,
+        "text": args.text, "scan_ply_offset_m": offset,
     }
     print("[smoke] POST /capture (first call loads the 188M raw cloud — ~60s cold) ...")
     r = httpx.post(f"{args.url}/capture", json=cap_body, timeout=600.0)
