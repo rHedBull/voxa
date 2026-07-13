@@ -75,15 +75,12 @@ segments get an analogous, mutable, session-scoped layer.
   `preseg_ids`: this is a selection aid, not an edit) and does not itself
   trigger autosave-of-arrays (only `sam_ids`/`sam_segments.json`, tracked
   separately from the `dirty` working-array flag).
-- New method `resolve_sam_selection(sam_seg_ids) -> np.ndarray`: returns the
-  union of point indices for the given candidate ids (mirrors how the
-  frontend today derives indices from `instanceFull` for a preseg selection,
-  but server-side isn't actually needed for this — see Frontend below; kept
-  here only if the apply call ends up needing server-side resolution instead
-  of client-computed indices. **Decision: frontend resolves indices from its
-  own `samIds` array**, same as it already does for `instanceFull`, so no new
-  backend endpoint is needed for selection resolution — `apply-shape`'s
-  sibling `segApply('reassign', ...)` already accepts raw `indices`.)
+Selection resolution (candidate ids → point indices) happens **client-side**,
+from the frontend's own `samIds` array, exactly like the frontend already
+derives indices from `instanceFull` for a preseg selection — no new backend
+endpoint is needed for this; `segApply('reassign', ...)` already accepts raw
+`indices`. For the frontend to build `samIds` in the first place, `/project`
+must return each candidate's point indices (see Backend routes below).
 
 **Persistence — new session file `sessions/<id>/sam_segments.json` +
 `sam_ids.npy`:**
@@ -96,9 +93,16 @@ segments get an analogous, mutable, session-scoped layer.
 }
 ```
 
-Written on the same autosave debounce as other session state (mirrors
-`centerlines.json`/`structure.json` — geometry/candidate state persisted
-separately from the working-array save). Loaded back into
+`materialize_sam_segment` is invoked backend-side (inside `/api/sam/project`),
+so — unlike `centerlines.json`/`structure.json`, which are frontend-driven
+edits written synchronously via dedicated `PUT` routes on explicit user
+action — it has a natural hook into the session's existing per-mutation
+autosave path: `SegmentSession.schedule_autosave` → `_do_autosave`
+(`backend/labeling/segment_state.py:318-343`), which today writes
+`session.json` (aux payload) plus `class_ids.npy`/`instance_ids.npy`. That
+path (and its aux-payload builder, `save_session_aux`) needs to be
+**extended** to also serialize `sam_ids.npy` and the `sam_segments.json`
+summary whenever `materialize_sam_segment` runs. Loaded back into
 `sam_ids`/`sam_segments` on session resume, so accumulated-but-unclassified
 SAM candidates survive reload. Not part of `instances_gt.json` — candidates
 aren't instances.
@@ -111,11 +115,24 @@ applied) is removed from `sam_segments` and its `sam_ids` entries reset to
 ## Backend routes (`backend/routes/sam.py`)
 
 - `POST /api/sam/project` changes from *"apply_reassign per mask"* to
-  *"materialize_sam_segment per accepted mask"*: same input
-  (`{capture_id, mask_ids}`), same `protect_instances` threading, but the
-  response becomes `{segments: [{sam_seg_id, mask_id, n_points}]}` instead of
-  `{instances: [...]}`. No `apply_reassign` call, no undo entry, no instance
-  row.
+  *"materialize_sam_segment per accepted mask"*, with two schema changes to
+  `SamProjectRequest`/its response (`backend/app/schemas.py:179-183`):
+  - **Request**: `target_class` is **removed** — it's currently a required
+    field (used to classify immediately); classification no longer happens
+    at accept time, so nothing to send. Request becomes
+    `{capture_id, mask_ids}` only (`protect_instances` threading unchanged).
+    `frontend/src/sam-mode.jsx`'s `doProject` (currently sends
+    `targetClass: defaultClassId`, lines 248-253) drops that field and the
+    class-picking it implies.
+  - **Response**: becomes `{segments: [{sam_seg_id, mask_id, n_points,
+    scan_indices_b64}]}` — note `scan_indices_b64` (int32, base64, same
+    encoding the *current* response already uses for `scan_indices_b64` per
+    instance, `backend/routes/sam.py:88`) is **kept**, just attached to a
+    candidate instead of an instance. This is load-bearing: it's the only way
+    the frontend can populate `samIds` (see Frontend below) — the response
+    can name candidates but the frontend still needs the actual point indices
+    to color/select them. No `apply_reassign` call, no undo entry, no
+    instance row.
 - No new endpoint is needed to *classify* a SAM selection — the frontend
   calls the same generic `VoxaAPI.segApply('reassign', {indices, payload})`
   presegments already use, with `indices` resolved client-side from `samIds`
@@ -128,9 +145,26 @@ applied) is removed from `sam_segments` and its `sam_ids` entries reset to
 
 **State (`frontend/src/segment-state.js`):**
 
-- `segState.samIds: Int32Array` — full-res, default `-1`, loaded/patched from
-  `/project` responses and full reloads, parallel to `instanceFull` but never
-  merged into it.
+- `segState.samIds: Int32Array` — full-res, default `-1`, parallel to
+  `instanceFull` but never merged into it. Patched incrementally from
+  `/project` responses (decode each candidate's `scan_indices_b64`, write
+  `sam_seg_id` at those positions — same decode-and-scatter the frontend
+  already does for `applyDelta`). On full reload/session-resume, hydrated
+  from a new `full_sam_ids` field added to `SegmentStateResponse`
+  (`backend/app/schemas.py:185-208`) — the same base64-`Int32Array` encoding
+  as the existing `full_instance_ids`, populated from
+  `SegmentSession.sam_ids`. This does **not** go through
+  `hydrateFromServerState` (`frontend/src/segment-state.js:47`) — that
+  function only merges scalar metadata (`presegRunId`, `dirty`, etc.) onto an
+  already-built `segState` and never touches point arrays. The actual
+  decode/threading follows the existing `full_class_ids`/`full_instance_ids`
+  path instead: `VoxaAPI.segState()` (`frontend/src/api.js:192-208`) decodes
+  `full_sam_ids` alongside them, `initSegState` (`segment-state.js`) gets a
+  new `samIds` param (defaulting `samSelection`/`samSegments` too), and both
+  `App.jsx` call sites that build/rebuild `segState` (lines 262-272 and
+  294-301) thread the decoded array through. `sam_segments` metadata for the
+  list rows comes along in the same `SegmentStateResponse` (a `sam_segments`
+  field mirroring the shape in `sessions/<id>/sam_segments.json`).
 - `segState.samSegments: Map<samSegId, {nPoints, maskScore}>` — parallel to
   `summary`.
 - `segState.samSelection: Set<samSegId>` — parallel to `selection`, entirely
@@ -163,15 +197,39 @@ applied) is removed from `sam_segments` and its `sam_ids` entries reset to
   `samSelection` via the same `viewer.onPointerPick` handler presegments use
   today, branching on which layer (`instanceFull` vs `samIds`) has a hit at
   that point.
-- Ctrl+Enter / class hotkey, when `samSelection` is non-empty, resolves
-  indices from `samIds` (same pattern as `confirmSegmentSelection` resolving
-  from `instanceFull`) and calls the existing
+- New function `confirmSamSelection` (`mode-label.jsx`, sibling of
+  `confirmSegmentSelection`, lines 641-691), same shape: resolves indices
+  from `samIds` for every id in `samSelection`, calls
   `VoxaAPI.segApply('reassign', {indices, payload:{target_inst:-1,
   target_class}})` → new instance row `{..., source:'sam', confirmed:
-  autoConfirmFor('sam')}`, then `reconcileSamAfterApply`. If both a
-  presegment selection and a SAM selection are somehow non-empty at once (tool
-  switched mid-selection), only the active tool's selection applies — the
-  inactive one is left untouched, not silently cleared.
+  autoConfirmFor('sam')}`, then `reconcileSamAfterApply` (instead of
+  `applyDelta`+clearing `selection`).
+- Three existing call sites in `mode-label.jsx` decide/perform the
+  apply-on-classify flow, and **all three** need a SAM-aware branch, keyed on
+  `activeTool === 'sam' && segState.samSelection.size > 0` (checked first,
+  same "gate on active tool, not just selection size" rule as below), or the
+  feature is only half-wired:
+  1. **Line 894** — the Ctrl+Enter gate deciding whether to open
+     `ClassPickerModal` at all (currently
+     `segState.selection.size > 0 || (activeTool === 'box' && selBox)`). Needs
+     `|| (activeTool === 'sam' && segState.samSelection.size > 0)` or Ctrl+Enter
+     on a SAM selection never opens the picker.
+  2. **Line 913** — the direct class-hotkey path that calls
+     `confirmSegmentSelection` immediately, bypassing the picker. Needs the
+     equivalent SAM branch calling `confirmSamSelection` instead.
+  3. **Lines 973-977** — `ClassPickerModal`'s `onPick` callback (currently
+     `if (activeTool === 'box' && selBox) applyBox(cls); else
+     confirmSegmentSelection(cls);`), which is where the Ctrl+Enter path's
+     actual apply call happens. Needs a third case:
+     `else if (activeTool === 'sam' && segState.samSelection.size > 0)
+     confirmSamSelection(cls); else confirmSegmentSelection(cls);`.
+  Gating each of these on `activeTool` (not just selection size) is what
+  implements "only the active tool's selection applies" — if the user
+  switches away from the SAM tool without clearing `samSelection`, none of
+  the three sites route to the SAM path anymore, so a subsequent Ctrl+Enter
+  on a leftover presegment `selection` behaves normally and the stale
+  `samSelection` is left untouched (not cleared, not applied) until the user
+  switches back to the SAM tool.
 
 **`SamReviewModal` (`frontend/src/sam-mode.jsx`) change:**
 
@@ -243,7 +301,10 @@ label-write code path.
   overlap/last-write-wins, `protect_instances` dropping, no undo-stack entry);
   `sam_segments.json`/`sam_ids.npy` round-trip on session save/resume;
   `/api/sam/project` route test (mocked sidecar) asserting it now returns
-  `segments` not `instances` and does not call `apply_reassign`.
+  `segments` (with `scan_indices_b64`, no `target_class` in the request) not
+  `instances`, and does not call `apply_reassign`; `SegmentStateResponse`
+  includes `full_sam_ids`/`sam_segments` and round-trips through
+  `_resume_session`.
 - **Frontend:** `applySamDelta`/`reconcileSamAfterApply` pure-fn tests; SAM
   segment list row click → `samSelection` toggling (mirrors existing
   `PresegmentList` row-click tests); classify-from-SAM-selection resolves
