@@ -1095,3 +1095,51 @@ kbd {
   padding: 12px 14px; border-top: 1px solid var(--border);
 }
 .ew-foot .ghost-btn, .ew-foot .header-btn { width: auto; flex: 0 0 auto; }
+
+/* ── SAM mask review modal ─────────────────────────────────────────────── */
+.sam-review-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 220; padding: 40px;
+}
+.sam-review-card {
+  width: min(1320px, 94vw); max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--bg-elev); border: 1px solid var(--border-strong);
+  border-radius: 12px; box-shadow: var(--shadow-pop);
+}
+.sam-review-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.sam-review-body {
+  overflow: hidden; padding: 14px; display: flex; flex-direction: row; gap: 14px;
+}
+.sam-review-imgcol {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px;
+}
+.sam-review-img {
+  width: 100%; max-height: 74vh; object-fit: contain;
+  border-radius: 8px; background: var(--bg); display: block;
+  cursor: pointer;
+}
+.sam-review-list {
+  width: 220px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 74vh; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px;
+}
+.sam-mask-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; padding: 4px 6px; cursor: pointer; border-radius: 5px;
+}
+.sam-mask-row:hover { background: var(--bg); }
+.sam-mask-swatch {
+  width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,0.25);
+}
+.sam-review-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 14px; border-top: 1px solid var(--border);
+}
+.sam-review-actions .ghost-btn { width: auto; flex: 0 0 auto; }
