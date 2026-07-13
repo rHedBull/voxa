@@ -154,6 +154,11 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
             rel = raw_by_id.get(sid) if sid else None            # "raw/<file>.laz"
             if rel and (lidar_root / rel).exists():
                 source_laz_path = str(lidar_root / rel)
+        # v3.0 scans that were pre-recentered on disk relative to their raw
+        # source (e.g. smart_ais_navvis) carry the true offset in
+        # frame.georef.offset_m; consumed later to align raw-frame indices
+        # back to the scene-local scan.ply frame.
+        raw_georef_offset_m = ((meta.get("frame") or {}).get("georef") or {}).get("offset_m")
         out.append(SceneSource(
             tier="annotated", name=sd.name,
             source_path=scan, source_format="ply",
@@ -165,6 +170,7 @@ def _discover_annotated(lidar_root: Path) -> list[SceneSource]:
                 "mesh_path": str(mesh_path) if mesh_path.exists() else None,
                 "is_z_up": is_z_up,
                 "source_laz_path": source_laz_path,
+                "raw_georef_offset_m": raw_georef_offset_m,
             },
         ))
     return out
