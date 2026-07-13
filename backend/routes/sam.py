@@ -41,7 +41,7 @@ def sam_capture(req: SamCaptureRequest):
     raw_laz_path = src.extras.get("source_laz_path")
     if not raw_laz_path:
         raise HTTPException(409, {"diverged": "source", "detail": "no raw cloud for this scan"})
-    body = {**_identity(), "raw_laz_path": raw_laz_path, "scan_ply_path": src.source_path,
+    body = {**_identity(), "raw_laz_path": raw_laz_path, "scan_ply_path": str(src.source_path),
             "camera": cam, "mode": req.mode, "box": req.box, "text": req.text,
             "scan_ply_offset_m": georef}  # native/raw order; scan_xyz is loaded unrotated
     try:
