@@ -56,6 +56,7 @@ class Camera(BaseModel):
 
 class CaptureReq(BaseModel):
     scan_id: str; source_fingerprint: str; raw_laz_path: str; scan_ply_path: str
+    scan_ply_offset_m: list[float] = [0.0, 0.0, 0.0]
     camera: Camera
     mode: Literal["box", "concept"]; box: list[float] | None = None; text: str | None = None
 
@@ -64,9 +65,9 @@ class ProjectReq(BaseModel):
     scan_id: str; source_fingerprint: str; capture_id: str; mask_ids: list[int]
 
 
-def _ensure(scan_id, fp, raw=None, ply=None):
+def _ensure(scan_id, fp, raw=None, ply=None, offset=None):
     try:
-        STORE.ensure(scan_id, fp, raw, ply)     # paths used only when (re)loading
+        STORE.ensure(scan_id, fp, raw, ply, offset)     # paths/offset used only when (re)loading
     except FingerprintMismatch as e:
         raise HTTPException(409, {"diverged": "source", "detail": str(e)})
 
@@ -107,7 +108,8 @@ def health(): return {"ok": True, "scan_id": STORE.scan_id}
 
 @app.post("/capture")
 def capture(req: CaptureReq):
-    _ensure(req.scan_id, req.source_fingerprint, req.raw_laz_path, req.scan_ply_path)
+    _ensure(req.scan_id, req.source_fingerprint, req.raw_laz_path, req.scan_ply_path,
+            req.scan_ply_offset_m)
     cam = req.camera
     view = look_at_view(cam.pos, cam.target, up=(0.0, 0.0, 1.0))
     color, depth = render_view(STORE.raw_xyz, STORE.raw_rgb, view, cam.fov, cam.W, cam.H)

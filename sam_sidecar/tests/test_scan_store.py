@@ -23,3 +23,9 @@ def test_same_id_different_fingerprint_raises():
     s.ensure("scanA", "fp1")
     with pytest.raises(FingerprintMismatch):
         s.ensure("scanA", "fp-DIFFERENT")
+
+def test_scan_ply_offset_shifts_scan_xyz():
+    s = ScanStore(loader=_fake_loader)
+    pre_offset = _fake_loader("scanA")[2].copy()   # scan_xyz as the loader returns it
+    s.ensure("scanA", "fp1", scan_ply_offset_m=[10, 0, 0])
+    assert np.allclose(s.scan_xyz, pre_offset + np.array([10, 0, 0]))
