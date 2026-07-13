@@ -23,6 +23,8 @@ class ScanStore:
                     f"request carried {fingerprint}")
             return
         self.raw_xyz, self.raw_rgb, self.scan_xyz = self._loader(scan_id, raw_laz_path, scan_ply_path)
+        # Only reached on a fresh load (the scan_id-match branch above returns first) —
+        # applying the offset here, not per-request, keeps it a one-time static shift.
         if scan_ply_offset_m:
             self.scan_xyz = self.scan_xyz + np.asarray(scan_ply_offset_m, dtype=np.float32)
         self.scan_id = scan_id; self.fingerprint = fingerprint
