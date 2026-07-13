@@ -5,9 +5,13 @@ export const TOOLS = [
   { id: 'box',        icon: '▭', label: 'Box' },
   { id: 'draw',       icon: '✎', label: 'Draw' },
   { id: 'beam',       icon: '⌶', label: 'Beam' },
+  { id: 'sam',        icon: '✦', label: 'SAM' },
 ];
 
-export function toolAvailable(id, { segState, isAnnotated }) {
+export function toolAvailable(id, { segState, isAnnotated, rawSourceAvailable }) {
+  // SAM needs the raw-resolution source (it segments off a rendered capture
+  // and projects masks back onto the full-density cloud).
+  if (id === 'sam') return !!segState && !!isAnnotated && !!rawSourceAvailable;
   // Draw persists centerlines.json, Beam persists structure.json — both need
   // a session dir, which only annotated-tier scans have.
   if (id === 'draw' || id === 'beam') return !!segState && !!isAnnotated;

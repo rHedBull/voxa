@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+laspy[lazrs]
+plyfile
+pillow
+numpy
+scipy
+pytest
+httpx

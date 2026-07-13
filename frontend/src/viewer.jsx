@@ -1505,6 +1505,16 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     domElement() {
       return stateRef.current.renderer?.domElement ?? null;
     },
+    cameraPose() {
+      const s = stateRef.current;
+      if (!s?.camera) return null;
+      const t = s.controller?.getState?.()?.target;
+      return {
+        pos: [s.camera.position.x, s.camera.position.y, s.camera.position.z],
+        target: t ? [t.x, t.y, t.z] : [0, 0, 0],
+        fov: s.camera.fov,
+      };
+    },
     cameraForward() {
       const s = stateRef.current;
       if (!s.camera) return [0, 0, -1];

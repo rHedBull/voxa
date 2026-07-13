@@ -260,6 +260,30 @@ export const VoxaAPI = {
     const j = await r.json();
     return { ..._decodeApplyResponse(j), instanceId: j.instance_id ?? null };
   },
+  async samCapture({ camera, mode, box = null, text = null }) {
+    const r = await fetch('/api/sam/capture', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ camera, mode, box, text }),
+    });
+    if (!r.ok) throw new Error(`samCapture failed: ${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async samProject({ captureId, maskIds, targetClass, protectInstances = [] }) {
+    const r = await fetch('/api/sam/project', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capture_id: captureId, mask_ids: maskIds,
+                             target_class: targetClass, protect_instances: protectInstances }),
+    });
+    if (!r.ok) throw new Error(`samProject failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return {
+      instances: (j.instances || []).map((inst) => ({
+        maskId: inst.mask_id,
+        ..._decodeApplyResponse(inst),
+        instanceId: inst.new_instance_id ?? null,
+      })),
+    };
+  },
   async centerlineApply({ paths, targetClass, targetInst = -1, mergedFrom = [], protectInstances = [] }) {
     return this.applyShape({ shape: { type: 'tube', paths }, targetClass, targetInst, mergedFrom, protectInstances });
   },

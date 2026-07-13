@@ -110,6 +110,35 @@ def test_discover_no_lidar_root_returns_only_legacy(voxa_data):
     assert scenes[0].name == "test_scene"
 
 
+def test_georef_offset_surfaced_in_extras(tmp_path, voxa_data):
+    scan_dir = tmp_path / "lidar" / "annotated" / "smart_ais_test"
+    _write_tiny_ply(scan_dir / "source" / "scan.ply", n=8)
+    (scan_dir / "sessions" / "s0").mkdir(parents=True, exist_ok=True)
+    (scan_dir / "meta.json").write_text(json.dumps({
+        "scan_name": "smart_ais_test", "n_points": 8, "units": "meters",
+        "class_map_version": 1, "schema_version": "3.0",
+        "derivation": {"scan_id": "smart_ais_test", "variant_id": "smart_ais_test",
+                       "varies": [], "role": None},
+        "frame": {
+            "canonical_id": "smart_ais_test#local", "frame_uncertain": False,
+            "transform_to_canonical": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
+            "units": "meters", "georef": {"crs": "utm", "offset_m": [1.0, 2.0, 3.0]},
+        },
+    }))
+    (tmp_path / "lidar" / "classes.json").write_text(json.dumps({
+        "version": 1, "unlabeled_id": -1, "classes": [{"id": 0, "name": "pipe"}],
+    }))
+    scenes = discover(voxa_data, tmp_path / "lidar")
+    src = next(s for s in scenes if s.name == "smart_ais_test")
+    assert src.extras["raw_georef_offset_m"] == [1.0, 2.0, 3.0]
+
+
+def test_georef_offset_absent_defaults_none(voxa_data, lidar_root):
+    scenes = discover(voxa_data, lidar_root)   # munich_water_pump has no frame/georef
+    src = next(s for s in scenes if s.name == "munich_water_pump")
+    assert src.extras.get("raw_georef_offset_m") is None
+
+
 def test_v13_scan_not_discovered(tmp_path):
     # meta.json schema_version "1.3" → absent from discovery (migration hint logged);
     # a v2 twin in the same root is present.

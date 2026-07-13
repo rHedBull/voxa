@@ -196,6 +196,30 @@ def test_recenter_zero_for_already_centered_scene(lidar_client):
     assert body["recenter_offset"] == [0.0, 0.0, 0.0]
 
 
+def test_raw_georef_offset_threaded_into_state(lidar_client, tmp_path, monkeypatch):
+    """A scan with frame.georef.offset_m in meta.json surfaces that offset
+    on _state after /api/load (Task 3: threading Task 2's SceneSource.extras
+    value into voxa's in-memory state, mirroring recenter_offset)."""
+    import main
+    meta_path = tmp_path / "lidar" / "annotated" / "demo" / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["frame"] = {"georef": {"offset_m": [10.0, 20.0, 30.0]}}
+    meta_path.write_text(json.dumps(meta))
+
+    r = lidar_client.post("/api/load", json={"name": "annotated/demo", "max_points": 100})
+    assert r.status_code == 200
+    assert main._state["raw_georef_offset_m"] == [10.0, 20.0, 30.0]
+
+
+def test_raw_georef_offset_absent_defaults_to_zero(lidar_client):
+    """A scan with no frame.georef in meta.json gets the all-zero sentinel,
+    matching recenter_offset's "no offset" convention."""
+    import main
+    r = lidar_client.post("/api/load", json={"name": "annotated/demo", "max_points": 100})
+    assert r.status_code == 200
+    assert main._state["raw_georef_offset_m"] == [0.0, 0.0, 0.0]
+
+
 def test_mesh_endpoint_404_when_no_glb(lidar_client):
     r = lidar_client.get("/api/mesh/annotated/demo")
     assert r.status_code == 404
