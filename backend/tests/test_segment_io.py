@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from labeling.segment_io import (
     atomic_write_npy,
@@ -257,3 +258,55 @@ def test_save_labels_omits_fingerprints_when_not_provided(tmp_path):
     meta = json.loads((scan / "sessions" / sid / "output" / "gt_segment_metadata.json").read_text())
     assert "preseg_fingerprint" not in meta
     assert "source_fingerprint" not in meta
+
+
+def test_save_session_aux_writes_working_sam_ids(tmp_path):
+    from labeling.segment_io import save_session_aux
+    sam_ids = np.array([-1, 0, 0, -1], dtype=np.int32)
+    save_session_aux(tmp_path, {"name": "x"}, sam_ids=sam_ids)
+    assert (tmp_path / "working_sam_ids.npy").exists()
+    loaded = np.load(tmp_path / "working_sam_ids.npy")
+    assert (loaded == sam_ids).all()
+
+
+def test_save_session_aux_without_sam_ids_does_not_write_file(tmp_path):
+    from labeling.segment_io import save_session_aux
+    save_session_aux(tmp_path, {"name": "x"})
+    assert not (tmp_path / "working_sam_ids.npy").exists()
+
+
+def test_load_sam_ids_roundtrip(tmp_path):
+    from labeling.segment_io import save_session_aux, load_sam_ids
+    sam_ids = np.array([-1, 0, 0, -1], dtype=np.int32)
+    save_session_aux(tmp_path, {"name": "x"}, sam_ids=sam_ids)
+    loaded = load_sam_ids(tmp_path, n_points=4)
+    assert loaded is not None
+    assert (loaded == sam_ids).all()
+
+
+def test_load_sam_ids_absent_file_returns_none(tmp_path):
+    from labeling.segment_io import load_sam_ids
+    assert load_sam_ids(tmp_path, n_points=4) is None
+
+
+def test_load_sam_ids_shape_mismatch_raises(tmp_path):
+    from labeling.segment_io import save_session_aux, load_sam_ids
+    save_session_aux(tmp_path, {"name": "x"},
+                     sam_ids=np.array([-1, 0], dtype=np.int32))
+    with pytest.raises(ValueError):
+        load_sam_ids(tmp_path, n_points=99)
+
+
+def test_save_and_load_sam_segments_roundtrip(tmp_path):
+    from labeling.segment_io import save_sam_segments, load_sam_segments
+    segs = {0: {"n_points": 5, "mask_score": 0.9, "created_at": "2026-07-13T00:00:00+00:00"},
+            2: {"n_points": 3, "mask_score": None, "created_at": "2026-07-13T00:00:01+00:00"}}
+    save_sam_segments(tmp_path, segs)
+    assert (tmp_path / "sam_segments.json").exists()
+    loaded = load_sam_segments(tmp_path)
+    assert loaded == segs
+
+
+def test_load_sam_segments_absent_file_returns_empty_dict(tmp_path):
+    from labeling.segment_io import load_sam_segments
+    assert load_sam_segments(tmp_path) == {}

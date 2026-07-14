@@ -196,6 +196,7 @@ def save_session_aux(
     *,
     class_ids: Optional[np.ndarray] = None,
     instance_ids: Optional[np.ndarray] = None,
+    sam_ids: Optional[np.ndarray] = None,
 ) -> dict:
     """Atomically persist editor session state. Returns the payload as
     written (callers use its ``saved_at`` stamp).
@@ -212,6 +213,9 @@ def save_session_aux(
     if instance_ids is not None:
         atomic_write_npy(session_dir / "working_segment_ids.npy",
                          instance_ids.astype(np.int32, copy=False))
+    if sam_ids is not None:
+        atomic_write_npy(session_dir / "working_sam_ids.npy",
+                         sam_ids.astype(np.int32, copy=False))
     payload = dict(aux)
     payload.setdefault("schema_version", SESSION_SCHEMA_VERSION)
     payload["saved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -249,3 +253,42 @@ def load_working_arrays(
     if ci.shape != (n_points,) or ii.shape != (n_points,):
         return None
     return ci, ii
+
+
+def load_sam_ids(session_dir: Path, n_points: int) -> Optional[np.ndarray]:
+    """Return the SAM candidate layer (int32) if working_sam_ids.npy exists,
+    or None if absent (a session with no SAM captures yet — caller defaults
+    to all -1). A present-but-wrong-shape file fails loudly (stale/foreign
+    data), matching load_working_arrays' posture for a corrupt file."""
+    p = session_dir / "working_sam_ids.npy"
+    if not p.exists():
+        return None
+    arr = np.load(p).astype(np.int32, copy=False)
+    if arr.shape != (n_points,):
+        raise ValueError(f"working_sam_ids.npy shape {arr.shape} != ({n_points},)")
+    return arr
+
+
+def save_sam_segments(session_dir: Path, sam_segments: dict[int, dict]) -> None:
+    """Atomically persist the SAM candidate-segment summary
+    (sessions/<id>/sam_segments.json). Point membership lives in
+    working_sam_ids.npy; this file is metadata only, mirroring prelabel's
+    segment_summary.json shape."""
+    session_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"segments": [{"id": sid, **meta}
+                            for sid, meta in sorted(sam_segments.items())]}
+    atomic_write_json(session_dir / "sam_segments.json", payload)
+
+
+def load_sam_segments(session_dir: Path) -> dict[int, dict]:
+    """Read sam_segments.json -> {sam_seg_id: {n_points, mask_score,
+    created_at}}. Missing file -> empty dict (no SAM captures yet)."""
+    p = session_dir / "sam_segments.json"
+    if not p.exists():
+        return {}
+    try:
+        raw = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {int(e["id"]): {k: v for k, v in e.items() if k != "id"}
+            for e in raw.get("segments", [])}

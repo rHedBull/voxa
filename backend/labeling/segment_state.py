@@ -384,14 +384,17 @@ class SegmentSession:
     def _do_autosave(self, write_arrays: bool) -> None:
         if self.session_dir is None:
             return
-        from labeling.segment_io import save_session_aux
+        from labeling.segment_io import save_session_aux, save_sam_segments
         with self._autosave_lock:
             save_session_aux(
                 self.session_dir,
                 self._aux_payload(),
                 class_ids=self.class_ids if write_arrays else None,
                 instance_ids=self.instance_ids if write_arrays else None,
+                sam_ids=self.sam_ids if write_arrays else None,
             )
+            if write_arrays:
+                save_sam_segments(self.session_dir, self.sam_segments)
 
     def schedule_autosave(self, *, write_arrays: bool = True) -> None:
         if self.session_dir is None:
