@@ -128,6 +128,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     if (activeTool !== 'box') setSelBox(null);
   }, [activeTool]);
 
+  // SAM candidate selection belongs to the SAM tool only; leaving SAM must clear
+  // it so a stale selection can't silently get confirmed if the user returns
+  // and hits Ctrl+Enter / a class hotkey without re-selecting.
+  useEffectLabel(() => {
+    if (activeTool !== 'sam') {
+      setSegState((s) => (s && s.samSelection.size > 0 ? { ...s, samSelection: new Set() } : s));
+    }
+  }, [activeTool, setSegState]);
+
   // Yellow overlay for selected presegments. Recompute the per-subrow
   // mask whenever the selection or the underlying instance assignment
   // changes, then push it to the viewer's segSelection buffer.
