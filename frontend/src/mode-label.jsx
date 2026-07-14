@@ -1422,6 +1422,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             );
           })}
         </div>
+        {/* No jsdom wiring test for this Instances-panel menu (Task 10 fix-up):
+            mode-label.jsx has no existing test harness and pulls in the full
+            instances/confirmed/selectedId state to render, unlike the small
+            self-contained SamSegmentList/PresegmentList (both covered by
+            sam-segment-list.jsdom.test.jsx / segment-tools.jsdom.test.jsx).
+            The shared cutEligibility({list:'instance', ...}) call below is
+            unit-tested in cut-eligibility.test.js. */}
         {instCutMenu && (() => {
           const target = instances.find((i) => i.id === instCutMenu.instId);
           const elig = cutEligibility({
