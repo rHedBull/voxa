@@ -187,6 +187,9 @@ def _cut_shape_core(seg, shape: dict, sources: list, protect_instances: list[int
         elif src.kind == "instance":
             membership = seg.instance_ids == src.seg_id
         else:
+            # Unreachable via HTTP — CutShapeSource.kind is a Pydantic Literal,
+            # so FastAPI 422s an unknown kind before this route body runs.
+            # Kept as a default-case guard for direct callers of this helper.
             raise ValueError(f"unknown source kind: {src.kind!r}")
         partition = idx[membership[idx]]
         if partition.size == 0:
