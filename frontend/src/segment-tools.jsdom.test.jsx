@@ -42,15 +42,12 @@ test('non-empty selection -> menu item is enabled (matches cutEligibility)', () 
   expect(item.className).not.toContain('disabled');
 });
 
-test('clicking the enabled item invokes the placeholder handler', () => {
+test('clicking the enabled item invokes onEditSelection with {kind:preseg,segId} sources', () => {
   const segState = makeSegState(new Set([1]));
-  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-  render(<PresegmentList segState={segState} setSegState={() => {}} classes={classes} viewerRef={{ current: null }} cloud={null} />);
+  const onEditSelection = vi.fn();
+  render(<PresegmentList segState={segState} setSegState={() => {}} classes={classes}
+    viewerRef={{ current: null }} cloud={null} onEditSelection={onEditSelection} />);
   fireEvent.contextMenu(screen.getByText('#1'));
   fireEvent.click(screen.getByText('Edit selection…'));
-  expect(logSpy).toHaveBeenCalledWith(
-    'TODO: open cut modal',
-    expect.objectContaining({ list: 'preseg', selection: [1] })
-  );
-  logSpy.mockRestore();
+  expect(onEditSelection).toHaveBeenCalledWith([{ kind: 'preseg', segId: 1 }]);
 });

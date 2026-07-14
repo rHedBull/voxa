@@ -21,6 +21,7 @@ function AutoConfirmToggle({
 function PresegOptions({
   presegRapid, setPresegRapid, setFastPos, autoConfirm, setAutoConfirm,
   segState, setSegState, classes, viewerRef, cloud, promotedSegIds,
+  onEditSelection,
 }) {
   return (
     <div className="tool-options tool-options-presegment">
@@ -43,6 +44,7 @@ function PresegOptions({
           viewerRef={viewerRef}
           cloud={cloud}
           excludeSegIds={promotedSegIds}
+          onEditSelection={onEditSelection}
         />
       )}
     </div>
@@ -111,7 +113,7 @@ function BeamOptions({
 
 function SamOptions({
   viewerRef, protectInstances, setSegState, segState,
-  autoConfirm, setAutoConfirm, activeSessionId,
+  autoConfirm, setAutoConfirm, activeSessionId, onEditSelection,
 }) {
   return (
     <div className="tool-options tool-options-sam">
@@ -121,7 +123,9 @@ function SamOptions({
         setSegState={setSegState}
         protectInstances={protectInstances}
       />
-      {segState && <SamSegmentList segState={segState} setSegState={setSegState} />}
+      {segState && (
+        <SamSegmentList segState={segState} setSegState={setSegState} onEditSelection={onEditSelection} />
+      )}
       {/* Accepting a mask only materializes a candidate (Task 6-12) — it
           doesn't label anything, so this toggle can't live next to "Add to
           SAM segments" like it does for every other tool. It governs the

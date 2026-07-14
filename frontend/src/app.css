@@ -1073,6 +1073,30 @@ kbd {
   padding: 4px 0;
 }
 .ew-faint { color: var(--text-faint); font-size: 11px; }
+
+/* Cut-selection tool: isolated modal (Task 11) — mirrors .ew-overlay/.ew-card
+   sizing but wide/tall enough to host a second full Viewer viewport. */
+.cut-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 220;
+}
+.cut-modal {
+  width: 86vw; height: 82vh; display: flex; flex-direction: column;
+  background: var(--bg-elev); border: 1px solid var(--border-strong);
+  border-radius: 12px; box-shadow: var(--shadow-pop); overflow: hidden;
+}
+.cut-modal-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text);
+}
+.cut-modal-body { flex: 1; min-height: 0; position: relative; }
+.cut-modal-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid var(--border);
+}
 .ew-sub {
   font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
   color: var(--text-faint); margin-top: 4px;

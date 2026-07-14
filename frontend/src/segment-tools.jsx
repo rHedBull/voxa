@@ -63,7 +63,7 @@ export function focusSegment(viewerRef, cloud, segState, segId) {
 // confirm flow here on purpose.
 export function PresegmentList({
   segState, setSegState, classes, viewerRef, cloud,
-  excludeSegIds = null,
+  excludeSegIds = null, onEditSelection = null,
 }) {
   // Same canonical "unpromoted segments, largest first" list fast labeling
   // steps through — one builder so the sidebar and the queue can't drift.
@@ -144,8 +144,8 @@ export function PresegmentList({
             label: 'Edit selection…',
             disabled: !cutEligibility({ list: 'preseg', selectionSize: segState.selection.size }).eligible,
             onSelect: () => {
-              // TODO(Task 11): open CutModal over the current segState.selection.
-              console.log('TODO: open cut modal', { list: 'preseg', selection: Array.from(segState.selection) });
+              if (!onEditSelection) return;
+              onEditSelection(Array.from(segState.selection).map((segId) => ({ kind: 'preseg', segId })));
             },
           }]}
         />

@@ -13,7 +13,7 @@ export function toggleSamSelection(samSelection, samSegId) {
   return next;
 }
 
-export function SamSegmentList({ segState, setSegState }) {
+export function SamSegmentList({ segState, setSegState, onEditSelection = null }) {
   const [cutMenu, setCutMenu] = useState(null); // {x, y} | null
 
   const segments = useMemo(() => {
@@ -73,8 +73,8 @@ export function SamSegmentList({ segState, setSegState }) {
             label: 'Edit selection…',
             disabled: !cutEligibility({ list: 'sam', selectionSize: segState.samSelection.size }).eligible,
             onSelect: () => {
-              // TODO(Task 11): open CutModal over the current samSelection.
-              console.log('TODO: open cut modal', { list: 'sam', selection: Array.from(segState.samSelection) });
+              if (!onEditSelection) return;
+              onEditSelection(Array.from(segState.samSelection).map((segId) => ({ kind: 'sam', segId })));
             },
           }]}
         />

@@ -12,13 +12,14 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import ExportWizard from './export-wizard.jsx';
-import { applyDelta, computeDiffMask, reconcileSamAfterApply } from './segment-state.js';
+import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
 import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
 import { cutEligibility } from './cut-eligibility.js';
+import CutModal from './cut-mode.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -503,6 +504,63 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     () => instances.filter((i) => i.confirmed && Number.isFinite(i.segId)).map((i) => i.segId),
     [instances],
   );
+
+  // Cut-selection tool (Task 11): {sources, instanceClassId} | null.
+  // instanceClassId is only set for a single-instance cut — the source
+  // instance's class (a string id matching classes[].id, same convention as
+  // inst.cls elsewhere in this file) is already known here from the
+  // Instances-panel row that was right-clicked, so the modal/backend never
+  // need to round-trip it; the cut-shape response has no class field for the
+  // instance case (it inherits the source's class server-side, but doesn't
+  // echo it back) and this is how that gap is closed without touching the
+  // backend response shape.
+  const [cutModal, setCutModal] = useStateLabel(null);
+
+  const openCutModal = useCallbackLabel((sources, instanceClassId = null) => {
+    setCutModal({ sources, instanceClassId });
+  }, []);
+
+  // Reports the raw VoxaAPI.cutShape(...) response upward from CutModal.
+  // Mirrors confirmSegmentSelection/confirmSamSelection/applyBox: this is the
+  // one place that patches segState + the Instances panel's `instances` rows,
+  // CutModal itself never touches segState directly.
+  const onCutConfirmedHandler = useCallbackLabel((resp) => {
+    if (resp.materialized.length > 0) {
+      setSegState((s) => {
+        if (!s) return s;
+        let next = s;
+        for (const m of resp.materialized) {
+          if (!m.indices || m.indices.length === 0) continue;
+          next = applySamDelta(next, { indices: m.indices, samSegId: m.samSegId, source: m.source });
+        }
+        return next;
+      });
+    }
+    if (resp.instance && resp.instance.indices && resp.instance.indices.length > 0) {
+      const clsId = cutModal?.instanceClassId;
+      const cls = classes.find((c) => c.id === clsId);
+      if (!cls) {
+        console.error('cut-shape: instance entry returned but no source class id known', resp.instance);
+        return;
+      }
+      const n = resp.instance.indices.length;
+      const afterClass = new Int8Array(n).fill(cls.class_id);
+      const afterInstance = new Int32Array(n).fill(resp.instance.instId);
+      setSegState((s) => (s ? applyDelta(s, {
+        indices: resp.instance.indices, after_class: afterClass, after_instance: afterInstance,
+      }) : s));
+      onChange([...instances, {
+        id: newId(),
+        segId: resp.instance.instId,
+        kind: 'pointset',
+        cls: cls.id,
+        label: `${cls.label} ${(counts[cls.id] || 0) + 1}`,
+        color: cls.color,
+        source: 'cut',
+        confirmed: false,
+      }]);
+    }
+  }, [cutModal, classes, instances, counts, onChange, setSegState]);
 
   // Always populated when there are confirmed instances, regardless of the
   // hide toggle. The Viewer uses it to compute "points labeled / left" stats
@@ -1117,6 +1175,17 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onClose={() => setExportOpen(false)}
         />
       )}
+      {cutModal && segState && cloud && (
+        <CutModal
+          segState={segState}
+          cloud={cloud}
+          sources={cutModal.sources}
+          protectInstances={protectedSegIds}
+          theme={theme}
+          onClose={() => setCutModal(null)}
+          onCutConfirmed={onCutConfirmedHandler}
+        />
+      )}
 
       {/* Left: class palette */}
       <aside className="side-l">
@@ -1176,7 +1245,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           hasBox={!!selBox} onDrawBox={toggleBoxSelect}
           transformMode={transformMode} setTransformMode={setTransformMode}
           onAutoFit={autoFitBox}
-          onApply={() => setClassPickerOpen(true)} />
+          onApply={() => setClassPickerOpen(true)}
+          onEditSelection={openCutModal} />
       </aside>
 
       {/* Center: viewport */}
@@ -1447,8 +1517,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                   : 'Edit selection…',
                 disabled: !elig.eligible,
                 onSelect: () => {
-                  // TODO(Task 11): open CutModal over the selected instance.
-                  console.log('TODO: open cut modal', { list: 'instance', instId: instCutMenu.instId });
+                  if (!target || !Number.isFinite(target.segId)) return;
+                  openCutModal([{ kind: 'instance', segId: target.segId }], target.cls);
                 },
               }]}
             />

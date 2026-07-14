@@ -42,15 +42,11 @@ test('non-empty samSelection -> menu item is enabled (matches cutEligibility)', 
   expect(item.className).not.toContain('disabled');
 });
 
-test('clicking the enabled item invokes the placeholder handler', () => {
+test('clicking the enabled item invokes onEditSelection with {kind:sam,segId} sources', () => {
   const segState = makeSegState(new Set([1]));
-  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-  render(<SamSegmentList segState={segState} setSegState={() => {}} />);
+  const onEditSelection = vi.fn();
+  render(<SamSegmentList segState={segState} setSegState={() => {}} onEditSelection={onEditSelection} />);
   fireEvent.contextMenu(screen.getByText('SAM #1'));
   fireEvent.click(screen.getByText('Edit selection…'));
-  expect(logSpy).toHaveBeenCalledWith(
-    'TODO: open cut modal',
-    expect.objectContaining({ list: 'sam', selection: [1] })
-  );
-  logSpy.mockRestore();
+  expect(onEditSelection).toHaveBeenCalledWith([{ kind: 'sam', segId: 1 }]);
 });
