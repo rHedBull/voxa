@@ -1,9 +1,11 @@
 // segment-tools.jsx — presegment list (selection panel).
 // Selection happens via Ctrl/Cmd-click in the viewport (wired in mode-label).
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { deriveFastQueue } from './fast-label.jsx';
+import { ContextMenu } from './context-menu.jsx';
+import { cutEligibility } from './cut-eligibility.js';
 
 
 // Center the camera on one segment's bounding box. Shared by the
@@ -65,6 +67,8 @@ export function PresegmentList({
 }) {
   // Same canonical "unpromoted segments, largest first" list fast labeling
   // steps through — one builder so the sidebar and the queue can't drift.
+  const [cutMenu, setCutMenu] = useState(null); // {x, y} | null
+
   const segmentsAll = useMemo(
     () => deriveFastQueue(segState?.summary, excludeSegIds),
     [segState, excludeSegIds]);
@@ -89,6 +93,11 @@ export function PresegmentList({
     });
   };
 
+  const onRowContextMenu = (e) => {
+    e.preventDefault();
+    setCutMenu({ x: e.clientX, y: e.clientY });
+  };
+
   const total = segmentsAll.length;
 
   return (
@@ -111,6 +120,7 @@ export function PresegmentList({
             <div key={seg.id}
               className={'inst-row' + (isSel ? ' selected' : '')}
               onClick={(e) => onRowClick(seg.id, e)}
+              onContextMenu={onRowContextMenu}
               title={isSel ? 'Ctrl/Shift-click to deselect'
                            : 'Ctrl/Shift-click to select'}>
               <span className="inst-dot" style={{ background: dot }} />
@@ -125,6 +135,21 @@ export function PresegmentList({
           );
         })}
       </div>
+      {cutMenu && (
+        <ContextMenu
+          x={cutMenu.x}
+          y={cutMenu.y}
+          onClose={() => setCutMenu(null)}
+          items={[{
+            label: 'Edit selection…',
+            disabled: !cutEligibility({ list: 'preseg', selectionSize: segState.selection.size }).eligible,
+            onSelect: () => {
+              // TODO(Task 11): open CutModal over the current segState.selection.
+              console.log('TODO: open cut modal', { list: 'preseg', selection: Array.from(segState.selection) });
+            },
+          }]}
+        />
+      )}
     </div>
   );
 }

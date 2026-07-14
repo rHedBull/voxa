@@ -2,8 +2,10 @@
 // segments (accepted masks not yet classified). Sibling of PresegmentList —
 // deliberately a SEPARATE component/list; SAM candidates and presegments are
 // never mixed in one panel or one selection set.
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { maskColor } from './sam-util.js';
+import { ContextMenu } from './context-menu.jsx';
+import { cutEligibility } from './cut-eligibility.js';
 
 export function toggleSamSelection(samSelection, samSegId) {
   const next = new Set(samSelection);
@@ -12,6 +14,8 @@ export function toggleSamSelection(samSelection, samSegId) {
 }
 
 export function SamSegmentList({ segState, setSegState }) {
+  const [cutMenu, setCutMenu] = useState(null); // {x, y} | null
+
   const segments = useMemo(() => {
     if (!segState) return [];
     return Array.from(segState.samSegments.entries())
@@ -24,6 +28,11 @@ export function SamSegmentList({ segState, setSegState }) {
   const onRowClick = (samSegId, evt) => {
     if (!(evt.ctrlKey || evt.metaKey || evt.shiftKey)) return;
     setSegState((s) => (s ? { ...s, samSelection: toggleSamSelection(s.samSelection, samSegId) } : s));
+  };
+
+  const onRowContextMenu = (e) => {
+    e.preventDefault();
+    setCutMenu({ x: e.clientX, y: e.clientY });
   };
 
   return (
@@ -44,6 +53,7 @@ export function SamSegmentList({ segState, setSegState }) {
             <div key={seg.id}
               className={'inst-row' + (isSel ? ' selected' : '')}
               onClick={(e) => onRowClick(seg.id, e)}
+              onContextMenu={onRowContextMenu}
               title={isSel ? 'Ctrl/Shift-click to deselect' : 'Ctrl/Shift-click to select'}>
               <span className="inst-dot" style={{ background: maskColor(seg.id) }} />
               <div className="inst-text">
@@ -54,6 +64,21 @@ export function SamSegmentList({ segState, setSegState }) {
           );
         })}
       </div>
+      {cutMenu && (
+        <ContextMenu
+          x={cutMenu.x}
+          y={cutMenu.y}
+          onClose={() => setCutMenu(null)}
+          items={[{
+            label: 'Edit selection…',
+            disabled: !cutEligibility({ list: 'sam', selectionSize: segState.samSelection.size }).eligible,
+            onSelect: () => {
+              // TODO(Task 11): open CutModal over the current samSelection.
+              console.log('TODO: open cut modal', { list: 'sam', selection: Array.from(segState.samSelection) });
+            },
+          }]}
+        />
+      )}
     </div>
   );
 }

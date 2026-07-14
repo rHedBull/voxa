@@ -17,6 +17,8 @@ import { toolAvailable, defaultTool } from './label-tools.js';
 import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
+import { ContextMenu } from './context-menu.jsx';
+import { cutEligibility } from './cut-eligibility.js';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -37,6 +39,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const meshPopupRef = useRefLabel(null);
   const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
+  const [instCutMenu, setInstCutMenu] = useStateLabel(null); // {x, y, instId} | null
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
   const [activeTool, setActiveTool] = useStateLabel(() =>
     defaultTool({ segState, isAnnotated }));
@@ -1341,6 +1344,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               <div key={inst.id} className={'inst-item' + (isEditing ? ' editing' : '')}>
                 <div className={'inst-row' + (isSel ? ' selected' : '') + (inst.confirmed ? ' confirmed' : '')}
                   onDoubleClick={() => setSelectedId(isSel ? null : inst.id)}
+                  onContextMenu={(e) => { e.preventDefault(); setInstCutMenu({ x: e.clientX, y: e.clientY, instId: inst.id }); }}
                   title={isSel ? 'Double-click to deselect' : 'Double-click to select (shows bounding box)'}>
                   <span className="inst-dot" style={{ background: cls?.color || inst.color }} />
                   <div className="inst-text">
@@ -1418,6 +1422,31 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             );
           })}
         </div>
+        {instCutMenu && (() => {
+          const target = instances.find((i) => i.id === instCutMenu.instId);
+          const elig = cutEligibility({
+            list: 'instance',
+            isSelected: instCutMenu.instId === selectedId,
+            confirmed: !!target?.confirmed,
+          });
+          return (
+            <ContextMenu
+              x={instCutMenu.x}
+              y={instCutMenu.y}
+              onClose={() => setInstCutMenu(null)}
+              items={[{
+                label: elig.reason === 'confirmed'
+                  ? 'Edit selection… (un-confirm first)'
+                  : 'Edit selection…',
+                disabled: !elig.eligible,
+                onSelect: () => {
+                  // TODO(Task 11): open CutModal over the selected instance.
+                  console.log('TODO: open cut modal', { list: 'instance', instId: instCutMenu.instId });
+                },
+              }]}
+            />
+          );
+        })()}
         </>
         )}
       </aside>
