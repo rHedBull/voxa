@@ -237,6 +237,9 @@ def _resume_session(lay: ScanLayout, session_id: str, pc, source_fp: str):
     seg = SegmentSession.from_aux(aux, class_ids=wa[0], instance_ids=wa[1],
                                   positions=pc.points, session_dir=sp.dir)
     seg.source_fingerprint = source_fp
+    # Unlike load_working_arrays above (soft-fails to None -> controlled 409),
+    # load_sam_ids raises directly on shape mismatch: sam_ids is a disposable
+    # candidate layer, so a corrupted file is left to fail loudly as a bug signal.
     sam_ids = load_sam_ids(sp.dir, n_points=len(pc))
     if sam_ids is not None:
         seg.sam_ids = sam_ids

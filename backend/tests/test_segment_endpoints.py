@@ -5,6 +5,7 @@ import base64
 import json
 
 import numpy as np
+import pytest
 
 
 def _b64_to_int32(b64: str) -> np.ndarray:
@@ -354,3 +355,26 @@ def test_resume_session_restores_sam_candidates(client_with_loaded_annotated_sce
     assert int(seg2.sam_ids[0]) == 7 and int(seg2.sam_ids[1]) == 7
     assert seg2.sam_segments[7]["n_points"] == 2
     assert seg2._next_sam_id == 8
+
+
+def test_resume_session_raises_on_sam_ids_shape_mismatch(client_with_loaded_annotated_scene):
+    """A working_sam_ids.npy whose length no longer matches the cloud (bad/foreign
+    data directory) must fail loudly through /api/load, not be silently swallowed —
+    unlike working_class_ids/working_segment_ids (which soft-fail to a controlled
+    409), load_sam_ids raises directly and that must propagate unhandled."""
+    import main
+    from labeling.segment_io import save_session_aux
+
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    scene_id = main._state["scene"]
+
+    # Deliberately wrong length: any n_points != len(cloud).
+    bad_sam_ids = np.array([-1, 0], dtype=np.int32)
+    save_session_aux(seg.session_dir, seg._aux_payload(), sam_ids=bad_sam_ids)
+
+    # Drop in-memory state to force a real resume (not just a GET) on next load.
+    main._state.update(seg=None, pc=None, scene=None)
+
+    with pytest.raises(ValueError):
+        client.post("/api/load", json={"name": scene_id, "max_points": 100})
