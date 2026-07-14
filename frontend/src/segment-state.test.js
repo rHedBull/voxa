@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply } from './segment-state.js';
+import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
 
 const seed = () => initSegState({
   classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
@@ -54,6 +54,38 @@ describe('segment-state', () => {
     const sum = recomputeSummary(s);
     expect(sum.get(0).nPoints).toBe(2);
     expect(sum.get(1).classId).toBe(1);
+  });
+});
+
+describe('filterSamSelectionOnToolSwitch', () => {
+  const samSegments = new Map([
+    [5, { nPoints: 3, maskScore: 0.9, source: 'sam' }],
+    [6, { nPoints: 2, maskScore: 0.8, source: 'sam' }],
+    [12, { nPoints: 4, maskScore: null, source: 'preseg' }],
+  ]);
+
+  it('drops real SAM candidates (source:"sam") when switching SAM -> Presegment', () => {
+    const sel = new Set([5, 6]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'sam', 'presegment');
+    expect(Array.from(next)).toEqual([]);
+  });
+
+  it('keeps cut candidates (source:"preseg") when switching SAM -> Presegment', () => {
+    const sel = new Set([5, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'sam', 'presegment');
+    expect(Array.from(next)).toEqual([12]);
+  });
+
+  it('is a no-op for any other tool transition, e.g. Presegment -> SAM', () => {
+    const sel = new Set([5, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'presegment', 'sam');
+    expect(next).toBe(sel);
+  });
+
+  it('is a no-op for a non-tool-switch transition, e.g. box -> box (same tool)', () => {
+    const sel = new Set([5]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'box', 'box');
+    expect(next).toBe(sel);
   });
 });
 

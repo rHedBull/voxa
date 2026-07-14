@@ -12,7 +12,7 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import ExportWizard from './export-wizard.jsx';
-import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply } from './segment-state.js';
+import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
 import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
@@ -140,11 +140,25 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // (source:'preseg'-tagged cut candidates render/select there too — see
   // segment-tools.jsx::PresegmentList). Leaving both must clear it so a stale
   // selection can't silently get confirmed if the user returns to either tool
-  // and hits Ctrl+Enter / a class hotkey without re-selecting.
+  // and hits Ctrl+Enter / a class hotkey without re-selecting. Leaving SAM
+  // specifically FOR Presegment is narrower: a real SAM candidate
+  // (source:'sam') must still be dropped (it has no business surviving into
+  // Presegment and would otherwise get silently classified ahead of whatever
+  // the user actually selects there — see filterSamSelectionOnToolSwitch),
+  // but a source:'preseg' cut-candidate selection must survive, since that's
+  // the whole point of it being selectable from the Presegment tool.
+  const prevToolRef = useRefLabel(activeTool);
   useEffectLabel(() => {
-    if (activeTool !== 'sam' && activeTool !== 'presegment') {
-      setSegState((s) => (s && s.samSelection.size > 0 ? { ...s, samSelection: new Set() } : s));
-    }
+    const prevTool = prevToolRef.current;
+    prevToolRef.current = activeTool;
+    setSegState((s) => {
+      if (!s || s.samSelection.size === 0) return s;
+      if (activeTool !== 'sam' && activeTool !== 'presegment') {
+        return { ...s, samSelection: new Set() };
+      }
+      const filtered = filterSamSelectionOnToolSwitch(s.samSelection, s.samSegments, prevTool, activeTool);
+      return filtered === s.samSelection ? s : { ...s, samSelection: filtered };
+    });
   }, [activeTool, setSegState]);
 
   // Yellow overlay for selected presegments. Recompute the per-subrow
