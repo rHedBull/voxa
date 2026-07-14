@@ -172,10 +172,11 @@ class ApplyShapeRequest(BaseModel):
 
 class CutShapeSource(BaseModel):
     kind: Literal["preseg", "sam", "instance"]
+    # meaning depends on kind: preseg_ids value / sam_ids value / instance_ids value
     seg_id: int
 
 class CutShapeRequest(BaseModel):
-    shape: dict
+    shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
     sources: list[CutShapeSource]
     protect_instances: list[int] = []
 
