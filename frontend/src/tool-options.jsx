@@ -2,6 +2,7 @@ import { PresegmentList } from './segment-tools.jsx';
 import DrawMode from './draw-mode.jsx';
 import BeamMode from './beam-mode.jsx';
 import SamMode from './sam-mode.jsx';
+import { SamSegmentList } from './sam-segment-list.jsx';
 
 function AutoConfirmToggle({ tool, autoConfirm, setAutoConfirm }) {
   return (
@@ -105,22 +106,19 @@ function BeamOptions({
 }
 
 function SamOptions({
-  viewerRef, classes, activeClass, protectInstances, setSegState,
-  onToolApplied, autoConfirm, setAutoConfirm, activeSessionId,
+  viewerRef, protectInstances, setSegState, segState,
+  autoConfirm, setAutoConfirm, activeSessionId,
 }) {
   return (
     <div className="tool-options tool-options-sam">
       <SamMode
         key={activeSessionId}
         viewerRef={viewerRef}
-        classes={classes}
         setSegState={setSegState}
-        defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
-        onApplied={onToolApplied}
         protectInstances={protectInstances}
-        autoConfirm={autoConfirm}
       />
       <AutoConfirmToggle tool="sam" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
+      {segState && <SamSegmentList segState={segState} setSegState={setSegState} />}
     </div>
   );
 }
