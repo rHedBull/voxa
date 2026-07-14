@@ -289,7 +289,7 @@ def save_sam_segments(session_dir: Path, sam_segments: dict[int, dict]) -> None:
 
 
 def load_sam_segments(session_dir: Path) -> dict[int, dict]:
-    """Read sam_segments.json -> {sam_seg_id: {n_points, mask_score,
+    """Read sam_segments.json -> {sam_seg_id: {n_points, source, mask_score,
     created_at}}. Missing file -> empty dict (no SAM captures yet)."""
     p = session_dir / "sam_segments.json"
     if not p.exists():
