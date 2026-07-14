@@ -1,17 +1,33 @@
+import { useEffect, useRef } from 'react';
+
 // Shared floating right-click menu. Generic over its items — callers decide
 // what shows up (e.g. Label mode's "Edit selection…" row on preseg/SAM/
-// instance list rows). Not wired into anything yet; see label-tools.js /
-// mode-label.jsx callers for that.
+// instance list rows). Self-contained dismissal: closes on outside click or
+// Escape, so callers don't each need to reimplement it. Not wired into
+// anything yet; see label-tools.js / mode-label.jsx callers for that.
 export function ContextMenu({ x, y, items, onClose }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('click', handleClick);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('click', handleClick);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
   return (
-    <div
-      className="context-menu"
-      style={{ left: x, top: y }}
-      onMouseLeave={onClose}
-    >
-      {items.map((item) => (
+    <div ref={ref} className="context-menu" style={{ left: x, top: y }}>
+      {items.map((item, i) => (
         <div
-          key={item.label}
+          key={item.id ?? `${item.label}-${i}`}
           className={`context-menu-row${item.disabled ? ' disabled' : ''}`}
           onClick={() => {
             if (item.disabled) return;
