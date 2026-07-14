@@ -111,18 +111,24 @@ export function reconcileSamAfterApply(state, appliedSamSegIds) {
 }
 
 // samSelection is shared by the SAM tool and the Presegment tool (cut
-// candidates tagged source:'preseg' render/select from either), but a real
-// SAM candidate (source:'sam') must NOT survive a SAM -> Presegment switch —
-// otherwise a forgotten SAM selection silently gets classified instead of
-// whatever the user actually selected after switching tools (mode-label.jsx's
-// classify-gating checks samSelection before segState.selection). Only that
-// one transition needs filtering: every other tool-switch case already fully
+// candidates tagged source:'preseg' render/select from either), but a
+// candidate whose source tag doesn't match the tool being entered must NOT
+// survive the switch — otherwise a forgotten selection from the OTHER tool
+// silently gets classified alongside whatever the user actually selects
+// after switching (mode-label.jsx's classify-gating checks samSelection
+// before segState.selection, and both confirmSamSelection and the viewport
+// recolor/pick logic operate on the raw, unfiltered samSelection). This is
+// symmetric: SAM -> Presegment drops source:'sam' ids, and Presegment -> SAM
+// drops source:'preseg' ids. Every other tool-switch case already fully
 // clears samSelection (see mode-label.jsx's tool-switch effect).
 export function filterSamSelectionOnToolSwitch(samSelection, samSegments, fromTool, toTool) {
-  if (fromTool !== 'sam' || toTool !== 'presegment') return samSelection;
+  const samToPreseg = fromTool === 'sam' && toTool === 'presegment';
+  const presegToSam = fromTool === 'presegment' && toTool === 'sam';
+  if (!samToPreseg && !presegToSam) return samSelection;
+  const keepSource = samToPreseg ? 'preseg' : 'sam';
   const next = new Set();
   for (const id of samSelection) {
-    if (samSegments.get(id)?.source === 'preseg') next.add(id);
+    if (samSegments.get(id)?.source === keepSource) next.add(id);
   }
   return next;
 }

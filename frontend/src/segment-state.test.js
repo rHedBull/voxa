@@ -76,9 +76,21 @@ describe('filterSamSelectionOnToolSwitch', () => {
     expect(Array.from(next)).toEqual([12]);
   });
 
-  it('is a no-op for any other tool transition, e.g. Presegment -> SAM', () => {
+  it('drops stale cut candidates (source:"preseg") when switching Presegment -> SAM', () => {
     const sel = new Set([5, 12]);
     const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'presegment', 'sam');
+    expect(Array.from(next)).toEqual([5]);
+  });
+
+  it('keeps real SAM candidates (source:"sam") when switching Presegment -> SAM', () => {
+    const sel = new Set([5, 6, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'presegment', 'sam');
+    expect(Array.from(next)).toEqual([5, 6]);
+  });
+
+  it('is a no-op for any other tool transition, e.g. box -> sam', () => {
+    const sel = new Set([5, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'box', 'sam');
     expect(next).toBe(sel);
   });
 

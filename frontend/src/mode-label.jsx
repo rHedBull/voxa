@@ -140,13 +140,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // (source:'preseg'-tagged cut candidates render/select there too — see
   // segment-tools.jsx::PresegmentList). Leaving both must clear it so a stale
   // selection can't silently get confirmed if the user returns to either tool
-  // and hits Ctrl+Enter / a class hotkey without re-selecting. Leaving SAM
-  // specifically FOR Presegment is narrower: a real SAM candidate
-  // (source:'sam') must still be dropped (it has no business surviving into
-  // Presegment and would otherwise get silently classified ahead of whatever
-  // the user actually selects there — see filterSamSelectionOnToolSwitch),
-  // but a source:'preseg' cut-candidate selection must survive, since that's
-  // the whole point of it being selectable from the Presegment tool.
+  // and hits Ctrl+Enter / a class hotkey without re-selecting. Switching
+  // directly between SAM and Presegment is narrower and symmetric: a real
+  // SAM candidate (source:'sam') must be dropped on entering Presegment, and
+  // a source:'preseg' cut candidate must be dropped on entering SAM — either
+  // one surviving into the wrong tool would otherwise get silently
+  // classified ahead of whatever the user actually selects there (see
+  // filterSamSelectionOnToolSwitch).
   const prevToolRef = useRefLabel(activeTool);
   useEffectLabel(() => {
     const prevTool = prevToolRef.current;
