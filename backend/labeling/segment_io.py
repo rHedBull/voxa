@@ -272,14 +272,19 @@ def load_sam_ids(session_dir: Path, n_points: int) -> Optional[np.ndarray]:
     return arr
 
 
+def sam_segments_to_list(sam_segments: dict[int, dict]) -> list[dict]:
+    """{sam_seg_id: meta} -> [{id, **meta}, ...] sorted by id — the shared
+    wire/file shape used by both sam_segments.json and GET /api/segment/state."""
+    return [{"id": sid, **meta} for sid, meta in sorted(sam_segments.items())]
+
+
 def save_sam_segments(session_dir: Path, sam_segments: dict[int, dict]) -> None:
     """Atomically persist the SAM candidate-segment summary
     (sessions/<id>/sam_segments.json). Point membership lives in
     working_sam_ids.npy; this file is metadata only, mirroring prelabel's
     segment_summary.json shape."""
     session_dir.mkdir(parents=True, exist_ok=True)
-    payload = {"segments": [{"id": sid, **meta}
-                            for sid, meta in sorted(sam_segments.items())]}
+    payload = {"segments": sam_segments_to_list(sam_segments)}
     atomic_write_json(session_dir / "sam_segments.json", payload)
 
 
