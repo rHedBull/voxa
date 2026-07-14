@@ -224,7 +224,7 @@ def _resume_session(lay: ScanLayout, session_id: str, pc, source_fp: str):
     is read exactly once (for the snap-to layer); the pin check itself is a
     string compare against the preseg's meta.json."""
     from labeling.segment_state import SegmentSession
-    from labeling.segment_io import load_working_arrays
+    from labeling.segment_io import load_working_arrays, load_sam_ids, load_sam_segments
     from labeling.session_store import verify_pins
     from preseg.preseg_store import load_preseg
 
@@ -237,6 +237,11 @@ def _resume_session(lay: ScanLayout, session_id: str, pc, source_fp: str):
     seg = SegmentSession.from_aux(aux, class_ids=wa[0], instance_ids=wa[1],
                                   positions=pc.points, session_dir=sp.dir)
     seg.source_fingerprint = source_fp
+    sam_ids = load_sam_ids(sp.dir, n_points=len(pc))
+    if sam_ids is not None:
+        seg.sam_ids = sam_ids
+        seg.sam_segments = load_sam_segments(sp.dir)
+        seg._next_sam_id = (max(seg.sam_segments.keys()) + 1) if seg.sam_segments else 0
     if seg.preseg_id is not None:
         _, pre_ii = load_preseg(lay, seg.preseg_id, n_points=len(pc))
         seg.preseg_ids = pre_ii          # immutable preseg layer for snap-to

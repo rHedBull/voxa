@@ -322,3 +322,35 @@ def test_save_without_session_409(client_with_annotated_scene):
     r = client.put("/api/segment/save")
     assert r.status_code == 409
     assert "session" in r.json()["detail"].lower()
+
+
+def test_resume_session_restores_sam_candidates(client_with_loaded_annotated_scene):
+    """SAM candidates (working_sam_ids.npy + sam_segments.json) written directly
+    to disk must be hydrated back into the in-memory SegmentSession on the next
+    /api/load — mirrors the preseg+labels resume guarantee above, for the SAM
+    candidate layer added in Task 1/2."""
+    import main
+    from labeling.segment_io import save_session_aux, save_sam_segments
+
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    scene_id = main._state["scene"]
+    n = len(seg.instance_ids)
+
+    sam_ids = np.full(n, -1, dtype=np.int32)
+    sam_ids[0] = 7
+    sam_ids[1] = 7
+    save_session_aux(seg.session_dir, seg._aux_payload(), sam_ids=sam_ids)
+    save_sam_segments(seg.session_dir, {7: {"n_points": 2, "mask_score": 0.8,
+                                            "created_at": "2026-07-13T00:00:00+00:00"}})
+
+    # Drop in-memory state to force a real resume (not just a GET) on next load.
+    main._state.update(seg=None, pc=None, scene=None)
+
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+
+    seg2 = main._state["seg"]
+    assert int(seg2.sam_ids[0]) == 7 and int(seg2.sam_ids[1]) == 7
+    assert seg2.sam_segments[7]["n_points"] == 2
+    assert seg2._next_sam_id == 8
