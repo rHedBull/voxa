@@ -344,6 +344,41 @@ describe('centerline API', () => {
     expect(r.nProtected).toBe(5);
   });
 
+  it('cutShape posts shape+sources and decodes materialized/instance response', async () => {
+    let capturedOpts;
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      capturedOpts = opts;
+      return {
+        ok: true,
+        json: async () => ({
+          materialized: [{ sam_seg_id: 7, source: 'preseg', n_points: 12 }],
+          instance: null,
+          n_protected: 0,
+        }),
+      };
+    }));
+    const result = await VoxaAPI.cutShape({
+      shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
+      sources: [{ kind: 'preseg', segId: 3 }],
+    });
+    expect(result.materialized[0]).toEqual({ samSegId: 7, source: 'preseg', nPoints: 12 });
+    expect(result.instance).toBeNull();
+    expect(JSON.parse(capturedOpts.body).sources).toEqual([{ kind: 'preseg', seg_id: 3 }]);
+  });
+
+  it('cutShape decodes a non-null instance entry', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ materialized: [], instance: { instance_id: 9, n_points: 4 }, n_protected: 1 }),
+    })));
+    const result = await VoxaAPI.cutShape({
+      shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
+      sources: [{ kind: 'instance', segId: 5 }],
+    });
+    expect(result.instance).toEqual({ instId: 9, nPoints: 4 });
+    expect(result.nProtected).toBe(1);
+  });
+
   it('samProject decodes each sam segment so segment-state can be patched', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
