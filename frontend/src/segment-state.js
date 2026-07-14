@@ -24,7 +24,7 @@ export function initSegState({
     // always pairs with a real classFull entry once >= 0).
     samIds: samIds || new Int32Array(classFull.length).fill(-1),
     samSegments: new Map(samSegments.map((s) =>
-      [s.id, { nPoints: s.n_points, maskScore: s.mask_score ?? null }])),
+      [s.id, { nPoints: s.n_points, maskScore: s.mask_score ?? null, source: s.source }])),
     samSelection: new Set(),
   };
 }
@@ -71,7 +71,7 @@ function retireSamIdsForIndices(state, indices) {
 // The SAM-layer analogue of applyDelta: writes samSegId at each index and
 // shrinks/drops any older candidate those indices used to belong to
 // (last-materialize-wins, mirrors SegmentSession._retire_sam_ids).
-export function applySamDelta(state, { indices, samSegId }) {
+export function applySamDelta(state, { indices, samSegId, source }) {
   const samIds = state.samIds.slice();
   const shrink = new Map();
   for (let k = 0; k < indices.length; k++) {
@@ -87,7 +87,7 @@ export function applySamDelta(state, { indices, samSegId }) {
     if (nPoints <= 0) samSegments.delete(oldId);
     else samSegments.set(oldId, { ...entry, nPoints });
   }
-  samSegments.set(samSegId, { nPoints: indices.length, maskScore: null });
+  samSegments.set(samSegId, { nPoints: indices.length, maskScore: null, source });
   return { ...state, samIds, samSegments };
 }
 

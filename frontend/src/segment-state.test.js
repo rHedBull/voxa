@@ -276,4 +276,23 @@ describe('SAM candidate layer', () => {
     const s = initSegState({ classFull, instanceFull });
     expect(reconcileSamAfterApply(s, new Set())).toBe(s);
   });
+
+  it('initSegState threads the source tag through hydrated samSegments', () => {
+    const classFull = new Int8Array([-1, -1]);
+    const instanceFull = new Int32Array([-1, -1]);
+    const samIds = new Int32Array([3, 3]);
+    const s = initSegState({
+      classFull, instanceFull, samIds,
+      samSegments: [{ id: 3, n_points: 2, mask_score: 0.5, source: 'preseg' }],
+    });
+    expect(s.samSegments.get(3)).toEqual({ nPoints: 2, maskScore: 0.5, source: 'preseg' });
+  });
+
+  it('applySamDelta stores the source tag on the samSegments entry', () => {
+    const classFull = new Int8Array([-1, -1, -1]);
+    const instanceFull = new Int32Array([-1, -1, -1]);
+    const s = initSegState({ classFull, instanceFull });
+    const next = applySamDelta(s, { indices: [0, 1], samSegId: 5, source: 'preseg' });
+    expect(next.samSegments.get(5).source).toBe('preseg');
+  });
 });
