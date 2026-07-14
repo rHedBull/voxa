@@ -389,3 +389,19 @@ def test_segment_state_includes_full_sam_ids_and_sam_segments(
     assert "full_sam_ids" in body
     assert "sam_segments" in body
     assert body["sam_segments"] == []  # nothing materialized yet
+
+
+def test_segment_state_reflects_materialized_sam_segments(
+    client_with_loaded_annotated_scene,
+):
+    import main
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    seg.materialize_sam_segment(np.array([0, 1], dtype=np.int32), mask_score=0.7)
+    r = client.get("/api/segment/state")
+    body = r.json()
+    sam_ids = _b64_to_int32(body["full_sam_ids"])
+    assert int(sam_ids[0]) == 0 and int(sam_ids[1]) == 0
+    assert body["sam_segments"] == [
+        {"id": 0, "n_points": 2, "mask_score": 0.7, "created_at": body["sam_segments"][0]["created_at"]},
+    ]
