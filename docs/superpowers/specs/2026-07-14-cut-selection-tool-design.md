@@ -72,12 +72,28 @@ tag, and `mask_score` becomes optional/generic metadata (SAM-specific, not
 structurally required). A cut-out chunk of a presegment materializes into this
 same `sam_ids`/`sam_segments` layer tagged `source: 'preseg'`; a cut-out chunk
 of a SAM candidate materializes tagged `source: 'sam'`. Display routing keys
-off the tag: `source: 'preseg'` entries render in the **Presegment list**,
-styled and hulled like a presegment; `source: 'sam'` entries render in the
-**SAM segment list** exactly as today. The two lists/selections remain
-separate, matching the existing "a SAM candidate and a presegment can never
-appear in the same selection" rule — a cut only ever produces more entries in
-whichever list its source already belonged to.
+off the tag: `source: 'preseg'` entries render as new rows in the
+**Presegment list**; `source: 'sam'` entries render in the **SAM segment
+list** exactly as today. The two lists/selections remain separate, matching
+the existing "a SAM candidate and a presegment can never appear in the same
+selection" rule — a cut only ever produces more entries in whichever list its
+source already belonged to.
+
+**No hull for cut results, regardless of tag.** Hull geometry is computed
+server-side only from `instance_ids`/the static prelabel
+`segment_summary.json` (`backend/labeling/segment_hulls.py`); nothing
+computes a hull from `sam_ids`. Cut results follow the exact treatment SAM
+candidates already get today — **point-recolor only, no hull mesh**
+(`2026-07-13-sam-segments-as-presegments-design.md`'s explicit call) — even
+when tagged `source: 'preseg'` and shown in the Presegment list. A
+`source: 'preseg'` row is styled with a presegment-like hue and appears in
+the Presegment list/selection, but renders as recolored points, not a hull.
+Consequently, cutting never shrinks the *original* presegment's displayed
+hull or point count — that data comes from the static, immutable prelabel
+summary and is genuinely unaffected by a cut (the original segment continues
+to include the cut-out points in its own display; only the new candidate's
+points, separately recolored, visually distinguish the cut chunk while the
+tool is active). This is expected, not a bug.
 
 ## Data model
 
@@ -206,6 +222,10 @@ rules above.
   trash" concept.
 - A cut whose box encloses zero points from a given source produces no
   partition/call for that source (not an error, just a no-op for that group).
+- If a cut's `source: preseg`/`source: sam` partition overlaps a still-open
+  candidate from an earlier cut or capture, the same "last materialize wins"
+  rule from `2026-07-13-sam-segments-as-presegments-design.md` applies
+  unchanged — no new merge/dedup logic.
 - A cut-out instance never gets its own persisted OBB (unlike a fresh
   Box-tool apply) — it's a plain `apply_reassign` over an explicit index set,
   not a shape apply. This resolves correctly under
@@ -228,8 +248,10 @@ rules above.
   filtering (given a selection, produces the right point subset + tags).
 - **End-to-end:** browser-verify on a throwaway session — multi-select two
   presegments, cut a box spanning both, confirm two new presegment-list rows
-  appear with the correct point counts and the originals shrink accordingly;
-  repeat for a single unconfirmed instance, confirm the split-off piece
+  appear (point-recolored, no hull) with the correct point counts, and that
+  the two original presegments' own hulls/counts are unchanged (expected —
+  see "No hull for cut results" above); repeat for a single unconfirmed
+  instance, confirm the split-off piece
   appears as a new unconfirmed instance with the same class and no picker
   prompt; confirm a confirmed instance has "Edit selection…" disabled.
 
