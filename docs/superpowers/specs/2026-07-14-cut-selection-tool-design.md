@@ -129,17 +129,26 @@ target_class}})`, the same call presegment/SAM classification already makes.
 
 **Trigger — right-click "Edit selection…":**
 
-Available on three list surfaces (`PresegmentList`, `SamSegmentList`, the
-Instances panel) and directly on a segment's hull/points in the viewport.
-Behavior depends on what's selected when triggered:
+Available only on the three list surfaces (`PresegmentList`, `SamSegmentList`,
+the Instances panel) — **not** directly in the viewport. Right-click there is
+already fully claimed by camera pan (`attachOrbit`/`attachWalk` both start a
+pan-drag on right-mousedown and suppress the native context menu), so there is
+no free gesture to repurpose without changing existing camera-control code,
+which is out of scope here. Selecting points in the viewport (Ctrl/Shift-click,
+as today) already drives the corresponding list's selection state; the user
+right-clicks the populated row(s) in the list to open the menu. Behavior
+depends on what's selected when triggered:
 
 - **Presegment/SAM multi-select** (any mix of presegment and SAM rows, one or
   more): enabled. Opens the cut modal over the union of their points.
 - **Single instance selected, nothing else:** enabled. Opens the cut modal
-  over just that instance's points.
-- **Instance mixed with presegment/SAM, or more than one instance selected:**
-  disabled — instance cuts are single-instance only, kept structurally
-  separate from the multi-source preseg/SAM partitioning flow.
+  over just that instance's points. (The Instances panel has no multi-select
+  today — `mode-label.jsx`'s instance selection is a single `selectedId`
+  scalar, not a Set — so "more than one instance" is not a reachable state;
+  no changes to Instances-panel selection are in scope for this spec.)
+- **Instance mixed with a presegment/SAM selection:** disabled — instance
+  cuts are single-instance only, kept structurally separate from the
+  multi-source preseg/SAM partitioning flow.
 - **Confirmed instance:** disabled (existing "confirmed = locked" rule — must
   un-confirm first via existing UI).
 
@@ -177,9 +186,9 @@ another box on what's left, repeat; close when done.
    layer they already lived in — no write happens for them at all.
 
 **Right-click context menu:** a small new shared component, invoked from the
-three list row types and from the viewport's existing pointer-pick handler
-(`mode-label.jsx`) on right-click instead of left/Ctrl-click. Only one menu
-item for this spec: "Edit selection…", enabled/disabled per the rules above.
+three list row types only (see Trigger above — no viewport right-click).
+Only one menu item for this spec: "Edit selection…", enabled/disabled per the
+rules above.
 
 ## Scope boundaries
 
@@ -197,6 +206,12 @@ item for this spec: "Edit selection…", enabled/disabled per the rules above.
   trash" concept.
 - A cut whose box encloses zero points from a given source produces no
   partition/call for that source (not an error, just a no-op for that group).
+- A cut-out instance never gets its own persisted OBB (unlike a fresh
+  Box-tool apply) — it's a plain `apply_reassign` over an explicit index set,
+  not a shape apply. This resolves correctly under
+  `backend/labeling/materialize.py`'s max-seq regime-B replay (a higher-seq
+  non-volumetric claimant beats the source's stale full-extent OBB via the
+  `baseline_inst` path) but is worth flagging since it's non-obvious.
 
 ## Testing
 
