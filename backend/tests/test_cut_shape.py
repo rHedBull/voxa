@@ -42,8 +42,7 @@ def test_cut_shape_partitions_two_presegments(client_with_loaded_annotated_scene
     assert j["instance"] is None
 
 
-def test_cut_shape_instance_source_inherits_class_and_forwards_protect_instances(
-        client_with_loaded_annotated_scene):
+def test_cut_shape_instance_source_inherits_class(client_with_loaded_annotated_scene):
     import main
     client = client_with_loaded_annotated_scene
     seg = main._state["seg"]
@@ -53,10 +52,7 @@ def test_cut_shape_instance_source_inherits_class_and_forwards_protect_instances
     r = client.post("/api/segment/cut-shape", json={
         "shape": _huge_obb(),
         "sources": [{"kind": "instance", "seg_id": src_inst_id}],
-        # some other, unrelated confirmed instance id — must be forwarded
-        # to apply_reassign without error, even though it has no effect on
-        # this particular partition (whose current instance is src_inst_id).
-        "protect_instances": [2],
+        "protect_instances": [],
     })
     assert r.status_code == 200
     j = r.json()
@@ -67,6 +63,69 @@ def test_cut_shape_instance_source_inherits_class_and_forwards_protect_instances
     new_mask = seg.instance_ids == new_id
     assert new_mask.any()
     assert (seg.class_ids[new_mask] == src_class).all()
+
+
+def test_cut_shape_instance_source_protect_instances_blocks_self(
+        client_with_loaded_annotated_scene):
+    """protect_instances must actually be forwarded to apply_reassign on the
+    instance-source path: protecting the very instance being cut from means
+    every candidate point is dropped, so nothing gets materialized. This is
+    the confirmed-source case in the real UI: the presegment you're cutting
+    from was already promoted+confirmed as instance 0, and the cut must not
+    silently steal its points."""
+    import main
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    src_inst_id = 0
+    n_src_points = int((seg.instance_ids == src_inst_id).sum())
+    assert n_src_points > 0
+
+    r = client.post("/api/segment/cut-shape", json={
+        "shape": _huge_obb(),
+        "sources": [{"kind": "instance", "seg_id": src_inst_id}],
+        "protect_instances": [src_inst_id],
+    })
+    assert r.status_code == 200
+    j = r.json()
+    # apply_reassign with every candidate protected returns n_affected=0 and
+    # never allocates a fresh instance id (see SegmentSession.apply_reassign).
+    assert j["instance"] is None
+    assert j["materialized"] == []
+    assert j["n_protected"] == n_src_points
+    # instance_ids/class_ids for the source instance are untouched.
+    assert int((seg.instance_ids == src_inst_id).sum()) == n_src_points
+
+
+def test_cut_shape_preseg_source_protect_instances_drops_protected_points(
+        client_with_loaded_annotated_scene):
+    """protect_instances must also be forwarded on the preseg/sam
+    materialize_sam_segment path: cutting from preseg seg_id 0 (points {1,2})
+    while protecting instance 0 (which currently owns exactly those points,
+    since the session is seeded 1:1 from the preseg) must drop every
+    candidate point — nothing materializes into the SAM candidate layer."""
+    import main
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    src_seg_id = 0
+    n_src_points = int((seg.preseg_ids == src_seg_id).sum())
+    assert n_src_points > 0
+    # Sanity: instance 0 currently owns the exact same points as preseg
+    # segment 0 (fresh session seeded 1:1 from the preseg), so protecting
+    # instance 0 genuinely overlaps this cut's partition.
+    assert (seg.instance_ids[seg.preseg_ids == src_seg_id] == 0).all()
+
+    r = client.post("/api/segment/cut-shape", json={
+        "shape": _huge_obb(),
+        "sources": [{"kind": "preseg", "seg_id": src_seg_id}],
+        "protect_instances": [0],
+    })
+    assert r.status_code == 200
+    j = r.json()
+    assert j["materialized"] == []
+    assert j["instance"] is None
+    assert j["n_protected"] == n_src_points
+    # No new SAM candidate was allocated over the protected points.
+    assert not (seg.sam_ids[seg.preseg_ids == src_seg_id] >= 0).any()
 
 
 def test_cut_shape_empty_source_partition_produces_no_entry(client_with_loaded_annotated_scene):
