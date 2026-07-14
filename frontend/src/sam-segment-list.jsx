@@ -3,6 +3,7 @@
 // deliberately a SEPARATE component/list; SAM candidates and presegments are
 // never mixed in one panel or one selection set.
 import { useMemo } from 'react';
+import { maskColor } from './sam-util.js';
 
 export function toggleSamSelection(samSelection, samSegId) {
   const next = new Set(samSelection);
@@ -44,7 +45,7 @@ export function SamSegmentList({ segState, setSegState }) {
               className={'inst-row' + (isSel ? ' selected' : '')}
               onClick={(e) => onRowClick(seg.id, e)}
               title={isSel ? 'Ctrl/Shift-click to deselect' : 'Ctrl/Shift-click to select'}>
-              <span className="inst-dot" style={{ background: '#22d3ee' }} />
+              <span className="inst-dot" style={{ background: maskColor(seg.id) }} />
               <div className="inst-text">
                 <b>SAM #{seg.id}</b>
                 <em>{seg.nPoints.toLocaleString()} pts</em>

@@ -4,12 +4,16 @@ import BeamMode from './beam-mode.jsx';
 import SamMode from './sam-mode.jsx';
 import { SamSegmentList } from './sam-segment-list.jsx';
 
-function AutoConfirmToggle({ tool, autoConfirm, setAutoConfirm }) {
+function AutoConfirmToggle({
+  tool, autoConfirm, setAutoConfirm,
+  label = 'Auto-confirm on apply',
+  title = 'When on, applying labels a group and marks it confirmed immediately',
+}) {
   return (
-    <label className="tool-opt-check" title="When on, applying labels a group and marks it confirmed immediately">
+    <label className="tool-opt-check" title={title}>
       <input type="checkbox" checked={!!autoConfirm[tool]}
         onChange={(e) => setAutoConfirm((m) => ({ ...m, [tool]: e.target.checked }))} />
-      Auto-confirm on apply
+      {label}
     </label>
   );
 }
@@ -117,8 +121,15 @@ function SamOptions({
         setSegState={setSegState}
         protectInstances={protectInstances}
       />
-      <AutoConfirmToggle tool="sam" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
       {segState && <SamSegmentList segState={segState} setSegState={setSegState} />}
+      {/* Accepting a mask only materializes a candidate (Task 6-12) — it
+          doesn't label anything, so this toggle can't live next to "Add to
+          SAM segments" like it does for every other tool. It governs the
+          *classify* step instead: Ctrl+Enter/hotkey over a selected SAM
+          segment (mode-label.jsx::confirmSamSelection). */}
+      <AutoConfirmToggle tool="sam" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm}
+        label="Auto-confirm on classify"
+        title="When on, classifying a selected SAM segment (Ctrl+Enter or a class hotkey) marks it confirmed immediately" />
     </div>
   );
 }

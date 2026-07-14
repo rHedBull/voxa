@@ -14,6 +14,7 @@ import SessionPicker from './session-picker.jsx';
 import ExportWizard from './export-wizard.jsx';
 import { applyDelta, computeDiffMask, reconcileSamAfterApply } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
+import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 
@@ -26,8 +27,10 @@ function formatPointCount(n) {
 
 const LABEL_SEL_BOX_ID = '__label_sel_box__';
 const LABEL_SEL_BOX_COLOR = '#ffd24a';
-const SAM_CANDIDATE_COLOR = 0x22d3ee; // tailwind cyan-400 — distinct from the
-                                       // yellow (0xfacc15) selection overlay
+// Selected SAM candidates lerp toward white by this much, so a Ctrl/Shift
+// -click reads as "lit up" the same way a selected presegment goes lighter
+// (viewer.jsx's segActive hue recolor: isSel ? l=0.82 : l=0.52).
+const SAM_SELECTED_LIFT = 0.55;
 
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession, sessionLoading }) {
   const meshPopupRef = useRefLabel(null);
@@ -151,13 +154,34 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const subN = cloud.positions.length / 3;
     if (activeTool === 'sam') {
       const samIds = segState.samIds;
+      const samSelection = segState.samSelection;
       const mask = new Uint8Array(subN);
+      // One RGB triplet per rendered point — each candidate segment gets
+      // its own hue (same palette as the SAM segment list's row dot and
+      // the review modal's mask swatches, sam-util.js::maskColorRGB, keyed
+      // by sam_seg_id), lifted toward white when its row/point is selected
+      // — the SAM analogue of a presegment lighting up on Ctrl-click.
+      const colors = new Float32Array(subN * 3);
+      const colorCache = new Map();
       let any = false;
       for (let p = 0; p < subN; p++) {
         const f = subIdx ? subIdx[p] : p;
-        if (samIds[f] >= 0) { mask[p] = 1; any = true; }
+        const samId = samIds[f];
+        if (samId < 0) continue;
+        mask[p] = 1;
+        any = true;
+        let rgb = colorCache.get(samId);
+        if (!rgb) {
+          const [r, g, bch] = maskColorRGB(samId);
+          rgb = samSelection.has(samId)
+            ? [r + (1 - r) * SAM_SELECTED_LIFT, g + (1 - g) * SAM_SELECTED_LIFT, bch + (1 - bch) * SAM_SELECTED_LIFT]
+            : [r, g, bch];
+          colorCache.set(samId, rgb);
+        }
+        const o = p * 3;
+        colors[o] = rgb[0]; colors[o + 1] = rgb[1]; colors[o + 2] = rgb[2];
       }
-      v.setSelectedSegmentMask(any ? mask : null, SAM_CANDIDATE_COLOR);
+      v.setSelectedSegmentMask(any ? mask : null, undefined, any ? colors : null);
       return;
     }
     const sel = segState.selection;
@@ -172,7 +196,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       if (sel.has(inst[f])) mask[p] = 1;
     }
     v.setSelectedSegmentMask(mask, fastMode ? FAST_HIGHLIGHT_COLOR : undefined);
-  }, [segState?.selection, segState?.samIds, segState?.instanceFull, cloud, viewerRef, fastMode, activeTool]);
+  }, [segState?.selection, segState?.samIds, segState?.samSelection, segState?.instanceFull, cloud, viewerRef, fastMode, activeTool]);
 
   // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
   // under the cursor. Active in any tool mode whenever segment data exists.

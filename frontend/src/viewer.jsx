@@ -484,10 +484,15 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
     // Selected-segment overlay. Same yellow + 2.4× size as cuboid highlight,
     // but driven independently by setSelectedSegmentMask() — populated when
     // the user clicks rows in the Presegment list or picks segments in 3D.
+    // vertexColors stays on unconditionally: the flat-color callers (box/
+    // draw/beam/presegment selection) fill every point with the same RGB,
+    // the per-point caller (SAM candidates, one hue per segment id) fills
+    // each point from its own color — one code path for both.
     const segSelectionGeom = new THREE.BufferGeometry();
     const segSelectionMat = new THREE.PointsMaterial({
       size: pointSize * 2.4,
-      color: 0xfacc15,
+      color: 0xffffff,
+      vertexColors: true,
       sizeAttenuation: true,
       transparent: false,
       depthWrite: true,
@@ -798,6 +803,10 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
       const attr = new THREE.BufferAttribute(buf, 3);
       attr.setUsage(THREE.DynamicDrawUsage);
       s.segSelectionGeom.setAttribute('position', attr);
+      const colorBuf = new Float32Array(N * 3);
+      const colorAttrOut = new THREE.BufferAttribute(colorBuf, 3);
+      colorAttrOut.setUsage(THREE.DynamicDrawUsage);
+      s.segSelectionGeom.setAttribute('color', colorAttrOut);
       s.segSelectionGeom.setDrawRange(0, 0);
       s.segSelectionPoints.visible = false;
     }
@@ -1633,30 +1642,43 @@ export const Viewer = forwardRef(function Viewer(props, ref) {
      * Highlight the subsampled points whose subRow has mask[subRow] !== 0.
      * Caller computes the mask from segState.selection + instanceFull
      * + cloud.subsampleIdx — the viewer just blits matching positions
-     * into the yellow overlay buffer.
+     * into the overlay buffer. `color` is used when `perPointColors` is
+     * omitted (every masked point gets the same flat color — box/draw/beam/
+     * presegment selection). `perPointColors` is a Float32Array parallel to
+     * `mask`/`pos` (RGB triplet per subsampled point, 0-1 floats) for
+     * per-segment-hue highlighting (SAM candidates — each segment id its
+     * own color, brighter when selected; see mode-label.jsx's SAM recolor
+     * effect, which builds this array via sam-util.js::maskColorRGB).
      */
-    setSelectedSegmentMask(mask, color = 0xfacc15) {
+    setSelectedSegmentMask(mask, color = 0xfacc15, perPointColors = null) {
       const s = stateRef.current;
       if (!s.segSelectionGeom || !s.pointsGeom) return;
-      s.segSelectionPoints.material.color.setHex(color);
       const posAttr = s.pointsGeom.getAttribute('position');
       const outAttr = s.segSelectionGeom.getAttribute('position');
-      if (!posAttr || !outAttr) return;
+      const colorOutAttr = s.segSelectionGeom.getAttribute('color');
+      if (!posAttr || !outAttr || !colorOutAttr) return;
       const pos = posAttr.array;
       const out = outAttr.array;
+      const colorOut = colorOutAttr.array;
+      const flat = perPointColors ? null : new THREE.Color(color);
       const subN = pos.length / 3;
       let m = 0;
       if (mask && mask.length > 0) {
         for (let p = 0; p < subN; p++) {
           if (!mask[p]) continue;
-          const b = p * 3;
-          out[m++] = pos[b];
-          out[m++] = pos[b + 1];
-          out[m++] = pos[b + 2];
+          const b = p * 3, o = m * 3;
+          out[o] = pos[b]; out[o + 1] = pos[b + 1]; out[o + 2] = pos[b + 2];
+          if (flat) {
+            colorOut[o] = flat.r; colorOut[o + 1] = flat.g; colorOut[o + 2] = flat.b;
+          } else {
+            colorOut[o] = perPointColors[b]; colorOut[o + 1] = perPointColors[b + 1]; colorOut[o + 2] = perPointColors[b + 2];
+          }
+          m++;
         }
       }
-      s.segSelectionGeom.setDrawRange(0, m / 3);
+      s.segSelectionGeom.setDrawRange(0, m);
       outAttr.needsUpdate = true;
+      colorOutAttr.needsUpdate = true;
       s.segSelectionPoints.visible = m > 0;
     },
     recolorByEdit({ affectedFullIndices, classFull, instanceFull, colorMode, palette,

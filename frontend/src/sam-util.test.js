@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeBox, capturePayload, maskColor, containPixel } from './sam-util.js';
+import { normalizeBox, capturePayload, maskColor, maskColorRGB, containPixel } from './sam-util.js';
 
 describe('normalizeBox', () => {
   it('CSS px rect → normalized [cx,cy,w,h] in canvas buffer space', () => {
@@ -29,6 +29,16 @@ describe('maskColor', () => {
     expect(maskColor(3)).toBe('rgb(255, 89, 234)');
     expect(maskColor(4)).toBe('rgb(89, 255, 227)');
     expect(maskColor(5)).toBe('rgb(255, 179, 89)');
+  });
+});
+
+describe('maskColorRGB', () => {
+  it('is the 0-1 float form of the same palette maskColor uses', () => {
+    for (const i of [0, 1, 2, 3, 4, 5]) {
+      const [r, g, b] = maskColorRGB(i);
+      const rounded = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+      expect(rounded).toBe(maskColor(i));
+    }
   });
 });
 
