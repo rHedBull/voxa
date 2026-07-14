@@ -27,10 +27,11 @@ function formatPointCount(n) {
 
 const LABEL_SEL_BOX_ID = '__label_sel_box__';
 const LABEL_SEL_BOX_COLOR = '#ffd24a';
-// Selected SAM candidates lerp toward white by this much, so a Ctrl/Shift
-// -click reads as "lit up" the same way a selected presegment goes lighter
-// (viewer.jsx's segActive hue recolor: isSel ? l=0.82 : l=0.52).
-const SAM_SELECTED_LIFT = 0.55;
+// Selected SAM candidates switch to this flat color — the same yellow
+// setSelectedSegmentMask defaults to for every other tool's selection
+// overlay (0xfacc15) — rather than a lightened version of their own hue,
+// so "selected" reads identically across presegment/box/draw/beam/SAM.
+const SAM_SELECTED_COLOR = new THREE.Color(0xfacc15).toArray();
 
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession, sessionLoading }) {
   const meshPopupRef = useRefLabel(null);
@@ -156,11 +157,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       const samIds = segState.samIds;
       const samSelection = segState.samSelection;
       const mask = new Uint8Array(subN);
-      // One RGB triplet per rendered point — each candidate segment gets
+      // One RGB triplet per rendered point: an unselected candidate gets
       // its own hue (same palette as the SAM segment list's row dot and
       // the review modal's mask swatches, sam-util.js::maskColorRGB, keyed
-      // by sam_seg_id), lifted toward white when its row/point is selected
-      // — the SAM analogue of a presegment lighting up on Ctrl-click.
+      // by sam_seg_id) so segments are distinguishable; a SELECTED one
+      // switches to the same flat yellow/orange every other tool's
+      // selection overlay uses (setSelectedSegmentMask's default / fast
+      // mode's FAST_HIGHLIGHT_COLOR) — the actual "selected" cue elsewhere
+      // in this app is that flat highlight color, not a lightened hue.
+      const selColor = SAM_SELECTED_COLOR;
       const colors = new Float32Array(subN * 3);
       const colorCache = new Map();
       let any = false;
@@ -170,13 +175,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         if (samId < 0) continue;
         mask[p] = 1;
         any = true;
-        let rgb = colorCache.get(samId);
+        const isSel = samSelection.has(samId);
+        const cacheKey = isSel ? -1 : samId; // every selected point shares one color
+        let rgb = colorCache.get(cacheKey);
         if (!rgb) {
-          const [r, g, bch] = maskColorRGB(samId);
-          rgb = samSelection.has(samId)
-            ? [r + (1 - r) * SAM_SELECTED_LIFT, g + (1 - g) * SAM_SELECTED_LIFT, bch + (1 - bch) * SAM_SELECTED_LIFT]
-            : [r, g, bch];
-          colorCache.set(samId, rgb);
+          rgb = isSel ? selColor : maskColorRGB(samId);
+          colorCache.set(cacheKey, rgb);
         }
         const o = p * 3;
         colors[o] = rgb[0]; colors[o + 1] = rgb[1]; colors[o + 2] = rgb[2];
