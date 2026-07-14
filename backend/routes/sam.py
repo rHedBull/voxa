@@ -1,14 +1,15 @@
 """Proxy to the SAM sidecar. /capture forwards the pose (+recenter_offset, scan
-identity + resolved cloud paths); /project forwards mask picks, then applies the
-returned scan indices through the shared apply_reassign pipeline (protect_instances
-= confirmed = locked)."""
+identity + resolved cloud paths); /project forwards mask picks, then materializes
+the returned scan indices as SAM candidate segments (sam_ids layer) — NOT
+classified instances. Classification happens later via the shared
+apply_reassign pipeline, from a selection over the materialized candidates."""
 from __future__ import annotations
 import base64, os
 import numpy as np
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.core import _state, _require_seg, _serialize_apply, _coerce_class_id, _resolve, _y_up_to_z_up_xyz
+from app.core import _state, _require_seg, _resolve, _y_up_to_z_up_xyz, _b64
 from app.schemas import SamCaptureRequest, SamProjectRequest
 
 router = APIRouter()
@@ -67,12 +68,12 @@ def sam_capture(req: SamCaptureRequest):
 
 @router.post("/api/sam/project")
 def sam_project(req: SamProjectRequest):
+    """Materialize each accepted mask as a SAM candidate segment — NOT a
+    classified instance. Classification happens later, from the SAM segment
+    list/viewport, through the same apply_reassign path every other tool
+    uses (see mode-label.jsx::confirmSamSelection)."""
     base = _sidecar_url()
     seg = _require_seg()
-    try:
-        target_class = _coerce_class_id(req.target_class)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
     body = {**_identity(), "capture_id": req.capture_id, "mask_ids": req.mask_ids}
     try:
         r = httpx.post(f"{base}/project", json=body, timeout=_TIMEOUT)
@@ -86,7 +87,14 @@ def sam_project(req: SamProjectRequest):
     results = []
     for inst in r.json()["instances"]:
         idx = np.frombuffer(base64.b64decode(inst["scan_indices_b64"]), np.int32)
-        out = seg.apply_reassign(idx, target_inst=-1, target_class=target_class,
-                                 protect_instances=req.protect_instances)
-        results.append({"mask_id": inst["mask_id"], **_serialize_apply(out)})
-    return {"instances": results}
+        out = seg.materialize_sam_segment(idx, protect_instances=req.protect_instances)
+        entry = {
+            "mask_id": inst["mask_id"],
+            "sam_seg_id": out["sam_seg_id"],
+            "n_affected": out["n_affected"],
+            "n_protected": out["n_protected"],
+        }
+        if out.get("indices") is not None:
+            entry["scan_indices_b64"] = _b64(out["indices"].astype(np.int32))
+        results.append(entry)
+    return {"segments": results}

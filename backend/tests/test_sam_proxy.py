@@ -28,9 +28,29 @@ def test_capture_then_project(client_with_loaded_annotated_scene, monkeypatch):
     r = client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
     assert r.status_code == 200 and r.json()["capture_id"] == "c1"
     r2 = client.post("/api/sam/project",
-                     json={"capture_id": "c1", "mask_ids": [0], "target_class": "pipe", "protect_instances": []})
+                     json={"capture_id": "c1", "mask_ids": [0], "protect_instances": []})
     assert r2.status_code == 200
-    assert r2.json()["instances"][0]["n_affected"] >= 0
+    body = r2.json()
+    assert "segments" in body and "instances" not in body
+    seg = body["segments"][0]
+    assert seg["mask_id"] == 0
+    assert seg["sam_seg_id"] == 0
+    assert seg["n_affected"] == 3
+    assert "scan_indices_b64" in seg
+
+def test_project_does_not_call_apply_reassign(client_with_loaded_annotated_scene, monkeypatch):
+    import main
+    client = client_with_loaded_annotated_scene
+    monkeypatch.setenv("VOXA_SAM_SIDECAR_URL", "http://side")
+    monkeypatch.setattr("routes.sam.httpx.post", _fake_post)
+    monkeypatch.setattr("routes.sam._resolve", lambda scene: _Src())
+    cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
+    client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
+    seg = main._state["seg"]
+    before = seg.instance_ids.copy()
+    client.post("/api/sam/project", json={"capture_id": "c1", "mask_ids": [0], "protect_instances": []})
+    assert (seg.instance_ids == before).all()   # untouched — only sam_ids changed
+    assert int(seg.sam_ids[0]) >= 0
 
 def test_capture_applies_georef_offset_zup(client_with_loaded_annotated_scene, monkeypatch):
     client = client_with_loaded_annotated_scene
@@ -72,17 +92,6 @@ def test_sidecar_connection_error_502(client_with_loaded_annotated_scene, monkey
     cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
     r = client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
     assert r.status_code == 502
-
-def test_bad_class_id_400(client_with_loaded_annotated_scene, monkeypatch):
-    client = client_with_loaded_annotated_scene
-    monkeypatch.setenv("VOXA_SAM_SIDECAR_URL", "http://side")
-    monkeypatch.setattr("routes.sam.httpx.post", _fake_post)
-    monkeypatch.setattr("routes.sam._resolve", lambda scene: _Src())
-    cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
-    client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
-    r = client.post("/api/sam/project",
-                    json={"capture_id": "c1", "mask_ids": [0], "target_class": "not_a_class", "protect_instances": []})
-    assert r.status_code == 400
 
 def test_sidecar_409_passthrough(client_with_loaded_annotated_scene, monkeypatch):
     client = client_with_loaded_annotated_scene
