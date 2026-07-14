@@ -258,8 +258,11 @@ def load_working_arrays(
 def load_sam_ids(session_dir: Path, n_points: int) -> Optional[np.ndarray]:
     """Return the SAM candidate layer (int32) if working_sam_ids.npy exists,
     or None if absent (a session with no SAM captures yet — caller defaults
-    to all -1). A present-but-wrong-shape file fails loudly (stale/foreign
-    data), matching load_working_arrays' posture for a corrupt file."""
+    to all -1). Unlike load_working_arrays (which soft-fails to None and lets
+    the caller decide, since class_ids/instance_ids are confirmed labels a
+    silent loss of which would be catastrophic), sam_ids is a disposable
+    candidate layer — but a shape-mismatched file still signals a bad/foreign
+    data directory, so this loader raises directly rather than soft-failing."""
     p = session_dir / "working_sam_ids.npy"
     if not p.exists():
         return None

@@ -338,6 +338,29 @@ def test_autosave_writes_working_files_and_session_json(tmp_path):
     assert "is_from_prelabel" not in payload
 
 
+def test_autosave_writes_sam_ids_and_sam_segments(tmp_path):
+    import numpy as np, json
+    from labeling.segment_state import SegmentSession
+    pts = np.zeros((4, 3), dtype=np.float32)
+    s = SegmentSession(
+        class_ids=np.full(4, -1, dtype=np.int8),
+        instance_ids=np.full(4, -1, dtype=np.int32),
+        positions=pts,
+        session_dir=tmp_path,
+        autosave_debounce_s=0.0,
+    )
+    out = s.materialize_sam_segment(np.array([0, 1], dtype=np.int32))
+    s.flush_autosave()
+    assert (tmp_path / "working_sam_ids.npy").exists()
+    assert (tmp_path / "sam_segments.json").exists()
+    sam_ids = np.load(tmp_path / "working_sam_ids.npy")
+    assert int(sam_ids[0]) == out["sam_seg_id"] and int(sam_ids[1]) == out["sam_seg_id"]
+    assert int(sam_ids[2]) == -1 and int(sam_ids[3]) == -1
+    payload = json.loads((tmp_path / "sam_segments.json").read_text())
+    segments = {seg["id"]: seg for seg in payload["segments"]}
+    assert segments[out["sam_seg_id"]]["n_points"] == 2
+
+
 def test_autosave_includes_hidden_and_preseg_run(tmp_path):
     import numpy as np, json
     from labeling.segment_state import SegmentSession
