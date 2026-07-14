@@ -278,8 +278,12 @@ export const VoxaAPI = {
     return {
       materialized: (j.materialized || []).map((m) => ({
         samSegId: m.sam_seg_id, source: m.source, nPoints: m.n_points,
+        indices: m.scan_indices_b64 ? b64ToInt32(m.scan_indices_b64) : null,
       })),
-      instance: j.instance ? { instId: j.instance.instance_id, nPoints: j.instance.n_points } : null,
+      instance: j.instance ? {
+        instId: j.instance.instance_id, nPoints: j.instance.n_points,
+        indices: j.instance.scan_indices_b64 ? b64ToInt32(j.instance.scan_indices_b64) : null,
+      } : null,
       nProtected: j.n_protected,
     };
   },

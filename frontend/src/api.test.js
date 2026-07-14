@@ -361,7 +361,7 @@ describe('centerline API', () => {
       shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
       sources: [{ kind: 'preseg', segId: 3 }],
     });
-    expect(result.materialized[0]).toEqual({ samSegId: 7, source: 'preseg', nPoints: 12 });
+    expect(result.materialized[0]).toEqual({ samSegId: 7, source: 'preseg', nPoints: 12, indices: null });
     expect(result.instance).toBeNull();
     expect(JSON.parse(capturedOpts.body).sources).toEqual([{ kind: 'preseg', seg_id: 3 }]);
   });
@@ -375,8 +375,33 @@ describe('centerline API', () => {
       shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
       sources: [{ kind: 'instance', segId: 5 }],
     });
-    expect(result.instance).toEqual({ instId: 9, nPoints: 4 });
+    expect(result.instance).toEqual({ instId: 9, nPoints: 4, indices: null });
     expect(result.nProtected).toBe(1);
+  });
+
+  it('cutShape decodes scan_indices_b64 into materialized[].indices and instance.indices', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        materialized: [{
+          sam_seg_id: 7, source: 'preseg', n_points: 3,
+          scan_indices_b64: encodeInt32([1, 2, 3]),
+        }],
+        instance: {
+          instance_id: 9, n_points: 3,
+          scan_indices_b64: encodeInt32([1, 2, 3]),
+        },
+        n_protected: 0,
+      }),
+    })));
+    const result = await VoxaAPI.cutShape({
+      shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
+      sources: [{ kind: 'preseg', segId: 3 }],
+    });
+    expect(result.materialized[0].indices).toBeInstanceOf(Int32Array);
+    expect(result.materialized[0].indices).toEqual(Int32Array.from([1, 2, 3]));
+    expect(result.instance.indices).toBeInstanceOf(Int32Array);
+    expect(result.instance.indices).toEqual(Int32Array.from([1, 2, 3]));
   });
 
   it('samProject decodes each sam segment so segment-state can be patched', async () => {
