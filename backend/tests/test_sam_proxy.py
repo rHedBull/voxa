@@ -38,6 +38,20 @@ def test_capture_then_project(client_with_loaded_annotated_scene, monkeypatch):
     assert seg["n_affected"] == 3
     assert "scan_indices_b64" in seg
 
+def test_project_materializes_candidates_with_source_sam(client_with_loaded_annotated_scene, monkeypatch):
+    import main
+    client = client_with_loaded_annotated_scene
+    monkeypatch.setenv("VOXA_SAM_SIDECAR_URL", "http://side")
+    monkeypatch.setattr("routes.sam.httpx.post", _fake_post)
+    monkeypatch.setattr("routes.sam._resolve", lambda scene: _Src())
+    cam = {"pos": [0,0,0], "target": [0,0,1], "fov": 60, "W": 128, "H": 128}
+    client.post("/api/sam/capture", json={"camera": cam, "mode": "box", "box": [0.5,0.5,0.4,0.4]})
+    r2 = client.post("/api/sam/project",
+                     json={"capture_id": "c1", "mask_ids": [0], "protect_instances": []})
+    sam_seg_id = r2.json()["segments"][0]["sam_seg_id"]
+    seg = main._state["seg"]
+    assert seg.sam_segments[sam_seg_id]["source"] == "sam"
+
 def test_project_does_not_call_apply_reassign(client_with_loaded_annotated_scene, monkeypatch):
     import main
     client = client_with_loaded_annotated_scene
