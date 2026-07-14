@@ -117,9 +117,16 @@ tool is active). This is expected, not a bug.
   file names/shape, `source` added to each segment's JSON entry.
 
 **Instance-cut path:** no new backend data — reuses `apply_reassign` exactly
-as Box/Draw/Beam already do, called via the existing generic `reassign` op
-with `target_inst=-1` and `target_class` set to the source instance's class
-(read client-side from `class_ids`/`segState`).
+as Box/Draw/Beam already do, with `target_inst=-1`. Unlike presegment/SAM
+partitioning, this call is made **server-side, from inside `cut-shape`**
+(see Backend routes below), not via the existing generic `reassign` op — the
+existing `reassign` op does not forward `protect_instances` to
+`apply_reassign` (only `/apply-shape` and `/centerline-apply` do today), so
+routing an instance-cut through it would silently break the
+"confirmed = locked" guarantee. `cut-shape` derives `target_class` itself
+server-side (trivial: it already has the source instance's full-res
+`instance_ids == seg_id` mask, so it reads that instance's class directly
+from `class_ids`) — the client never sends a class for the instance case.
 
 ## Backend routes
 
@@ -212,11 +219,17 @@ the already-loaded `segState.instanceFull`/`samIds`/`preseg_ids`-equivalent
 arrays — no new fetch; this drives only the modal's own point coloring/live
 box-preview, not the actual cut (see Backend routes below for how the cut
 itself is resolved at full resolution). Only the Box tool's draw/transform
-interaction (reused from `tool-options.jsx`'s existing Box implementation)
-is available inside. The modal supports multiple cut passes per session:
-draw a box, confirm (round-trips to `cut-shape`), the cut points disappear
-from the modal's remaining cloud, draw another box on what's left, repeat;
-close when done.
+interaction is available inside — box state and logic (`selBox`, transform
+mode, G/R/Y keybindings) currently live inline in `mode-label.jsx`, entangled
+with that file's broader closures (`activeClassDef`, `instances`, the shared
+keydown handler, `protectedSegIds`); `tool-options.jsx`'s `BoxOptions` is
+presentational only. **Extracting the box draw/transform state into a
+reusable piece** (e.g. a hook or small module both `mode-label.jsx` and the
+new modal can call) is in-scope, required groundwork for this spec, not a
+drop-in reuse. The modal supports multiple cut passes per session: draw a
+box, confirm (round-trips to `cut-shape`), the cut points disappear from the
+modal's remaining cloud, draw another box on what's left, repeat; close when
+done.
 
 **Cut-confirm flow:**
 
