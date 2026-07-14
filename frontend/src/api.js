@@ -205,6 +205,8 @@ export const VoxaAPI = {
       hullVertices: j.hull_vertices ? b64ToFloat32(j.hull_vertices) : null,
       hullFaces: j.hull_faces ? b64ToInt32(j.hull_faces) : null,
       hullFaceSeg: j.hull_face_seg ? b64ToInt32(j.hull_face_seg) : null,
+      fullSamIds: j.full_sam_ids ? b64ToInt32(j.full_sam_ids) : null,
+      samSegments: j.sam_segments || [],
     };
   },
   async listSessions(scene) {
@@ -268,19 +270,21 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`samCapture failed: ${r.status} ${await r.text()}`);
     return r.json();
   },
-  async samProject({ captureId, maskIds, targetClass, protectInstances = [] }) {
+  async samProject({ captureId, maskIds, protectInstances = [] }) {
     const r = await fetch('/api/sam/project', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ capture_id: captureId, mask_ids: maskIds,
-                             target_class: targetClass, protect_instances: protectInstances }),
+                             protect_instances: protectInstances }),
     });
     if (!r.ok) throw new Error(`samProject failed: ${r.status} ${await r.text()}`);
     const j = await r.json();
     return {
-      instances: (j.instances || []).map((inst) => ({
-        maskId: inst.mask_id,
-        ..._decodeApplyResponse(inst),
-        instanceId: inst.new_instance_id ?? null,
+      segments: (j.segments || []).map((s) => ({
+        maskId: s.mask_id,
+        samSegId: s.sam_seg_id,
+        nAffected: s.n_affected,
+        nProtected: s.n_protected,
+        indices: s.scan_indices_b64 ? b64ToInt32(s.scan_indices_b64) : null,
       })),
     };
   },
