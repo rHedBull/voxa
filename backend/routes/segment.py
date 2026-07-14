@@ -163,6 +163,66 @@ def centerline_apply(req: CenterlineApplyRequest):
     return _apply_shape_core(seg, shape, req.target_inst, target_class,
                              req.merged_from, req.protect_instances)
 
+def _cut_shape_core(seg, shape: dict, sources: list, protect_instances: list[int] | None) -> dict:
+    """Shared core for /cut-shape: resolve `shape` to full-res indices, then
+    partition that index set per `sources` entry against that source's own
+    full-res membership (preseg_ids / sam_ids / instance_ids), and
+    materialize each non-empty partition — preseg/sam partitions become new
+    sam-layer candidates, an instance partition becomes a freshly classified
+    pointset that inherits the source instance's class. Sources never merge:
+    each partition is materialized independently, one entry per non-empty
+    source."""
+    from labeling.shapes import shape_indices
+    idx = shape_indices(np.asarray(seg.positions), shape)
+    materialized: list[dict] = []
+    instance_out: dict | None = None
+    n_protected = 0
+    if idx.size == 0:
+        return {"materialized": materialized, "instance": instance_out, "n_protected": 0}
+    for src in sources:
+        if src.kind == "preseg":
+            membership = seg.preseg_ids == src.seg_id
+        elif src.kind == "sam":
+            membership = seg.sam_ids == src.seg_id
+        elif src.kind == "instance":
+            membership = seg.instance_ids == src.seg_id
+        else:
+            raise ValueError(f"unknown source kind: {src.kind!r}")
+        partition = idx[membership[idx]]
+        if partition.size == 0:
+            continue
+        if src.kind in ("preseg", "sam"):
+            out = seg.materialize_sam_segment(partition, source=src.kind,
+                                              protect_instances=protect_instances)
+            n_protected += out.get("n_protected", 0)
+            if out["sam_seg_id"] is None:
+                continue
+            materialized.append({"sam_seg_id": out["sam_seg_id"], "source": src.kind,
+                                 "n_points": out["n_affected"]})
+        else:  # instance
+            src_class = int(seg.class_ids[np.flatnonzero(membership)[0]])
+            out = seg.apply_reassign(partition, target_inst=-1, target_class=src_class,
+                                     protect_instances=protect_instances)
+            n_protected += out.get("n_protected", 0)
+            if out["n_affected"] == 0:
+                continue
+            instance_out = {"instance_id": out["new_instance_id"], "n_points": out["n_affected"]}
+    return {"materialized": materialized, "instance": instance_out, "n_protected": n_protected}
+
+
+@router.post("/api/segment/cut-shape")
+def cut_shape(req: CutShapeRequest):
+    """Cut a client-drawn shape out of one or more source selections
+    (presegments / SAM candidates / an instance), preserving the source
+    boundary — points are partitioned per source before materializing, never
+    merged across sources. See docs/superpowers/specs/2026-07-14-cut-selection-tool-design.md."""
+    seg = _require_seg()
+    try:
+        return _cut_shape_core(seg, req.shape, req.sources, req.protect_instances)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 def _require_session_seg():
     """Active SegmentSession that has a session dir (409 otherwise) — shared
     by the centerline/structure persistence routes."""
