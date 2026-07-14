@@ -136,11 +136,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     if (activeTool !== 'box') setSelBox(null);
   }, [activeTool]);
 
-  // SAM candidate selection belongs to the SAM tool only; leaving SAM must clear
-  // it so a stale selection can't silently get confirmed if the user returns
+  // SAM candidate selection belongs to the SAM tool AND the Presegment tool
+  // (source:'preseg'-tagged cut candidates render/select there too — see
+  // segment-tools.jsx::PresegmentList). Leaving both must clear it so a stale
+  // selection can't silently get confirmed if the user returns to either tool
   // and hits Ctrl+Enter / a class hotkey without re-selecting.
   useEffectLabel(() => {
-    if (activeTool !== 'sam') {
+    if (activeTool !== 'sam' && activeTool !== 'presegment') {
       setSegState((s) => (s && s.samSelection.size > 0 ? { ...s, samSelection: new Set() } : s));
     }
   }, [activeTool, setSegState]);
@@ -1072,10 +1074,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         e.preventDefault();
         if ((segState && segState.selection.size > 0)
           || (activeTool === 'box' && selBox)
-          || (activeTool === 'sam' && segState && segState.samSelection.size > 0)) {
+          || ((activeTool === 'sam' || activeTool === 'presegment') && segState && segState.samSelection.size > 0)) {
           // Open the class picker so the user can quick-pick the class for the
           // new (unconfirmed) pointset. In Box mode this routes to applyBox;
-          // in SAM mode to confirmSamSelection; otherwise to confirmSegmentSelection.
+          // in SAM mode (or a Presegment-tool cut-candidate selection) to
+          // confirmSamSelection; otherwise to confirmSegmentSelection.
           setClassPickerOpen(true);
         } else if (activeTool === 'box') {
           toggleConfirmSelected();
@@ -1091,7 +1094,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       // with no selection it just sets the active class.
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
-        if (activeTool === 'sam' && segState && segState.samSelection.size > 0) {
+        if ((activeTool === 'sam' || activeTool === 'presegment')
+          && segState && segState.samSelection.size > 0) {
           e.preventDefault();
           confirmSamSelection(cls);
         } else if (segState && segState.selection.size > 0) {
@@ -1156,7 +1160,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           counts={counts}
           onPick={(cls) => {
             setClassPickerOpen(false);
-            if (activeTool === 'sam' && segState && segState.samSelection.size > 0) confirmSamSelection(cls);
+            if ((activeTool === 'sam' || activeTool === 'presegment')
+              && segState && segState.samSelection.size > 0) confirmSamSelection(cls);
             else if (activeTool === 'box' && selBox) applyBox(cls);
             else confirmSegmentSelection(cls);
           }}

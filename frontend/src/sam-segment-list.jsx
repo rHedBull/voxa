@@ -16,9 +16,15 @@ export function toggleSamSelection(samSelection, samSegId) {
 export function SamSegmentList({ segState, setSegState, onEditSelection = null }) {
   const [cutMenu, setCutMenu] = useState(null); // {x, y} | null
 
+  // Only 'sam'-sourced candidates belong here — 'preseg'-sourced cut
+  // candidates (source:'preseg') render in PresegmentList instead (see
+  // segment-tools.jsx). `source == null` is kept as a defensive fallback for
+  // any pre-existing entry that predates the source tag, though
+  // materialize_sam_segment has always required it server-side.
   const segments = useMemo(() => {
     if (!segState) return [];
     return Array.from(segState.samSegments.entries())
+      .filter(([, meta]) => meta.source === 'sam' || meta.source == null)
       .map(([id, meta]) => ({ id, ...meta }))
       .sort((a, b) => b.nPoints - a.nPoints);
   }, [segState]);

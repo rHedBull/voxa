@@ -19,6 +19,28 @@ function makeSegState(samSelection) {
   };
 }
 
+test('a preseg-sourced cut candidate does not render in the SAM list, mislabeled or otherwise', () => {
+  const segState = {
+    samSegments: new Map([
+      [1, { nPoints: 100, source: 'sam' }],
+      [0, { nPoints: 6723, source: 'preseg' }], // cut candidate, same id space as a real SAM row
+    ]),
+    samSelection: new Set(),
+  };
+  render(<SamSegmentList segState={segState} setSegState={() => {}} />);
+  expect(screen.getByText('SAM #1')).toBeTruthy();
+  expect(screen.queryByText('SAM #0')).toBeNull();
+});
+
+test('an entry with no source tag (pre-existing data) still renders, for backward compatibility', () => {
+  const segState = {
+    samSegments: new Map([[3, { nPoints: 10 }]]), // no `source` key at all
+    samSelection: new Set(),
+  };
+  render(<SamSegmentList segState={segState} setSegState={() => {}} />);
+  expect(screen.getByText('SAM #3')).toBeTruthy();
+});
+
 test('right-clicking a row opens the context menu with "Edit selection…"', () => {
   const segState = makeSegState(new Set());
   render(<SamSegmentList segState={segState} setSegState={() => {}} />);
