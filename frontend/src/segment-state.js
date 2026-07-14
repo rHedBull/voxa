@@ -1,6 +1,7 @@
 export function initSegState({
   classFull, instanceFull, isFromPrelabel = false,
   segBoxes = null, segHulls = null,
+  samIds = null, samSegments = [],
 }) {
   return {
     classFull,
@@ -18,6 +19,13 @@ export function initSegState({
     // Living on the state keeps it session-scoped structurally: a scene or
     // session switch rebuilds the state and drops these with it.
     dormant: new Map(),
+    // SAM candidate layer — parallel to instanceFull, never merged into it.
+    // A point can carry a sam id with no class (unlike instanceFull, which
+    // always pairs with a real classFull entry once >= 0).
+    samIds: samIds || new Int32Array(classFull.length).fill(-1),
+    samSegments: new Map(samSegments.map((s) =>
+      [s.id, { nPoints: s.n_points, maskScore: s.mask_score ?? null }])),
+    samSelection: new Set(),
   };
 }
 
@@ -27,6 +35,48 @@ export function applyDelta(state, { indices, after_class, after_instance }) {
     state.instanceFull[indices[k]] = after_instance[k];
   }
   return { ...state, summary: deriveSummary(state.classFull, state.instanceFull), dirty: true };
+}
+
+// The SAM-layer analogue of applyDelta: writes samSegId at each index and
+// shrinks/drops any older candidate those indices used to belong to
+// (last-materialize-wins, mirrors SegmentSession._retire_sam_ids).
+export function applySamDelta(state, { indices, samSegId }) {
+  const samIds = state.samIds.slice();
+  const shrink = new Map();
+  for (let k = 0; k < indices.length; k++) {
+    const old = samIds[indices[k]];
+    if (old >= 0 && old !== samSegId) shrink.set(old, (shrink.get(old) || 0) + 1);
+    samIds[indices[k]] = samSegId;
+  }
+  const samSegments = new Map(state.samSegments);
+  for (const [oldId, removed] of shrink) {
+    const entry = samSegments.get(oldId);
+    if (!entry) continue;
+    const nPoints = entry.nPoints - removed;
+    if (nPoints <= 0) samSegments.delete(oldId);
+    else samSegments.set(oldId, { ...entry, nPoints });
+  }
+  samSegments.set(samSegId, { nPoints: indices.length, maskScore: null });
+  return { ...state, samIds, samSegments };
+}
+
+// After classifying a SAM selection, retire the absorbed candidates: clear
+// their samIds entries and drop them from samSegments/samSelection so they
+// vanish from the SAM segment list (mirrors presegments disappearing via
+// promotedSegIds once absorbed into an instance).
+export function reconcileSamAfterApply(state, appliedSamSegIds) {
+  if (!appliedSamSegIds || appliedSamSegIds.size === 0) return state;
+  const samIds = state.samIds.slice();
+  for (let p = 0; p < samIds.length; p++) {
+    if (appliedSamSegIds.has(samIds[p])) samIds[p] = -1;
+  }
+  const samSegments = new Map(state.samSegments);
+  const samSelection = new Set(state.samSelection);
+  for (const id of appliedSamSegIds) {
+    samSegments.delete(id);
+    samSelection.delete(id);
+  }
+  return { ...state, samIds, samSegments, samSelection };
 }
 
 export function recomputeSummary(state) {

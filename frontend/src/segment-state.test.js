@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta } from './segment-state.js';
+import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply } from './segment-state.js';
 
 const seed = () => initSegState({
   classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
@@ -175,5 +175,77 @@ describe('applyUndoRedoDelta', () => {
       after_instance: new Int32Array([1]),
     }, [{ id: 'i1', kind: 'pointset', segId: 1 }]);
     expect(out.rows).toBeNull();
+  });
+});
+
+describe('SAM candidate layer', () => {
+  it('initSegState defaults samIds to all -1 and samSegments/samSelection empty', () => {
+    const classFull = new Int8Array([-1, -1, -1]);
+    const instanceFull = new Int32Array([-1, -1, -1]);
+    const s = initSegState({ classFull, instanceFull });
+    expect(Array.from(s.samIds)).toEqual([-1, -1, -1]);
+    expect(s.samSegments.size).toBe(0);
+    expect(s.samSelection.size).toBe(0);
+  });
+
+  it('initSegState hydrates samIds/samSegments when provided', () => {
+    const classFull = new Int8Array([-1, -1]);
+    const instanceFull = new Int32Array([-1, -1]);
+    const samIds = new Int32Array([3, 3]);
+    const s = initSegState({
+      classFull, instanceFull, samIds,
+      samSegments: [{ id: 3, n_points: 2, mask_score: 0.5 }],
+    });
+    expect(Array.from(s.samIds)).toEqual([3, 3]);
+    expect(s.samSegments.get(3)).toEqual({ nPoints: 2, maskScore: 0.5 });
+  });
+
+  it('applySamDelta writes the new sam id at the given indices', () => {
+    const classFull = new Int8Array([-1, -1, -1]);
+    const instanceFull = new Int32Array([-1, -1, -1]);
+    const s = initSegState({ classFull, instanceFull });
+    const next = applySamDelta(s, { indices: [0, 2], samSegId: 5 });
+    expect(Array.from(next.samIds)).toEqual([5, -1, 5]);
+    expect(next.samSegments.get(5)).toEqual({ nPoints: 2, maskScore: null });
+  });
+
+  it('applySamDelta shrinks an overlapping older candidate', () => {
+    const classFull = new Int8Array([-1, -1]);
+    const instanceFull = new Int32Array([-1, -1]);
+    let s = initSegState({ classFull, instanceFull });
+    s = applySamDelta(s, { indices: [0, 1], samSegId: 1 });
+    s = applySamDelta(s, { indices: [1], samSegId: 2 });   // overlaps id 1 at index 1
+    expect(Array.from(s.samIds)).toEqual([1, 2]);
+    expect(s.samSegments.get(1)).toEqual({ nPoints: 1, maskScore: null });
+    expect(s.samSegments.get(2)).toEqual({ nPoints: 1, maskScore: null });
+  });
+
+  it('applySamDelta drops a fully-overlapped older candidate', () => {
+    const classFull = new Int8Array([-1]);
+    const instanceFull = new Int32Array([-1]);
+    let s = initSegState({ classFull, instanceFull });
+    s = applySamDelta(s, { indices: [0], samSegId: 1 });
+    s = applySamDelta(s, { indices: [0], samSegId: 2 });
+    expect(s.samSegments.has(1)).toBe(false);
+    expect(s.samSegments.get(2)).toEqual({ nPoints: 1, maskScore: null });
+  });
+
+  it('reconcileSamAfterApply clears samIds and removes samSegments/samSelection entries', () => {
+    const classFull = new Int8Array([-1, -1]);
+    const instanceFull = new Int32Array([-1, -1]);
+    let s = initSegState({ classFull, instanceFull });
+    s = applySamDelta(s, { indices: [0, 1], samSegId: 4 });
+    s = { ...s, samSelection: new Set([4]) };
+    const next = reconcileSamAfterApply(s, new Set([4]));
+    expect(Array.from(next.samIds)).toEqual([-1, -1]);
+    expect(next.samSegments.has(4)).toBe(false);
+    expect(next.samSelection.has(4)).toBe(false);
+  });
+
+  it('reconcileSamAfterApply is a no-op for an empty id set', () => {
+    const classFull = new Int8Array([-1]);
+    const instanceFull = new Int32Array([-1]);
+    const s = initSegState({ classFull, instanceFull });
+    expect(reconcileSamAfterApply(s, new Set())).toBe(s);
   });
 });
