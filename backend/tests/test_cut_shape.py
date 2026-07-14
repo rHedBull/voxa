@@ -9,7 +9,13 @@ equal to that partition (see session_store.create_session).
 """
 from __future__ import annotations
 
+import base64
+
 import numpy as np
+
+
+def _decode_indices(b64: str) -> np.ndarray:
+    return np.frombuffer(base64.b64decode(b64), dtype=np.int32)
 
 
 def _huge_obb(**over):
@@ -41,6 +47,12 @@ def test_cut_shape_partitions_two_presegments(client_with_loaded_annotated_scene
     assert sorted(m["n_points"] for m in j["materialized"]) == [2, 2]
     assert j["instance"] is None
 
+    # scan_indices_b64 must decode to the exact per-source point partition,
+    # not just the right count — cluster 0 = {1,2}, cluster 1 = {3,4}.
+    decoded_sets = [frozenset(_decode_indices(m["scan_indices_b64"]).tolist())
+                    for m in j["materialized"]]
+    assert sorted(decoded_sets, key=sorted) == [frozenset({1, 2}), frozenset({3, 4})]
+
 
 def test_cut_shape_instance_source_inherits_class(client_with_loaded_annotated_scene):
     import main
@@ -63,6 +75,9 @@ def test_cut_shape_instance_source_inherits_class(client_with_loaded_annotated_s
     new_mask = seg.instance_ids == new_id
     assert new_mask.any()
     assert (seg.class_ids[new_mask] == src_class).all()
+
+    decoded = _decode_indices(j["instance"]["scan_indices_b64"])
+    assert sorted(decoded.tolist()) == sorted(np.flatnonzero(new_mask).tolist())
 
 
 def test_cut_shape_instance_source_protect_instances_blocks_self(

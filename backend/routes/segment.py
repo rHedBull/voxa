@@ -201,7 +201,8 @@ def _cut_shape_core(seg, shape: dict, sources: list, protect_instances: list[int
             if out["sam_seg_id"] is None:
                 continue
             materialized.append({"sam_seg_id": out["sam_seg_id"], "source": src.kind,
-                                 "n_points": out["n_affected"]})
+                                 "n_points": out["n_affected"],
+                                 "scan_indices_b64": _b64(out["indices"].astype(np.int32))})
         else:  # instance
             src_class = int(seg.class_ids[np.flatnonzero(membership)[0]])
             out = seg.apply_reassign(partition, target_inst=-1, target_class=src_class,
@@ -209,7 +210,8 @@ def _cut_shape_core(seg, shape: dict, sources: list, protect_instances: list[int
             n_protected += out.get("n_protected", 0)
             if out["n_affected"] == 0:
                 continue
-            instance_out = {"instance_id": out["new_instance_id"], "n_points": out["n_affected"]}
+            instance_out = {"instance_id": out["new_instance_id"], "n_points": out["n_affected"],
+                            "scan_indices_b64": _b64(out["indices"].astype(np.int32))}
     return {"materialized": materialized, "instance": instance_out, "n_protected": n_protected}
 
 
