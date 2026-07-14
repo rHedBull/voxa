@@ -159,6 +159,7 @@ class SegmentSession:
 
     def materialize_sam_segment(
         self, indices: np.ndarray,
+        source: str,
         protect_instances: Optional[list[int]] = None,
         mask_score: Optional[float] = None,
     ) -> dict:
@@ -188,6 +189,7 @@ class SegmentSession:
         from labeling.segment_io import utc_now_iso
         self.sam_segments[sam_seg_id] = {
             "n_points": int(indices.size),
+            "source": source,
             "mask_score": mask_score,
             "created_at": utc_now_iso(),
         }
