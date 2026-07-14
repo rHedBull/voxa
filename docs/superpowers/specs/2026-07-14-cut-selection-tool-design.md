@@ -123,20 +123,48 @@ with `target_inst=-1` and `target_class` set to the source instance's class
 
 ## Backend routes
 
-**New generic endpoint** `POST /api/segment/materialize-candidate`
-(`backend/routes/segment.py`): accepts `{indices: int[], source: 'preseg'|'sam',
-protect_instances?: int[]}`, calls `SegmentSession.materialize_sam_segment`
-directly, returns `{sam_seg_id, n_points, n_protected}`. This is needed
-because today `materialize_sam_segment` is only reachable from inside
-`/api/sam/project`'s SAM-capture flow — cutting has no capture/mask step, it
-already has raw point indices computed client-side (box-containment test
-inside the isolated modal), so it needs a direct materialize path. One call
-per partitioned source-group from a single cut (i.e. a cut spanning
-presegments A and B issues two `materialize-candidate` calls).
+**New endpoint** `POST /api/segment/cut-shape` (`backend/routes/segment.py`):
+the modal sends the drawn **OBB**, not point indices — the render cloud
+feeding the isolated modal's `Viewer` is the same subsampled cloud as the
+main viewport (capped by `VOXA_MAX_POINTS`), so a client-side containment
+test alone would cut against the wrong precision. This follows the exact
+precedent CLAUDE.md documents for Box/Draw/Beam ("this is why Box/Draw need
+the backend — the rendered cloud is subsampled but labels are full-res"):
+`apply-shape` never trusts client-side containment for the actual write,
+and neither does this.
 
-**Instance-cut path:** no new route — reuses
-`VoxaAPI.segApply('reassign', {indices, payload: {target_inst: -1,
-target_class}})`, the same call presegment/SAM classification already makes.
+Request: `{shape: {type:'obb', center, size, rotation}, sources: [{kind:
+'preseg'|'sam'|'instance', seg_id: int}], protect_instances?: int[]}` — the
+`sources` list is exactly the set of segments/instance the modal was opened
+over (client already knows this from what was selected when the modal
+opened). Server-side:
+
+1. Resolve the OBB against **full-res session positions** via the existing
+   `shapes.py::shape_indices` (same call `apply-shape` already makes) —
+   yields one full-res index set for the whole box, at full precision.
+2. For each entry in `sources`, intersect that index set with the source's
+   own full-res membership (`preseg_ids == seg_id`, `sam_ids == seg_id`, or
+   `instance_ids == seg_id`) to get that source's partition. This is the
+   full-res equivalent of the client-side per-source tagging described
+   above — same partitioning logic, just computed against real indices
+   instead of the modal's render-subset tags.
+3. For each non-empty partition: `kind: preseg`/`sam` →
+   `SegmentSession.materialize_sam_segment(indices, source=kind,
+   protect_instances=...)`; `kind: instance` → `apply_reassign(indices,
+   target_inst=-1, target_class=<source instance's class>,
+   protect_instances=...)`.
+4. Response: `{materialized: [{sam_seg_id, source, n_points}], instance:
+   {inst_id, n_points} | null, n_protected}` — one entry per non-empty
+   partition, so the frontend can patch `samIds`/add `sam_segments` rows and
+   `applyDelta` the instance case in one round trip, mirroring how
+   `apply-shape`'s response already drives `mode-label.jsx`'s post-apply
+   state updates today.
+
+The modal's own `pointsInsideOBB` (client-side, against the subsampled
+render cloud) still runs — but only to give the user live visual feedback of
+what the box currently covers while dragging/resizing it, exactly like the
+Box tool's existing live preview. The actual cut is always resolved
+server-side on confirm.
 
 **Existing `/api/sam/project`:** unchanged except its internal call to
 `materialize_sam_segment` now passes `source: 'sam'` explicitly.
@@ -155,16 +183,21 @@ as today) already drives the corresponding list's selection state; the user
 right-clicks the populated row(s) in the list to open the menu. Behavior
 depends on what's selected when triggered:
 
-- **Presegment/SAM multi-select** (any mix of presegment and SAM rows, one or
-  more): enabled. Opens the cut modal over the union of their points.
+- **Presegment multi-select, or SAM multi-select** (one or more rows, all
+  from the *same* currently-visible list): enabled. Opens the cut modal over
+  the union of their points. **Mixed presegment+SAM selection is not
+  supported** — `PresegmentList` and `SamSegmentList` are never both visible
+  at once (each gated on `activeTool`) and their selection sets aren't kept
+  symmetric across tool switches (`samSelection` is explicitly cleared on
+  leaving the SAM tool; presegment `selection` is not), so a "mixed"
+  selection could only arise from a stale, invisible leftover — not a real
+  user choice. The trigger only ever considers the selection belonging to
+  the list the right-clicked row is in.
 - **Single instance selected, nothing else:** enabled. Opens the cut modal
   over just that instance's points. (The Instances panel has no multi-select
   today — `mode-label.jsx`'s instance selection is a single `selectedId`
   scalar, not a Set — so "more than one instance" is not a reachable state;
   no changes to Instances-panel selection are in scope for this spec.)
-- **Instance mixed with a presegment/SAM selection:** disabled — instance
-  cuts are single-instance only, kept structurally separate from the
-  multi-source preseg/SAM partitioning flow.
 - **Confirmed instance:** disabled (existing "confirmed = locked" rule — must
   un-confirm first via existing UI).
 
@@ -176,30 +209,29 @@ points, with its own camera/orbit state independent of the main viewport.
 Each point in the filtered cloud carries its originating segment id (and
 whether that source is `preseg`/`sam`/`instance`), computed client-side from
 the already-loaded `segState.instanceFull`/`samIds`/`preseg_ids`-equivalent
-arrays — no new fetch. Only the Box tool's draw/transform interaction
-(reused from `tool-options.jsx`'s existing Box implementation) is available
-inside. The modal supports multiple cut passes per session: draw a box,
-confirm, the cut points disappear from the modal's remaining cloud, draw
-another box on what's left, repeat; close when done.
+arrays — no new fetch; this drives only the modal's own point coloring/live
+box-preview, not the actual cut (see Backend routes below for how the cut
+itself is resolved at full resolution). Only the Box tool's draw/transform
+interaction (reused from `tool-options.jsx`'s existing Box implementation)
+is available inside. The modal supports multiple cut passes per session:
+draw a box, confirm (round-trips to `cut-shape`), the cut points disappear
+from the modal's remaining cloud, draw another box on what's left, repeat;
+close when done.
 
 **Cut-confirm flow:**
 
-1. Box-containment test (`pointsInsideOBB`) runs scoped to the isolated
-   subset, producing an index set.
-2. Partition that index set by each point's tagged original source segment.
-3. For each partition:
-   - `source: preseg` or `source: sam` → `POST
-     /api/segment/materialize-candidate` with that partition's indices and
-     the matching `source` tag. Frontend patches `segState.samIds`
-     (`applySamDelta`, already exists) and adds a `sam_segments` entry with
-     the returned `sam_seg_id` — the new row shows up immediately in the
-     Presegment list or SAM list per its tag.
-   - `source: instance` (only ever one partition, since instance cuts are
-     single-instance only) → `segApply('reassign', {indices, payload:
-     {target_inst: -1, target_class: <source class>}})`, same handling as
-     any other apply (new unconfirmed pointset row, `applyDelta`).
-4. Remainder points (not enclosed by the box) are left untouched in whichever
-   layer they already lived in — no write happens for them at all.
+1. The drawn OBB (center/size/rotation, already computed by the reused
+   Box-tool code) plus the modal's `sources` list is sent to
+   `POST /api/segment/cut-shape`.
+2. On response, for each `materialized` entry: frontend patches
+   `segState.samIds` (`applySamDelta`, already exists) and adds a
+   `sam_segments` entry with the returned `sam_seg_id` — the new row shows
+   up immediately in the Presegment list or SAM list per its `source` tag.
+   For the `instance` entry (if present): `applyDelta`-equivalent handling,
+   same as any other apply (new unconfirmed pointset row).
+3. Remainder points (not enclosed by the box, per the server's full-res
+   resolution) are left untouched in whichever layer they already lived in —
+   no write happens for them at all.
 
 **Right-click context menu:** a small new shared component, invoked from the
 three list row types only (see Trigger above — no viewport right-click).
@@ -237,15 +269,17 @@ rules above.
 
 - **Backend:** `materialize_sam_segment` with the new `source` parameter
   (defaults, tag round-trips through `sam_segments.json`); new
-  `/api/segment/materialize-candidate` route test (indices → candidate,
-  `protect_instances` dropping, `source` validation rejects unknown values);
+  `/api/segment/cut-shape` route test (OBB spanning two presegments →
+  two `materialized` entries with correct per-source point counts computed
+  against full-res positions, not the subsampled render count;
+  `protect_instances` dropping; instance-source case returns the `instance`
+  entry with the inherited class; empty-partition sources produce no entry);
   existing `/api/sam/project` tests updated to assert `source: 'sam'` is set
   on the entries it creates.
-- **Frontend:** cut-partitioning pure function (given tagged indices, splits
-  correctly by source segment id) — this is the core correctness property
-  from the A/B example and should be unit-tested directly; right-click menu
-  enable/disable logic per the selection-scope rules above; modal cloud
-  filtering (given a selection, produces the right point subset + tags).
+- **Frontend:** right-click menu enable/disable logic per the selection-scope
+  rules above; modal cloud filtering (given a selection, produces the right
+  point subset + tags for live preview); `cut-shape` response handling
+  (patches `samIds`/`sam_segments`/instance state correctly per entry).
 - **End-to-end:** browser-verify on a throwaway session — multi-select two
   presegments, cut a box spanning both, confirm two new presegment-list rows
   appear (point-recolored, no hull) with the correct point counts, and that
