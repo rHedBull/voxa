@@ -249,13 +249,21 @@ export default function SamMode({
         maskIds: [...chosen],
         protectInstances: protectInstancesRef.current,
       });
+      let nProtected = 0;
       for (const seg of res.segments || []) {
+        nProtected += seg.nProtected || 0;
         if (seg.indices) {
           setSegState?.((s) => (s ? applySamDelta(s, {
             indices: seg.indices,
             samSegId: seg.samSegId,
           }) : s));
         }
+      }
+      // Mirrors draw-mode.jsx/beam-mode.jsx: a mask that landed entirely (or
+      // partly) on already-confirmed points is silently narrowed by
+      // protect_instances — "confirmed = locked" must fail loud, not silent.
+      if (nProtected > 0) {
+        setError(`${nProtected} point(s) locked in a confirmed instance`);
       }
       setCapture(null);
       setChosen(new Set());

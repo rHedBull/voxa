@@ -21,6 +21,34 @@ describe('segment-state', () => {
     expect(next.dirty).toBe(true);
   });
 
+  it('applyDelta retires SAM candidacy for points it labels (any tool, not just SAM confirm)', () => {
+    let s = seed();
+    s = applySamDelta(s, { indices: [0, 6], samSegId: 5 });
+    expect(Array.from(s.samIds)).toEqual([5, -1, -1, -1, -1, -1, 5, -1]);
+    // A non-SAM apply (e.g. Box/Draw/Beam/Presegment confirm) labels point 6 —
+    // its SAM candidacy must be retired even though this isn't confirmSamSelection.
+    const next = applyDelta(s, {
+      indices: new Int32Array([6]),
+      after_class: new Int8Array([1]),
+      after_instance: new Int32Array([3]),
+    });
+    expect(next.samIds[6]).toBe(-1);
+    expect(next.samIds[0]).toBe(5); // untouched point keeps its candidacy
+    expect(next.samSegments.get(5)).toEqual({ nPoints: 1, maskScore: null });
+  });
+
+  it('applyDelta is a no-op on samIds/samSegments/samSelection when no touched point has SAM candidacy', () => {
+    const s = seed();
+    const next = applyDelta(s, {
+      indices: new Int32Array([1]),
+      after_class: new Int8Array([2]),
+      after_instance: new Int32Array([0]),
+    });
+    expect(next.samIds).toBe(s.samIds);
+    expect(next.samSegments).toBe(s.samSegments);
+    expect(next.samSelection).toBe(s.samSelection);
+  });
+
   it('recomputeSummary derives per-instance counts', () => {
     const s = seed();
     const sum = recomputeSummary(s);

@@ -34,7 +34,38 @@ export function applyDelta(state, { indices, after_class, after_instance }) {
     state.classFull[indices[k]] = after_class[k];
     state.instanceFull[indices[k]] = after_instance[k];
   }
-  return { ...state, summary: deriveSummary(state.classFull, state.instanceFull), dirty: true };
+  const retired = retireSamIdsForIndices(state, indices);
+  return { ...retired, summary: deriveSummary(state.classFull, state.instanceFull), dirty: true };
+}
+
+// Any apply (box/draw/beam/presegment/SAM-confirm, and undo/redo replaying a
+// delta) retires SAM candidacy for the points it touches — mirrors the
+// backend's SegmentSession._apply calling _retire_sam_ids unconditionally.
+// Without this, segState.samIds/samSegments would go stale (phantom
+// candidates in the cyan overlay/SAM segments list) the moment another tool
+// labels over points a SAM mask had claimed. No-ops (returns state as-is,
+// no copy) when none of the indices currently carry a live sam id.
+function retireSamIdsForIndices(state, indices) {
+  const shrink = new Map();
+  for (let k = 0; k < indices.length; k++) {
+    const old = state.samIds[indices[k]];
+    if (old >= 0) shrink.set(old, (shrink.get(old) || 0) + 1);
+  }
+  if (shrink.size === 0) return state;
+  const samIds = state.samIds.slice();
+  for (let k = 0; k < indices.length; k++) {
+    if (samIds[indices[k]] >= 0) samIds[indices[k]] = -1;
+  }
+  const samSegments = new Map(state.samSegments);
+  const samSelection = new Set(state.samSelection);
+  for (const [oldId, removed] of shrink) {
+    const entry = samSegments.get(oldId);
+    if (!entry) continue;
+    const nPoints = entry.nPoints - removed;
+    if (nPoints <= 0) { samSegments.delete(oldId); samSelection.delete(oldId); }
+    else samSegments.set(oldId, { ...entry, nPoints });
+  }
+  return { ...state, samIds, samSegments, samSelection };
 }
 
 // The SAM-layer analogue of applyDelta: writes samSegId at each index and
