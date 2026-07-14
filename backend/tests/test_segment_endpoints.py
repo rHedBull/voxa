@@ -378,3 +378,14 @@ def test_resume_session_raises_on_sam_ids_shape_mismatch(client_with_loaded_anno
 
     with pytest.raises(ValueError):
         client.post("/api/load", json={"name": scene_id, "max_points": 100})
+
+
+def test_segment_state_includes_full_sam_ids_and_sam_segments(
+    client_with_loaded_annotated_scene,
+):
+    client = client_with_loaded_annotated_scene
+    r = client.get("/api/segment/state")
+    body = r.json()
+    assert "full_sam_ids" in body
+    assert "sam_segments" in body
+    assert body["sam_segments"] == []  # nothing materialized yet
