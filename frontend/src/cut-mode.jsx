@@ -110,6 +110,10 @@ function bboxOf(positions) {
 export default function CutModal({
   segState, cloud, sources, protectInstances = [], theme, onClose, onCutConfirmed,
 }) {
+  // Auto-framing already happens on every cloud change via viewerCloud's
+  // bbox (Viewer's own cloud-load effect calls controller.frame() from it),
+  // so this ref has no imperative caller today — kept for future use (e.g.
+  // re-framing on demand without waiting for a cloud swap).
   const viewerRef = useRef(null);
   const [filtered, setFiltered] = useState(() => buildCutCloud(segState, cloud, sources));
   const [selBox, setSelBox] = useState(null);

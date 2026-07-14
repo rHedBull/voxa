@@ -3,8 +3,9 @@ import { useEffect, useRef } from 'react';
 // Shared floating right-click menu. Generic over its items — callers decide
 // what shows up (e.g. Label mode's "Edit selection…" row on preseg/SAM/
 // instance list rows). Self-contained dismissal: closes on outside click or
-// Escape, so callers don't each need to reimplement it. Not wired into
-// anything yet; see label-tools.js / mode-label.jsx callers for that.
+// Escape, so callers don't each need to reimplement it. Wired into
+// sam-segment-list.jsx and segment-tools.jsx (the row-level right-click
+// triggers), dispatched into mode-label.jsx::openCutModal.
 export function ContextMenu({ x, y, items, onClose }) {
   const ref = useRef(null);
 

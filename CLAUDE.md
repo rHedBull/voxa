@@ -110,5 +110,5 @@ for the voxa-facing subset and the cross-tool `lidar/SCHEMA.md` for the full con
 ## Tests
 
 - Backend: `pytest` (config in root `pyproject.toml`, `pythonpath = ["backend"]`). Tests live in `backend/tests/`. `conftest.py` sets `VOXA_DATA_DIR` to a tmp dir **before** importing `main`, because `main.py` reads that env at import time — preserve that ordering when adding fixtures.
-- Frontend: `vitest` (config inlined in `vite.config.js`, environment `node`). Add `jsdom` + `@testing-library/react` if you start writing component tests; the current setup is pure-function only.
+- Frontend: `vitest` (config inlined in `vite.config.js`, environment `node`). Most tests are pure-function; a handful of component tests (`context-menu.test.jsx`, `sam-segment-list.jsdom.test.jsx`, `segment-tools.jsdom.test.jsx`) opt into `jsdom` + `@testing-library/react` via a `@vitest-environment jsdom` pragma.
 - Backend dev deps live in `backend/requirements-dev.txt` (separate from runtime `requirements.txt`).

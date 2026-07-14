@@ -161,6 +161,47 @@ def test_cut_shape_empty_source_partition_produces_no_entry(client_with_loaded_a
     assert j["materialized"][0]["n_points"] == 1
 
 
+def test_cut_shape_sam_source_partitions_and_remains_sam(client_with_loaded_annotated_scene):
+    """The sam branch of _cut_shape_core's per-source dispatch has no direct
+    coverage elsewhere: materialize a source:'sam' candidate over cluster 1
+    (points {3,4}), then cut a sub-region containing only point 3 out of it.
+    The partition must land back in the SAM layer tagged source:'sam' (not
+    'preseg'), and only the cut point must move — point 4 keeps its original
+    sam candidacy."""
+    import main
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    pts = _fixture_points()
+
+    sam_out = seg.materialize_sam_segment(np.array([3, 4], dtype=np.int32), source="sam")
+    sam_seg_id = sam_out["sam_seg_id"]
+    assert sam_seg_id is not None
+    assert seg.sam_segments[sam_seg_id]["source"] == "sam"
+
+    box = _huge_obb(center=pts[3].tolist(), size=[1e-3, 1e-3, 1e-3], rotation=[0.0, 0.0, 0.0])
+    r = client.post("/api/segment/cut-shape", json={
+        "shape": box,
+        "sources": [{"kind": "sam", "seg_id": sam_seg_id}],
+        "protect_instances": [],
+    })
+    assert r.status_code == 200
+    j = r.json()
+    assert j["instance"] is None
+    assert len(j["materialized"]) == 1
+    m = j["materialized"][0]
+    assert m["source"] == "sam"
+    assert m["n_points"] == 1
+    assert _decode_indices(m["scan_indices_b64"]).tolist() == [3]
+
+    new_sam_seg_id = m["sam_seg_id"]
+    assert new_sam_seg_id != sam_seg_id
+    assert seg.sam_segments[new_sam_seg_id]["source"] == "sam"
+    assert int(seg.sam_ids[3]) == new_sam_seg_id
+    # Point 4 was not part of the cut box, so its original sam candidacy
+    # survives unshrunk (partitioning must not disturb the un-cut remainder).
+    assert int(seg.sam_ids[4]) == sam_seg_id
+
+
 def test_cut_shape_unknown_source_kind_422(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/cut-shape", json={
