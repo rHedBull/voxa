@@ -179,7 +179,6 @@ class SamCaptureRequest(BaseModel):
 class SamProjectRequest(BaseModel):
     capture_id: str
     mask_ids: list[int]
-    target_class: int | str
     protect_instances: list[int] = []
 
 class SegmentStateResponse(BaseModel):
@@ -205,6 +204,8 @@ class SegmentStateResponse(BaseModel):
     hull_vertices: str = ""
     hull_faces: str = ""
     hull_face_seg: str = ""
+    full_sam_ids: str = ""             # b64 Int32, full-res — SAM candidate layer
+    sam_segments: list[dict] = []      # [{id, n_points, mask_score, created_at}]
     session_id: Optional[str] = None
 
 class _ObbBox(BaseModel):

@@ -12,8 +12,9 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import ExportWizard from './export-wizard.jsx';
-import { applyDelta, computeDiffMask } from './segment-state.js';
+import { applyDelta, computeDiffMask, reconcileSamAfterApply } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
+import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 
@@ -26,6 +27,11 @@ function formatPointCount(n) {
 
 const LABEL_SEL_BOX_ID = '__label_sel_box__';
 const LABEL_SEL_BOX_COLOR = '#ffd24a';
+// Selected SAM candidates switch to this flat color — the same yellow
+// setSelectedSegmentMask defaults to for every other tool's selection
+// overlay (0xfacc15) — rather than a lightened version of their own hue,
+// so "selected" reads identically across presegment/box/draw/beam/SAM.
+const SAM_SELECTED_COLOR = new THREE.Color(0xfacc15).toArray();
 
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession, sessionLoading }) {
   const meshPopupRef = useRefLabel(null);
@@ -126,6 +132,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     if (activeTool !== 'box') setSelBox(null);
   }, [activeTool]);
 
+  // SAM candidate selection belongs to the SAM tool only; leaving SAM must clear
+  // it so a stale selection can't silently get confirmed if the user returns
+  // and hits Ctrl+Enter / a class hotkey without re-selecting.
+  useEffectLabel(() => {
+    if (activeTool !== 'sam') {
+      setSegState((s) => (s && s.samSelection.size > 0 ? { ...s, samSelection: new Set() } : s));
+    }
+  }, [activeTool, setSegState]);
+
   // Yellow overlay for selected presegments. Recompute the per-subrow
   // mask whenever the selection or the underlying instance assignment
   // changes, then push it to the viewer's segSelection buffer.
@@ -136,21 +151,56 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       v.setSelectedSegmentMask(null);
       return;
     }
+    const subIdx = cloud.subsampleIdx;
+    const subN = cloud.positions.length / 3;
+    if (activeTool === 'sam') {
+      const samIds = segState.samIds;
+      const samSelection = segState.samSelection;
+      const mask = new Uint8Array(subN);
+      // One RGB triplet per rendered point: an unselected candidate gets
+      // its own hue (same palette as the SAM segment list's row dot and
+      // the review modal's mask swatches, sam-util.js::maskColorRGB, keyed
+      // by sam_seg_id) so segments are distinguishable; a SELECTED one
+      // switches to the same flat yellow/orange every other tool's
+      // selection overlay uses (setSelectedSegmentMask's default / fast
+      // mode's FAST_HIGHLIGHT_COLOR) — the actual "selected" cue elsewhere
+      // in this app is that flat highlight color, not a lightened hue.
+      const selColor = SAM_SELECTED_COLOR;
+      const colors = new Float32Array(subN * 3);
+      const colorCache = new Map();
+      let any = false;
+      for (let p = 0; p < subN; p++) {
+        const f = subIdx ? subIdx[p] : p;
+        const samId = samIds[f];
+        if (samId < 0) continue;
+        mask[p] = 1;
+        any = true;
+        const isSel = samSelection.has(samId);
+        const cacheKey = isSel ? -1 : samId; // every selected point shares one color
+        let rgb = colorCache.get(cacheKey);
+        if (!rgb) {
+          rgb = isSel ? selColor : maskColorRGB(samId);
+          colorCache.set(cacheKey, rgb);
+        }
+        const o = p * 3;
+        colors[o] = rgb[0]; colors[o + 1] = rgb[1]; colors[o + 2] = rgb[2];
+      }
+      v.setSelectedSegmentMask(any ? mask : null, undefined, any ? colors : null);
+      return;
+    }
     const sel = segState.selection;
     if (sel.size === 0) {
       v.setSelectedSegmentMask(null);
       return;
     }
     const inst = segState.instanceFull;
-    const subIdx = cloud.subsampleIdx;
-    const subN = cloud.positions.length / 3;
     const mask = new Uint8Array(subN);
     for (let p = 0; p < subN; p++) {
       const f = subIdx ? subIdx[p] : p;
       if (sel.has(inst[f])) mask[p] = 1;
     }
     v.setSelectedSegmentMask(mask, fastMode ? FAST_HIGHLIGHT_COLOR : undefined);
-  }, [segState?.selection, segState?.instanceFull, cloud, viewerRef, fastMode]);
+  }, [segState?.selection, segState?.samIds, segState?.samSelection, segState?.instanceFull, cloud, viewerRef, fastMode, activeTool]);
 
   // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
   // under the cursor. Active in any tool mode whenever segment data exists.
@@ -161,6 +211,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const viewer = viewerRef?.current;
     if (!viewer?.onPointerPick) return;
     return viewer.onPointerPick((fullIndex, evt) => {
+      if (activeTool === 'sam') {
+        if (!evt.ctrlKey && !evt.metaKey && !evt.shiftKey) return;
+        const samId = segState.samIds[fullIndex];
+        if (samId < 0) return;
+        setSegState((s) => {
+          if (!s) return s;
+          const next = new Set(s.samSelection);
+          next.has(samId) ? next.delete(samId) : next.add(samId);
+          return { ...s, samSelection: next };
+        });
+        return;
+      }
       if (!evt.ctrlKey && !evt.metaKey) return;
       const instId = segState.instanceFull[fullIndex];
       if (instId < 0) return;
@@ -171,7 +233,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         return { ...s, selection: next };
       });
     });
-  }, [segState, viewerRef, setSegState, subModeOwnsInput]);
+  }, [segState, viewerRef, setSegState, subModeOwnsInput, activeTool]);
 
   // Hull-click selection: clicking directly on a hull face (Ctrl or plain click)
   // selects the segment. Works in all tool modes.
@@ -690,6 +752,62 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     });
   }, [segState, activeClassDef, instances, counts, onChange, setSegState, autoConfirm, presegRapid]);
 
+  // Ctrl+Enter (or a class hotkey) on a SAM candidate selection: same
+  // reassign→pointset→applyDelta pipeline as confirmSegmentSelection, plus
+  // reconcileSamAfterApply to retire the absorbed SAM candidates (their
+  // samIds entries go back to -1 so the cyan overlay/candidate list drop them).
+  const confirmSamSelection = useCallbackLabel(async (clsDef) => {
+    const targetCls = clsDef || activeClassDef;
+    if (!segState || segState.samSelection.size === 0) return;
+    if (!targetCls) return;
+    const samIds = segState.samIds;
+    const sel = segState.samSelection;
+    const idx = [];
+    for (let p = 0; p < samIds.length; p++) {
+      if (sel.has(samIds[p])) idx.push(p);
+    }
+    if (idx.length === 0) return;
+    const indices = new Int32Array(idx);
+
+    let r;
+    try {
+      r = await VoxaAPI.segApply('reassign', {
+        indices,
+        payload: { target_inst: -1, target_class: targetCls.id },
+      });
+    } catch (err) {
+      console.error('confirm sam reassign failed:', err);
+      return;
+    }
+
+    const newSegId = r.afterInstance && r.afterInstance.length > 0
+      ? r.afterInstance[0] : -1;
+    const appliedSamSegIds = new Set(sel);
+    if (newSegId >= 0) {
+      const newInst = {
+        id: newId(),
+        segId: newSegId,
+        kind: 'pointset',
+        cls: targetCls.id,
+        label: `${targetCls.label} ${(counts[targetCls.id] || 0) + 1}`,
+        color: targetCls.color,
+        source: 'sam',
+        confirmed: !!autoConfirmFor('sam'),
+      };
+      onChange([...instances, newInst]);
+    }
+
+    setSegState((s) => {
+      if (!s) return s;
+      const next = applyDelta(s, {
+        indices: r.indices,
+        after_class: r.afterClass,
+        after_instance: r.afterInstance,
+      });
+      return reconcileSamAfterApply(next, appliedSamSegIds);
+    });
+  }, [segState, activeClassDef, instances, counts, onChange, setSegState, autoConfirm]);
+
   // Box tool apply: send the OBB to the backend, which labels every FULL-RES
   // point inside it (never a client-side subsample test) and returns a delta.
   // Mirrors confirmSegmentSelection's pointset-creation + applyDelta flow, then
@@ -891,10 +1009,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       // flag on the selected instance.
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        if ((segState && segState.selection.size > 0) || (activeTool === 'box' && selBox)) {
+        if ((segState && segState.selection.size > 0)
+          || (activeTool === 'box' && selBox)
+          || (activeTool === 'sam' && segState && segState.samSelection.size > 0)) {
           // Open the class picker so the user can quick-pick the class for the
           // new (unconfirmed) pointset. In Box mode this routes to applyBox;
-          // otherwise to confirmSegmentSelection.
+          // in SAM mode to confirmSamSelection; otherwise to confirmSegmentSelection.
           setClassPickerOpen(true);
         } else if (activeTool === 'box') {
           toggleConfirmSelected();
@@ -910,7 +1030,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       // with no selection it just sets the active class.
       const cls = classes.find((c) => c.hotkey === e.key);
       if (cls) {
-        if (segState && segState.selection.size > 0) {
+        if (activeTool === 'sam' && segState && segState.samSelection.size > 0) {
+          e.preventDefault();
+          confirmSamSelection(cls);
+        } else if (segState && segState.selection.size > 0) {
           e.preventDefault();
           confirmSegmentSelection(cls);
         } else if (activeTool === 'box' && selBox) {
@@ -944,7 +1067,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, applyBox, fastMode, subModeOwnsInput]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, confirmSamSelection, applyBox, fastMode, subModeOwnsInput]);
 
   return (
     <div className="mode-root label">
@@ -972,7 +1095,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           counts={counts}
           onPick={(cls) => {
             setClassPickerOpen(false);
-            if (activeTool === 'box' && selBox) applyBox(cls);
+            if (activeTool === 'sam' && segState && segState.samSelection.size > 0) confirmSamSelection(cls);
+            else if (activeTool === 'box' && selBox) applyBox(cls);
             else confirmSegmentSelection(cls);
           }}
           onClose={() => setClassPickerOpen(false)}

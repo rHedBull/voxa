@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { VoxaAPI } from './api.js';
 import { normalizeBox, capturePayload, maskColor, containPixel } from './sam-util.js';
-import { applyDelta } from './segment-state.js';
+import { applySamDelta } from './segment-state.js';
 
 // Shift-drag rubber-band capture over the viewer canvas. Shift is the "select"
 // modifier — without it the mousedown falls through so the viewer orbits.
@@ -173,7 +173,7 @@ function SamReviewModal({ capture, chosen, busy, onToggle, onSelectOnly, onProje
         <div className="sam-review-actions">
           <button className="ghost-btn" onClick={onCancel}>Cancel</button>
           <button className="ghost-btn" disabled={chosen.size === 0 || busy}
-            onClick={onProject}>Project selected</button>
+            onClick={onProject}>Add to SAM segments</button>
         </div>
       </div>
     </div>
@@ -181,8 +181,7 @@ function SamReviewModal({ capture, chosen, busy, onToggle, onSelectOnly, onProje
 }
 
 export default function SamMode({
-  viewerRef, classes, defaultClassId, onApplied, setSegState,
-  protectInstances = [], autoConfirm,
+  viewerRef, setSegState, protectInstances = [],
 }) {
   const [mode, setMode] = useState('box');      // 'box' | 'concept'
   const [text, setText] = useState('');
@@ -248,21 +247,23 @@ export default function SamMode({
       const res = await VoxaAPI.samProject({
         captureId: capture.captureId,
         maskIds: [...chosen],
-        targetClass: defaultClassId,
         protectInstances: protectInstancesRef.current,
       });
-      for (const inst of res.instances || []) {
-        if (inst.indices) {
-          setSegState?.((s) => (s ? applyDelta(s, {
-            indices: inst.indices,
-            after_class: inst.afterClass,
-            after_instance: inst.afterInstance,
+      let nProtected = 0;
+      for (const seg of res.segments || []) {
+        nProtected += seg.nProtected || 0;
+        if (seg.indices) {
+          setSegState?.((s) => (s ? applySamDelta(s, {
+            indices: seg.indices,
+            samSegId: seg.samSegId,
           }) : s));
         }
-        if (inst.instanceId != null) {
-          onApplied?.({ instanceId: inst.instanceId,
-                        classId: defaultClassId, source: 'sam' });
-        }
+      }
+      // Mirrors draw-mode.jsx/beam-mode.jsx: a mask that landed entirely (or
+      // partly) on already-confirmed points is silently narrowed by
+      // protect_instances — "confirmed = locked" must fail loud, not silent.
+      if (nProtected > 0) {
+        setError(`${nProtected} point(s) locked in a confirmed instance`);
       }
       setCapture(null);
       setChosen(new Set());
@@ -272,7 +273,7 @@ export default function SamMode({
       busyRef.current = false;
       setBusy(false);
     }
-  }, [capture, chosen, defaultClassId, onApplied, setSegState]);
+  }, [capture, chosen, setSegState]);
 
   const toggleMask = useCallback((maskId) => {
     setChosen((prev) => {

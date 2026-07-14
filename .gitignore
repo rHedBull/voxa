@@ -28,3 +28,6 @@ data/fw_experiment/
 # stray script artifacts
 scripts/preseg_bench_results.json
 scripts/stage_dumps/
+
+# git worktrees (superpowers:using-git-worktrees)
+.worktrees/

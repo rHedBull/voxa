@@ -64,6 +64,8 @@ def segment_state():
     box_ids, box_centers, box_sizes = _compute_segment_boxes(np.asarray(seg.positions), instance_ids)
     from labeling.segment_hulls import compute_hulls as _compute_hulls
     hull_v, hull_f, hull_seg = _compute_hulls(np.asarray(seg.positions), instance_ids)
+    from labeling.segment_io import sam_segments_to_list
+    sam_segments = sam_segments_to_list(seg.sam_segments)
     return SegmentStateResponse(
         has_state=True,
         has_seg=True,
@@ -83,6 +85,8 @@ def segment_state():
         hull_vertices=_b64(hull_v),
         hull_faces=_b64(hull_f),
         hull_face_seg=_b64(hull_seg),
+        full_sam_ids=_b64(seg.sam_ids.astype(np.int32, copy=False)),
+        sam_segments=sam_segments,
         session_id=_state.get("session_id"),
     )
 

@@ -57,6 +57,14 @@ class SegmentSession:
         self._next_fresh_inst = int(instance_ids.max(initial=-1)) + 1
         self.positions = positions.astype(np.float32, copy=False)
         self.preseg_ids: np.ndarray = np.full(n, -1, dtype=np.int32)
+        self.sam_ids: np.ndarray = np.full(n, -1, dtype=np.int32)
+        # {sam_seg_id: {"n_points": int, "mask_score": float|None, "created_at": str}}
+        # — a mutable, session-scoped candidate layer (unlike preseg_ids, which
+        # is immutable and pinned at session creation). Never written into
+        # instance_ids/class_ids: a point can carry a sam candidate id with no
+        # class, which would violate SCHEMA invariant 3 if it were instance_ids.
+        self.sam_segments: dict[int, dict] = {}
+        self._next_sam_id: int = 0
         self.preseg_id: Optional[str] = None
         self.preseg_fingerprint: Optional[str] = None
         self.source_fingerprint: Optional[str] = None
@@ -130,6 +138,63 @@ class SegmentSession:
         ))
         out["n_protected"] = n_protected
         return out
+
+    def _retire_sam_ids(self, indices: np.ndarray) -> None:
+        """Clear SAM candidacy for these points — they're about to carry a
+        real label (or a fresher SAM candidate id). Shrinks/drops the
+        affected sam_segments summary entries so counts never go stale."""
+        old = self.sam_ids[indices]
+        live = old[old >= 0]
+        if live.size == 0:
+            return
+        ids, counts = np.unique(live, return_counts=True)
+        for sid, cnt in zip(ids.tolist(), counts.tolist()):
+            entry = self.sam_segments.get(int(sid))
+            if entry is None:
+                continue
+            entry["n_points"] -= int(cnt)
+            if entry["n_points"] <= 0:
+                del self.sam_segments[int(sid)]
+        self.sam_ids[indices] = -1
+
+    def materialize_sam_segment(
+        self, indices: np.ndarray,
+        protect_instances: Optional[list[int]] = None,
+        mask_score: Optional[float] = None,
+    ) -> dict:
+        """Add an accepted SAM mask as a candidate in the sam_ids layer — a
+        selection aid, not an edit: never touches instance_ids/class_ids, not
+        on the undo stack (mirrors preseg_ids). protect_instances mirrors
+        apply_reassign's confirmed-lock rule (dropped BEFORE allocating an
+        id, same as a locked box/tube can't steal already-labeled points).
+        Overlapping candidates are last-materialize-wins via _retire_sam_ids.
+        """
+        indices = np.asarray(indices, dtype=np.int32)
+        n_candidate = int(indices.size)
+        if protect_instances:
+            protect = {int(v) for v in protect_instances}
+            protect.discard(-1)
+            if protect:
+                keep = ~np.isin(self.instance_ids[indices], list(protect))
+                indices = indices[keep]
+        n_protected = n_candidate - int(indices.size)
+        if indices.size == 0:
+            return {"op": "materialize_sam_segment", "sam_seg_id": None,
+                    "n_affected": 0, "n_protected": n_protected}
+        self._retire_sam_ids(indices)
+        sam_seg_id = self._next_sam_id
+        self._next_sam_id += 1
+        self.sam_ids[indices] = np.int32(sam_seg_id)
+        from labeling.segment_io import utc_now_iso
+        self.sam_segments[sam_seg_id] = {
+            "n_points": int(indices.size),
+            "mask_score": mask_score,
+            "created_at": utc_now_iso(),
+        }
+        self.schedule_autosave(write_arrays=True)
+        return {"op": "materialize_sam_segment", "sam_seg_id": sam_seg_id,
+                "indices": indices, "n_affected": int(indices.size),
+                "n_protected": n_protected}
 
     def undo(self) -> Optional[dict]:
         if not self._undo:
@@ -222,6 +287,7 @@ class SegmentSession:
 
     def _apply(self, op: str, indices: np.ndarray, payload: dict) -> dict:
         indices = indices.astype(np.int32, copy=False)
+        self._retire_sam_ids(indices)
         before_cls = self.class_ids[indices].copy()
         before_inst = self.instance_ids[indices].copy()
         new_inst_id: Optional[int] = None
@@ -318,14 +384,17 @@ class SegmentSession:
     def _do_autosave(self, write_arrays: bool) -> None:
         if self.session_dir is None:
             return
-        from labeling.segment_io import save_session_aux
+        from labeling.segment_io import save_session_aux, save_sam_segments
         with self._autosave_lock:
             save_session_aux(
                 self.session_dir,
                 self._aux_payload(),
                 class_ids=self.class_ids if write_arrays else None,
                 instance_ids=self.instance_ids if write_arrays else None,
+                sam_ids=self.sam_ids if write_arrays else None,
             )
+            if write_arrays:
+                save_sam_segments(self.session_dir, self.sam_segments)
 
     def schedule_autosave(self, *, write_arrays: bool = True) -> None:
         if self.session_dir is None:

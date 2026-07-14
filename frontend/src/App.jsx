@@ -269,6 +269,8 @@ function MainApp() {
           segHulls: (segLive.hullVertices && segLive.hullFaces && segLive.hullFaceSeg)
             ? { vertices: segLive.hullVertices, faces: segLive.hullFaces, faceSeg: segLive.hullFaceSeg }
             : null,
+          samIds: segLive.fullSamIds || null,
+          samSegments: segLive.samSegments || [],
         }));
         // Project full-res labels onto the subsampled cloud so points pick
         // up segment colours immediately.

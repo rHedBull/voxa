@@ -5,6 +5,7 @@ import base64
 import json
 
 import numpy as np
+import pytest
 
 
 def _b64_to_int32(b64: str) -> np.ndarray:
@@ -322,3 +323,85 @@ def test_save_without_session_409(client_with_annotated_scene):
     r = client.put("/api/segment/save")
     assert r.status_code == 409
     assert "session" in r.json()["detail"].lower()
+
+
+def test_resume_session_restores_sam_candidates(client_with_loaded_annotated_scene):
+    """SAM candidates (working_sam_ids.npy + sam_segments.json) written directly
+    to disk must be hydrated back into the in-memory SegmentSession on the next
+    /api/load — mirrors the preseg+labels resume guarantee above, for the SAM
+    candidate layer added in Task 1/2."""
+    import main
+    from labeling.segment_io import save_session_aux, save_sam_segments
+
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    scene_id = main._state["scene"]
+    n = len(seg.instance_ids)
+
+    sam_ids = np.full(n, -1, dtype=np.int32)
+    sam_ids[0] = 7
+    sam_ids[1] = 7
+    save_session_aux(seg.session_dir, seg._aux_payload(), sam_ids=sam_ids)
+    save_sam_segments(seg.session_dir, {7: {"n_points": 2, "mask_score": 0.8,
+                                            "created_at": "2026-07-13T00:00:00+00:00"}})
+
+    # Drop in-memory state to force a real resume (not just a GET) on next load.
+    main._state.update(seg=None, pc=None, scene=None)
+
+    r = client.post("/api/load", json={"name": scene_id, "max_points": 100})
+    assert r.status_code == 200
+
+    seg2 = main._state["seg"]
+    assert int(seg2.sam_ids[0]) == 7 and int(seg2.sam_ids[1]) == 7
+    assert seg2.sam_segments[7]["n_points"] == 2
+    assert seg2._next_sam_id == 8
+
+
+def test_resume_session_raises_on_sam_ids_shape_mismatch(client_with_loaded_annotated_scene):
+    """A working_sam_ids.npy whose length no longer matches the cloud (bad/foreign
+    data directory) must fail loudly through /api/load, not be silently swallowed —
+    unlike working_class_ids/working_segment_ids (which soft-fail to a controlled
+    409), load_sam_ids raises directly and that must propagate unhandled."""
+    import main
+    from labeling.segment_io import save_session_aux
+
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    scene_id = main._state["scene"]
+
+    # Deliberately wrong length: any n_points != len(cloud).
+    bad_sam_ids = np.array([-1, 0], dtype=np.int32)
+    save_session_aux(seg.session_dir, seg._aux_payload(), sam_ids=bad_sam_ids)
+
+    # Drop in-memory state to force a real resume (not just a GET) on next load.
+    main._state.update(seg=None, pc=None, scene=None)
+
+    with pytest.raises(ValueError):
+        client.post("/api/load", json={"name": scene_id, "max_points": 100})
+
+
+def test_segment_state_includes_full_sam_ids_and_sam_segments(
+    client_with_loaded_annotated_scene,
+):
+    client = client_with_loaded_annotated_scene
+    r = client.get("/api/segment/state")
+    body = r.json()
+    assert "full_sam_ids" in body
+    assert "sam_segments" in body
+    assert body["sam_segments"] == []  # nothing materialized yet
+
+
+def test_segment_state_reflects_materialized_sam_segments(
+    client_with_loaded_annotated_scene,
+):
+    import main
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    seg.materialize_sam_segment(np.array([0, 1], dtype=np.int32), mask_score=0.7)
+    r = client.get("/api/segment/state")
+    body = r.json()
+    sam_ids = _b64_to_int32(body["full_sam_ids"])
+    assert int(sam_ids[0]) == 0 and int(sam_ids[1]) == 0
+    assert body["sam_segments"] == [
+        {"id": 0, "n_points": 2, "mask_score": 0.7, "created_at": body["sam_segments"][0]["created_at"]},
+    ]

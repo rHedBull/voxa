@@ -27,13 +27,26 @@ export function containPixel({ boxW, boxH, natW, natH, x, y }) {
   return [Math.floor(px / scale), Math.floor(py / scale)];
 }
 
-// Mirrors sam_sidecar/main.py::_palette (golden-ratio hue spacing) so the
-// mask list's color swatches match the wash the sidecar bakes into
-// overlay_png_b64 — mask #i is always the same color in the list and image.
-export function maskColor(i) {
+// Mirrors sam_sidecar/main.py::_palette (golden-ratio hue spacing). Shared
+// core for maskColor (CSS string, mask review modal) and maskColorRGB
+// (0-1 floats, SAM segment list dot + viewport candidate overlay) — same
+// palette everywhere a mask/segment id needs a color, by index i.
+function maskColorFloat(i) {
   const h = (i * 0.61803398875) % 1.0, s = 0.65, v = 1.0;
   const k = (n) => (n + h * 6) % 6;
   const f = (n) => v - v * s * Math.max(0, Math.min(k(n), 4 - k(n), 1));
-  const r = Math.round(f(5) * 255), g = Math.round(f(3) * 255), b = Math.round(f(1) * 255);
-  return `rgb(${r}, ${g}, ${b})`;
+  return [f(5), f(3), f(1)];
+}
+
+// mask #i is always the same color in the list and image (matches the wash
+// the sidecar bakes into overlay_png_b64).
+export function maskColor(i) {
+  const [r, g, b] = maskColorFloat(i);
+  return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+}
+
+// Same palette as maskColor, as 0-1 floats — for Three.js BufferGeometry
+// color attributes (SAM candidate segment id -> viewport overlay tint).
+export function maskColorRGB(i) {
+  return maskColorFloat(i);
 }

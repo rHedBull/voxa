@@ -338,6 +338,29 @@ def test_autosave_writes_working_files_and_session_json(tmp_path):
     assert "is_from_prelabel" not in payload
 
 
+def test_autosave_writes_sam_ids_and_sam_segments(tmp_path):
+    import numpy as np, json
+    from labeling.segment_state import SegmentSession
+    pts = np.zeros((4, 3), dtype=np.float32)
+    s = SegmentSession(
+        class_ids=np.full(4, -1, dtype=np.int8),
+        instance_ids=np.full(4, -1, dtype=np.int32),
+        positions=pts,
+        session_dir=tmp_path,
+        autosave_debounce_s=0.0,
+    )
+    out = s.materialize_sam_segment(np.array([0, 1], dtype=np.int32))
+    s.flush_autosave()
+    assert (tmp_path / "working_sam_ids.npy").exists()
+    assert (tmp_path / "sam_segments.json").exists()
+    sam_ids = np.load(tmp_path / "working_sam_ids.npy")
+    assert int(sam_ids[0]) == out["sam_seg_id"] and int(sam_ids[1]) == out["sam_seg_id"]
+    assert int(sam_ids[2]) == -1 and int(sam_ids[3]) == -1
+    payload = json.loads((tmp_path / "sam_segments.json").read_text())
+    segments = {seg["id"]: seg for seg in payload["segments"]}
+    assert segments[out["sam_seg_id"]]["n_points"] == 2
+
+
 def test_autosave_includes_hidden_and_preseg_run(tmp_path):
     import numpy as np, json
     from labeling.segment_state import SegmentSession
@@ -373,3 +396,80 @@ def test_autosave_disabled_when_no_session_dir(tmp_path):
     )
     s.apply_set_class(np.array([0], dtype=np.int32), class_id=1)
     assert not (tmp_path / "session.json").exists()
+
+
+def test_materialize_sam_segment_allocates_fresh_id_and_writes_sam_ids():
+    s = _seed()
+    out = s.materialize_sam_segment(np.array([0, 6], dtype=np.int32))
+    assert out["sam_seg_id"] == 0
+    assert out["n_affected"] == 2
+    assert out["n_protected"] == 0
+    assert int(s.sam_ids[0]) == 0 and int(s.sam_ids[6]) == 0
+    # instance_ids/class_ids are untouched — this is the whole point.
+    assert int(s.instance_ids[0]) == -1 and int(s.class_ids[0]) == -1
+    assert s.sam_segments[0]["n_points"] == 2
+    assert s.dirty is False  # not a working-array edit
+
+
+def test_materialize_sam_segment_ids_increment():
+    s = _seed()
+    a = s.materialize_sam_segment(np.array([0], dtype=np.int32))
+    b = s.materialize_sam_segment(np.array([6], dtype=np.int32))
+    assert a["sam_seg_id"] == 0 and b["sam_seg_id"] == 1
+
+
+def test_materialize_sam_segment_respects_protect_instances():
+    s = _seed()
+    # Point 3 already belongs to instance 1 (see _seed()); protect it.
+    out = s.materialize_sam_segment(np.array([0, 3], dtype=np.int32),
+                                     protect_instances=[1])
+    assert out["n_affected"] == 1
+    assert out["n_protected"] == 1
+    assert int(s.sam_ids[3]) == -1   # protected point never got a sam id
+    assert int(s.sam_ids[0]) == 0
+
+
+def test_materialize_sam_segment_all_protected_creates_nothing():
+    s = _seed()
+    out = s.materialize_sam_segment(np.array([3, 4], dtype=np.int32),
+                                     protect_instances=[1])
+    assert out["sam_seg_id"] is None
+    assert out["n_affected"] == 0
+    assert out["n_protected"] == 2
+    assert len(s.sam_segments) == 0
+
+
+def test_materialize_sam_segment_overlap_is_last_write_wins():
+    s = _seed()
+    a = s.materialize_sam_segment(np.array([0, 6], dtype=np.int32))
+    b = s.materialize_sam_segment(np.array([6], dtype=np.int32))  # overlaps a
+    assert int(s.sam_ids[6]) == b["sam_seg_id"]
+    assert int(s.sam_ids[0]) == a["sam_seg_id"]
+    # a's summary shrank from 2 to 1 (point 6 moved to b), not deleted.
+    assert s.sam_segments[a["sam_seg_id"]]["n_points"] == 1
+    assert s.sam_segments[b["sam_seg_id"]]["n_points"] == 1
+
+
+def test_materialize_sam_segment_full_overlap_drops_old_summary_entry():
+    s = _seed()
+    a = s.materialize_sam_segment(np.array([6], dtype=np.int32))
+    s.materialize_sam_segment(np.array([6], dtype=np.int32))  # fully re-covers a
+    assert a["sam_seg_id"] not in s.sam_segments
+
+
+def test_apply_reassign_retires_overlapping_sam_ids():
+    """Any tool labeling a point (apply_reassign, set_class, merge) must
+    retire that point's SAM candidacy — it's no longer up for grabs."""
+    s = _seed()
+    out = s.materialize_sam_segment(np.array([0, 6], dtype=np.int32))
+    sam_id = out["sam_seg_id"]
+    s.apply_reassign(np.array([6], dtype=np.int32), target_inst=-1, target_class=0)
+    assert int(s.sam_ids[6]) == -1
+    assert int(s.sam_ids[0]) == sam_id       # untouched point keeps its candidacy
+    assert s.sam_segments[sam_id]["n_points"] == 1
+
+
+def test_materialize_sam_segment_not_on_undo_stack():
+    s = _seed()
+    s.materialize_sam_segment(np.array([0], dtype=np.int32))
+    assert s.undo() is None  # nothing to undo — matches preseg_ids' non-edit status
