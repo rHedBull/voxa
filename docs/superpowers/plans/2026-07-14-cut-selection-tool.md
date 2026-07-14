@@ -27,14 +27,12 @@
 **Frontend:**
 - Modify `frontend/src/segment-state.js` — `samSegments` Map entries gain `source`; `applySamDelta` accepts/stores it.
 - Modify `frontend/src/api.js` — new `cutShape(...)` client function.
-- Create `frontend/src/box-tool.js` — extracted, reusable box draw/transform state+logic (pulled out of `mode-label.jsx`), pure enough to unit test standalone.
-- Modify `frontend/src/mode-label.jsx` — switch to `box-tool.js`; add right-click menu wiring for Presegment/SAM/Instance rows; add "Edit selection…" enable/disable logic; open/host the cut modal; handle `cut-shape` responses.
-- Create `frontend/src/cut-mode.jsx` — the isolated modal: second `Viewer`, filtered/tagged cloud, box-tool reuse, cut-confirm flow.
+- Modify `frontend/src/mode-label.jsx` — add right-click menu wiring for Presegment/SAM/Instance rows; add "Edit selection…" enable/disable logic; open/host the cut modal; handle `cut-shape` responses. (No `box-tool.js` extraction — see Task 8, superseded: `Viewer` is already the reusable unit.)
+- Create `frontend/src/cut-mode.jsx` — the isolated modal: second `Viewer` instance (same `transformMode`/`onCuboidTransform` prop pattern `mode-label.jsx` already uses for its own gizmo), filtered/tagged cloud, cut-confirm flow.
 - Create `frontend/src/context-menu.jsx` — small shared right-click menu component (one item for this feature: "Edit selection…").
 - Modify `frontend/src/sam-segment-list.jsx` — `onContextMenu` per row.
 - Modify `frontend/src/segment-tools.jsx` — `onContextMenu` per row (PresegmentList).
 - Modify `frontend/src/segment-state.test.js` — `source`-tag coverage.
-- Create `frontend/src/box-tool.test.js` — extracted box logic.
 - Create `frontend/src/cut-mode.test.js` — partitioning/tagging pure functions.
 - Modify `frontend/src/api.test.js` — `cutShape` request/response shape.
 
@@ -499,66 +497,15 @@ git add frontend/src/api.js frontend/src/api.test.js
 git commit -m "feat(frontend): add VoxaAPI.cutShape client function"
 ```
 
-### Task 8: Extract Box tool draw/transform logic into `box-tool.js`
+### Task 8: SUPERSEDED — no box-transform extraction needed
 
-**Files:**
-- Create: `frontend/src/box-tool.js`
-- Modify: `frontend/src/mode-label.jsx` (`selBox` state at line 92, `applyBox` at 815-867, G/R/Y bindings at 1057-1065)
-- Test: Create `frontend/src/box-tool.test.js`
+**Original plan:** extract Box tool draw/transform logic into a new `frontend/src/box-tool.js` module, on the assumption that G/R/Y transform math was pure, hand-rolled logic living inline in `mode-label.jsx` that could be moved verbatim.
 
-This is a **behavior-preserving refactor** — the Box tool must work identically in the main viewport after this task, verified by not breaking any existing test and by a manual browser check at the end of this task (not deferred to the final end-to-end task, since a regression here blocks everything downstream).
+**What research found (implementer correctly escalated rather than forcing a bad extraction):** that assumption was wrong. `mode-label.jsx`'s G/R/Y handlers (around line 1057-1065) are three one-line `setTransformMode('translate'|'rotate'|'scale')` calls — no math at all. The actual box-transform math is owned by Three.js's own `TransformControls` gizmo, instantiated and driven entirely inside `frontend/src/viewer.jsx` (`new TransformControls(camera, renderer.domElement)`, an `objectChange` handler reading the live `Object3D` anchor's position/rotation/scale and reporting a `{center, size, rotation}` patch up through an `onCuboidTransform` callback prop). `mode-label.jsx`'s own `onCuboidTransform` is just a two-line dispatcher that merges whatever patch the gizmo already computed into `selBox` state — there is no freestanding pure function anywhere to extract. Hand-rolling one in a new `box-tool.js` would not be an extraction — it would be an untested reimplementation the app doesn't actually call, risking silent divergence from Three's real transform semantics (axis order, gizmo-space vs. world-space composition, snapping).
 
-- [ ] **Step 1: Read the full current implementation**
+**Resolution:** no extraction needed. `Viewer` (`frontend/src/viewer.jsx`) is already the reusable unit — it's a plain component that accepts `transformMode`/`onCuboidTransform` as props and owns its own gizmo internally. Task 11's isolated modal reuses the Box tool by mounting a **second `Viewer` instance** with the same `transformMode`/`onCuboidTransform` prop pattern `mode-label.jsx` already uses, plus its own small local G/R/Y key-dispatch (the same trivial three-line pattern, duplicated rather than shared — not worth a module for three lines). See Task 11's updated description below.
 
-Read `frontend/src/mode-label.jsx` in full around lines 92, 815-867, and 1057-1065 (and anywhere else `selBox` appears — `grep -n selBox frontend/src/mode-label.jsx` first) to capture every piece of state/logic that must move.
-
-- [ ] **Step 2: Write failing tests for the extracted pure logic**
-
-Identify which parts of the box logic are pure (transform math: apply G/R/Y deltas to a box's center/size/rotation) versus which are inherently tied to React state/API calls (the `applyBox` network call stays a thin wrapper in `mode-label.jsx`/`cut-mode.jsx`, not in the extracted module). Write `box-tool.test.js` covering the pure transform functions only, e.g.:
-
-```js
-test('translateBox moves center along the requested axis', () => {
-  const box = { center: [0,0,0], size: [1,1,1], rotation: [0,0,0] };
-  const moved = translateBox(box, 'x', 0.5);
-  expect(moved.center).toEqual([0.5, 0, 0]);
-});
-```
-
-(Adapt exact function names/signatures to whatever the actual G/R/Y handlers in `mode-label.jsx:1057-1065` currently do — read them first, this is a 1:1 extraction, not a redesign.)
-
-- [ ] **Step 3: Run tests to verify they fail**
-
-Run: `cd frontend && npx vitest run src/box-tool.test.js`
-Expected: FAIL — module doesn't exist.
-
-- [ ] **Step 4: Implement `box-tool.js`**
-
-Move the pure transform functions verbatim into `frontend/src/box-tool.js`, exported as named functions. Do not change their behavior.
-
-- [ ] **Step 5: Run tests to verify they pass**
-
-Run: `cd frontend && npx vitest run src/box-tool.test.js`
-Expected: PASS
-
-- [ ] **Step 6: Wire `mode-label.jsx` to use the extracted module**
-
-Replace the inline G/R/Y transform logic at lines 1057-1065 with calls into `box-tool.js`'s exported functions. Leave `selBox` state, `applyBox`, and the draw-box mouse interaction in `mode-label.jsx` for now if they're too entangled with viewer refs/React state to extract cleanly — the spec only requires the modal to *reuse* the interaction, which Task 9 will do by importing this same module, not by requiring 100% of `applyBox` itself to move.
-
-- [ ] **Step 7: Run the full frontend test suite**
-
-Run: `cd frontend && npx vitest run`
-Expected: PASS, no regressions anywhere.
-
-- [ ] **Step 8: Manual verification**
-
-Start the dev server (`npm run dev`), open Label mode, draw a box, transform it with G/R/Y, apply it. Confirm identical behavior to before this task (screenshot or describe what you see — this is a refactor, so "looks the same as it did" is the bar, not a new feature).
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add frontend/src/box-tool.js frontend/src/box-tool.test.js frontend/src/mode-label.jsx
-git commit -m "refactor(frontend): extract Box tool transform logic into box-tool.js"
-```
+No files changed, no commit for this task — it is a no-op given what Task 11 actually needs.
 
 ### Task 9: `context-menu.jsx` — shared right-click menu component
 
@@ -732,7 +679,7 @@ Expected: FAIL — module doesn't exist.
 
 `buildCutCloud(segState, { sources })`: for each source, find matching full-array indices (`instanceFull === segId` for instance/preseg — check whether presegment membership is actually tracked in `instanceFull` or a separate array before finalizing; the investigation flagged `preseg_ids`-equivalent as a frontend concept without pinning its exact `segState` field name, so confirm against `segment-state.js` directly), union them, and return `{indices, tags}` where `tags[i]` records which source each returned point came from.
 
-`CutModal({ segState, sources, onClose, onCutConfirmed })`: mounts a second `Viewer` fed `{positions: filtered, colors: filtered}` (using `buildCutCloud`'s indices to slice `segState`'s full arrays), reuses `box-tool.js` (Task 8) for draw/transform, and on "confirm cut" calls `VoxaAPI.cutShape({shape, sources, protectInstances})` (Task 7), then removes the cut points from its own local filtered view (so the next box draws against the remainder) and calls `onCutConfirmed(response)` so the parent (`mode-label.jsx`) can patch `segState`.
+`CutModal({ segState, sources, onClose, onCutConfirmed })`: mounts a second `Viewer` fed `{positions: filtered, colors: filtered}` (using `buildCutCloud`'s indices to slice `segState`'s full arrays), reuses the Box tool's draw/transform interaction by mounting `Viewer` with the same `transformMode`/`onCuboidTransform` prop pattern `mode-label.jsx` already uses for its own gizmo (own local `selBox`-equivalent state + a small local G/R/Y key-dispatch, duplicated rather than shared — see Task 8, superseded), and on "confirm cut" calls `VoxaAPI.cutShape({shape, sources, protectInstances})` (Task 7), then removes the cut points from its own local filtered view (so the next box draws against the remainder) and calls `onCutConfirmed(response)` so the parent (`mode-label.jsx`) can patch `segState`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
