@@ -181,7 +181,16 @@ def _cut_shape_core(seg, shape: dict, sources: list, protect_instances: list[int
         return {"materialized": materialized, "instance": instance_out, "n_protected": 0}
     for src in sources:
         if src.kind == "preseg":
-            membership = seg.preseg_ids == src.seg_id
+            # instance_ids, not the immutable preseg_ids: PresegmentList
+            # shows every id in segState.summary (i.e. instance_ids), not
+            # only genuine preseg-sourced rows, and tags all of them
+            # kind:'preseg' on cut — matches the frontend's own model
+            # (buildCutCloud already tests instanceFull for 'preseg'
+            # sources). A real, still-unclassified preseg segment has
+            # preseg_ids == instance_ids anyway, so this is a no-op for the
+            # common case and only changes behavior for orphaned/no-preseg
+            # groups that would otherwise silently fail to cut.
+            membership = seg.instance_ids == src.seg_id
         elif src.kind == "sam":
             membership = seg.sam_ids == src.seg_id
         elif src.kind == "instance":

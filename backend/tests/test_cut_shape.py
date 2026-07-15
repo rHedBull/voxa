@@ -202,6 +202,42 @@ def test_cut_shape_sam_source_partitions_and_remains_sam(client_with_loaded_anno
     assert int(seg.sam_ids[4]) == sam_seg_id
 
 
+def test_cut_shape_preseg_source_uses_instance_ids_not_preseg_ids(
+        client_with_loaded_annotated_scene):
+    """A 'preseg'-kind cut source must partition against instance_ids, not
+    the immutable preseg_ids array. PresegmentList shows every id in
+    segState.summary (instance_ids), not only genuine preseg-sourced rows —
+    e.g. an orphaned already-classified group with no matching instances_gt.json
+    row still surfaces there and gets tagged kind:'preseg' on cut
+    (segment-tools.jsx unconditionally tags its rows 'preseg'). The frontend's
+    own buildCutCloud (cut-mode.jsx) already tests instanceFull for 'preseg'
+    sources, not preseg_ids — the backend must agree, or a real preseg_id is
+    the only case that ever cuts successfully."""
+    import main
+    client = client_with_loaded_annotated_scene
+    seg = main._state["seg"]
+    # Simulate: this group has no real presegmentation membership (as in a
+    # session with no registered preseg), even though instance_ids/class_ids
+    # are real — the exact split this bug hides behind.
+    seg.preseg_ids[:] = -1
+    n_src_points = int((seg.instance_ids == 0).sum())
+    assert n_src_points > 0
+
+    r = client.post("/api/segment/cut-shape", json={
+        "shape": _huge_obb(),
+        "sources": [{"kind": "preseg", "seg_id": 0}],
+        "protect_instances": [],
+    })
+    assert r.status_code == 200
+    j = r.json()
+    assert len(j["materialized"]) == 1
+    m = j["materialized"][0]
+    assert m["source"] == "preseg"
+    assert m["n_points"] == n_src_points
+    assert sorted(_decode_indices(m["scan_indices_b64"]).tolist()) == \
+        sorted(np.flatnonzero(seg.instance_ids == 0).tolist())
+
+
 def test_cut_shape_unknown_source_kind_422(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/cut-shape", json={
