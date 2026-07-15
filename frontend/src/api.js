@@ -262,6 +262,31 @@ export const VoxaAPI = {
     const j = await r.json();
     return { ..._decodeApplyResponse(j), instanceId: j.instance_id ?? null };
   },
+  async cutShape({ shape, sources, protectInstances = [] }) {
+    const body = {
+      shape,
+      sources: sources.map((s) => ({ kind: s.kind, seg_id: s.segId })),
+      protect_instances: protectInstances,
+    };
+    const r = await fetch('/api/segment/cut-shape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`cutShape failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return {
+      materialized: (j.materialized || []).map((m) => ({
+        samSegId: m.sam_seg_id, source: m.source, nPoints: m.n_points,
+        indices: m.scan_indices_b64 ? b64ToInt32(m.scan_indices_b64) : null,
+      })),
+      instance: j.instance ? {
+        instId: j.instance.instance_id, nPoints: j.instance.n_points,
+        indices: j.instance.scan_indices_b64 ? b64ToInt32(j.instance.scan_indices_b64) : null,
+      } : null,
+      nProtected: j.n_protected,
+    };
+  },
   async samCapture({ camera, mode, box = null, text = null }) {
     const r = await fetch('/api/sam/capture', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

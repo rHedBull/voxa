@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply } from './segment-state.js';
+import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
 
 const seed = () => initSegState({
   classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
@@ -54,6 +54,50 @@ describe('segment-state', () => {
     const sum = recomputeSummary(s);
     expect(sum.get(0).nPoints).toBe(2);
     expect(sum.get(1).classId).toBe(1);
+  });
+});
+
+describe('filterSamSelectionOnToolSwitch', () => {
+  const samSegments = new Map([
+    [5, { nPoints: 3, maskScore: 0.9, source: 'sam' }],
+    [6, { nPoints: 2, maskScore: 0.8, source: 'sam' }],
+    [12, { nPoints: 4, maskScore: null, source: 'preseg' }],
+  ]);
+
+  it('drops real SAM candidates (source:"sam") when switching SAM -> Presegment', () => {
+    const sel = new Set([5, 6]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'sam', 'presegment');
+    expect(Array.from(next)).toEqual([]);
+  });
+
+  it('keeps cut candidates (source:"preseg") when switching SAM -> Presegment', () => {
+    const sel = new Set([5, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'sam', 'presegment');
+    expect(Array.from(next)).toEqual([12]);
+  });
+
+  it('drops stale cut candidates (source:"preseg") when switching Presegment -> SAM', () => {
+    const sel = new Set([5, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'presegment', 'sam');
+    expect(Array.from(next)).toEqual([5]);
+  });
+
+  it('keeps real SAM candidates (source:"sam") when switching Presegment -> SAM', () => {
+    const sel = new Set([5, 6, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'presegment', 'sam');
+    expect(Array.from(next)).toEqual([5, 6]);
+  });
+
+  it('is a no-op for any other tool transition, e.g. box -> sam', () => {
+    const sel = new Set([5, 12]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'box', 'sam');
+    expect(next).toBe(sel);
+  });
+
+  it('is a no-op for a non-tool-switch transition, e.g. box -> box (same tool)', () => {
+    const sel = new Set([5]);
+    const next = filterSamSelectionOnToolSwitch(sel, samSegments, 'box', 'box');
+    expect(next).toBe(sel);
   });
 });
 
@@ -275,5 +319,24 @@ describe('SAM candidate layer', () => {
     const instanceFull = new Int32Array([-1]);
     const s = initSegState({ classFull, instanceFull });
     expect(reconcileSamAfterApply(s, new Set())).toBe(s);
+  });
+
+  it('initSegState threads the source tag through hydrated samSegments', () => {
+    const classFull = new Int8Array([-1, -1]);
+    const instanceFull = new Int32Array([-1, -1]);
+    const samIds = new Int32Array([3, 3]);
+    const s = initSegState({
+      classFull, instanceFull, samIds,
+      samSegments: [{ id: 3, n_points: 2, mask_score: 0.5, source: 'preseg' }],
+    });
+    expect(s.samSegments.get(3)).toEqual({ nPoints: 2, maskScore: 0.5, source: 'preseg' });
+  });
+
+  it('applySamDelta stores the source tag on the samSegments entry', () => {
+    const classFull = new Int8Array([-1, -1, -1]);
+    const instanceFull = new Int32Array([-1, -1, -1]);
+    const s = initSegState({ classFull, instanceFull });
+    const next = applySamDelta(s, { indices: [0, 1], samSegId: 5, source: 'preseg' });
+    expect(next.samSegments.get(5).source).toBe('preseg');
   });
 });

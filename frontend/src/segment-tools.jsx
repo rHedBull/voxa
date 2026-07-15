@@ -1,9 +1,13 @@
 // segment-tools.jsx — presegment list (selection panel).
 // Selection happens via Ctrl/Cmd-click in the viewport (wired in mode-label).
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { deriveFastQueue } from './fast-label.jsx';
+import { ContextMenu } from './context-menu.jsx';
+import { cutEligibility } from './cut-eligibility.js';
+import { toggleSamSelection } from './sam-segment-list.jsx';
+import { maskColor } from './sam-util.js';
 
 
 // Center the camera on one segment's bounding box. Shared by the
@@ -61,13 +65,32 @@ export function focusSegment(viewerRef, cloud, segState, segId) {
 // confirm flow here on purpose.
 export function PresegmentList({
   segState, setSegState, classes, viewerRef, cloud,
-  excludeSegIds = null,
+  excludeSegIds = null, onEditSelection = null,
 }) {
   // Same canonical "unpromoted segments, largest first" list fast labeling
   // steps through — one builder so the sidebar and the queue can't drift.
+  const [cutMenu, setCutMenu] = useState(null); // {x, y} | null
+  const [candCutMenu, setCandCutMenu] = useState(null); // {x, y} | null — cut-candidate rows' own menu
+
   const segmentsAll = useMemo(
     () => deriveFastQueue(segState?.summary, excludeSegIds),
     [segState, excludeSegIds]);
+
+  // Cut-out chunks of a presegment (source:'preseg' in segState.samSegments)
+  // live in the same mutable candidate layer SAM masks use — NOT in
+  // segState.instanceFull, so they can't be merged into segmentsAll above.
+  // Shown here per the design spec ("source:'preseg' entries render as new
+  // rows in the Presegment list"), but selected/classified via the shared
+  // samSelection/toggleSamSelection/confirmSamSelection pipeline, never
+  // segState.selection — reusing onRowClick for these rows would toggle the
+  // wrong Set and silently resolve to zero points on classify.
+  const cutCandidates = useMemo(() => {
+    if (!segState?.samSegments) return [];
+    return Array.from(segState.samSegments.entries())
+      .filter(([, meta]) => meta.source === 'preseg')
+      .map(([id, meta]) => ({ id, ...meta }))
+      .sort((a, b) => b.nPoints - a.nPoints);
+  }, [segState]);
 
   // seg.classId is the canonical numeric class id (classes.yaml `id:`), so
   // key by class_id — never array position, which diverges from it.
@@ -87,6 +110,25 @@ export function PresegmentList({
       next.has(segId) ? next.delete(segId) : next.add(segId);
       return { ...s, selection: next };
     });
+  };
+
+  const onRowContextMenu = (e) => {
+    e.preventDefault();
+    setCutMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  // Cut-candidate rows: toggle samSelection (not segState.selection) and open
+  // their own context menu, wired to onEditSelection with kind:'sam' — the
+  // candidate's points physically live in sam_ids regardless of its
+  // display-routing 'preseg' tag, so a recursive cut must address it there.
+  const onCandRowClick = (samSegId, evt) => {
+    if (!(evt.ctrlKey || evt.metaKey || evt.shiftKey)) return;
+    setSegState((s) => (s ? { ...s, samSelection: toggleSamSelection(s.samSelection, samSegId) } : s));
+  };
+
+  const onCandRowContextMenu = (e) => {
+    e.preventDefault();
+    setCandCutMenu({ x: e.clientX, y: e.clientY });
   };
 
   const total = segmentsAll.length;
@@ -111,6 +153,7 @@ export function PresegmentList({
             <div key={seg.id}
               className={'inst-row' + (isSel ? ' selected' : '')}
               onClick={(e) => onRowClick(seg.id, e)}
+              onContextMenu={onRowContextMenu}
               title={isSel ? 'Ctrl/Shift-click to deselect'
                            : 'Ctrl/Shift-click to select'}>
               <span className="inst-dot" style={{ background: dot }} />
@@ -125,6 +168,69 @@ export function PresegmentList({
           );
         })}
       </div>
+      {cutMenu && (
+        <ContextMenu
+          x={cutMenu.x}
+          y={cutMenu.y}
+          onClose={() => setCutMenu(null)}
+          items={[{
+            label: 'Edit selection…',
+            disabled: !cutEligibility({ list: 'preseg', selectionSize: segState.selection.size }).eligible,
+            onSelect: () => {
+              if (!onEditSelection) return;
+              onEditSelection(Array.from(segState.selection).map((segId) => ({ kind: 'preseg', segId })));
+            },
+          }]}
+        />
+      )}
+      {cutCandidates.length > 0 && (
+        <>
+          <div className="side-hd" style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>Cut selections</span>
+            <span className="badge-soft">{cutCandidates.length}</span>
+          </div>
+          <div className="inst-list">
+            {cutCandidates.map((seg) => {
+              const isSel = segState.samSelection?.has(seg.id);
+              return (
+                <div key={`cut-${seg.id}`}
+                  className={'inst-row' + (isSel ? ' selected' : '')}
+                  onClick={(e) => onCandRowClick(seg.id, e)}
+                  onContextMenu={onCandRowContextMenu}
+                  title={isSel ? 'Ctrl/Shift-click to deselect'
+                               : 'Ctrl/Shift-click to select'}>
+                  <span className="inst-dot" style={{ background: maskColor(seg.id) }} />
+                  <div className="inst-text">
+                    <b>Cut #{seg.id}</b>
+                    <em>unclassified · {seg.nPoints.toLocaleString()}</em>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {candCutMenu && (
+        <ContextMenu
+          x={candCutMenu.x}
+          y={candCutMenu.y}
+          onClose={() => setCandCutMenu(null)}
+          items={[{
+            label: 'Edit selection…',
+            // Candidate rows are backed by samSelection, not segState.selection —
+            // eligibility follows the same rule SamSegmentList uses (list:'sam').
+            disabled: !cutEligibility({ list: 'sam', selectionSize: segState.samSelection?.size || 0 }).eligible,
+            onSelect: () => {
+              if (!onEditSelection) return;
+              // kind:'sam' (not 'preseg') — the candidate's points live in
+              // sam_ids regardless of its 'preseg' display-routing tag; the
+              // backend's kind:'preseg' path checks preseg_ids, which would
+              // find nothing for a cut-out chunk.
+              onEditSelection(Array.from(segState.samSelection).map((segId) => ({ kind: 'sam', segId })));
+            },
+          }]}
+        />
+      )}
     </div>
   );
 }

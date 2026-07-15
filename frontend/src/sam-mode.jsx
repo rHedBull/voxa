@@ -256,6 +256,7 @@ export default function SamMode({
           setSegState?.((s) => (s ? applySamDelta(s, {
             indices: seg.indices,
             samSegId: seg.samSegId,
+            source: 'sam',
           }) : s));
         }
       }

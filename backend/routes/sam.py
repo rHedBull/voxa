@@ -87,7 +87,7 @@ def sam_project(req: SamProjectRequest):
     results = []
     for inst in r.json()["instances"]:
         idx = np.frombuffer(base64.b64decode(inst["scan_indices_b64"]), np.int32)
-        out = seg.materialize_sam_segment(idx, protect_instances=req.protect_instances)
+        out = seg.materialize_sam_segment(idx, source="sam", protect_instances=req.protect_instances)
         entry = {
             "mask_id": inst["mask_id"],
             "sam_seg_id": out["sam_seg_id"],

@@ -299,11 +299,29 @@ def test_load_sam_ids_shape_mismatch_raises(tmp_path):
 
 def test_save_and_load_sam_segments_roundtrip(tmp_path):
     from labeling.segment_io import save_sam_segments, load_sam_segments
-    segs = {0: {"n_points": 5, "mask_score": 0.9, "created_at": "2026-07-13T00:00:00+00:00"},
-            2: {"n_points": 3, "mask_score": None, "created_at": "2026-07-13T00:00:01+00:00"}}
+    segs = {0: {"n_points": 5, "mask_score": 0.9, "created_at": "2026-07-13T00:00:00+00:00",
+                "source": "sam"},
+            2: {"n_points": 3, "mask_score": None, "created_at": "2026-07-13T00:00:01+00:00",
+                "source": "sam"}}
     save_sam_segments(tmp_path, segs)
     assert (tmp_path / "sam_segments.json").exists()
     loaded = load_sam_segments(tmp_path)
+    assert loaded == segs
+
+
+def test_save_and_load_sam_segments_roundtrip_preserves_source_tag(tmp_path):
+    """source distinguishes SAM candidates from future non-SAM (e.g. cut) candidates
+    sharing this same persistence layer — it must survive a save/load round trip
+    verbatim, not just be present in the in-memory dict before saving."""
+    from labeling.segment_io import save_sam_segments, load_sam_segments
+    segs = {0: {"n_points": 5, "mask_score": 0.9, "created_at": "2026-07-13T00:00:00+00:00",
+                "source": "sam"},
+            1: {"n_points": 7, "mask_score": None, "created_at": "2026-07-13T00:00:02+00:00",
+                "source": "cut"}}
+    save_sam_segments(tmp_path, segs)
+    loaded = load_sam_segments(tmp_path)
+    assert loaded[0]["source"] == "sam"
+    assert loaded[1]["source"] == "cut"
     assert loaded == segs
 
 

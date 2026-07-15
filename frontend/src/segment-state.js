@@ -24,7 +24,7 @@ export function initSegState({
     // always pairs with a real classFull entry once >= 0).
     samIds: samIds || new Int32Array(classFull.length).fill(-1),
     samSegments: new Map(samSegments.map((s) =>
-      [s.id, { nPoints: s.n_points, maskScore: s.mask_score ?? null }])),
+      [s.id, { nPoints: s.n_points, maskScore: s.mask_score ?? null, source: s.source }])),
     samSelection: new Set(),
   };
 }
@@ -71,7 +71,7 @@ function retireSamIdsForIndices(state, indices) {
 // The SAM-layer analogue of applyDelta: writes samSegId at each index and
 // shrinks/drops any older candidate those indices used to belong to
 // (last-materialize-wins, mirrors SegmentSession._retire_sam_ids).
-export function applySamDelta(state, { indices, samSegId }) {
+export function applySamDelta(state, { indices, samSegId, source }) {
   const samIds = state.samIds.slice();
   const shrink = new Map();
   for (let k = 0; k < indices.length; k++) {
@@ -87,7 +87,7 @@ export function applySamDelta(state, { indices, samSegId }) {
     if (nPoints <= 0) samSegments.delete(oldId);
     else samSegments.set(oldId, { ...entry, nPoints });
   }
-  samSegments.set(samSegId, { nPoints: indices.length, maskScore: null });
+  samSegments.set(samSegId, { nPoints: indices.length, maskScore: null, source });
   return { ...state, samIds, samSegments };
 }
 
@@ -108,6 +108,29 @@ export function reconcileSamAfterApply(state, appliedSamSegIds) {
     samSelection.delete(id);
   }
   return { ...state, samIds, samSegments, samSelection };
+}
+
+// samSelection is shared by the SAM tool and the Presegment tool (cut
+// candidates tagged source:'preseg' render/select from either), but a
+// candidate whose source tag doesn't match the tool being entered must NOT
+// survive the switch — otherwise a forgotten selection from the OTHER tool
+// silently gets classified alongside whatever the user actually selects
+// after switching (mode-label.jsx's classify-gating checks samSelection
+// before segState.selection, and both confirmSamSelection and the viewport
+// recolor/pick logic operate on the raw, unfiltered samSelection). This is
+// symmetric: SAM -> Presegment drops source:'sam' ids, and Presegment -> SAM
+// drops source:'preseg' ids. Every other tool-switch case already fully
+// clears samSelection (see mode-label.jsx's tool-switch effect).
+export function filterSamSelectionOnToolSwitch(samSelection, samSegments, fromTool, toTool) {
+  const samToPreseg = fromTool === 'sam' && toTool === 'presegment';
+  const presegToSam = fromTool === 'presegment' && toTool === 'sam';
+  if (!samToPreseg && !presegToSam) return samSelection;
+  const keepSource = samToPreseg ? 'preseg' : 'sam';
+  const next = new Set();
+  for (const id of samSelection) {
+    if (samSegments.get(id)?.source === keepSource) next.add(id);
+  }
+  return next;
 }
 
 export function recomputeSummary(state) {

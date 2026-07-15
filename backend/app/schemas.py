@@ -170,6 +170,16 @@ class ApplyShapeRequest(BaseModel):
     # inside the shape that belong to these instances are skipped, not stolen.
     protect_instances: list[int] = []
 
+class CutShapeSource(BaseModel):
+    kind: Literal["preseg", "sam", "instance"]
+    # meaning depends on kind: preseg_ids value / sam_ids value / instance_ids value
+    seg_id: int
+
+class CutShapeRequest(BaseModel):
+    shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
+    sources: list[CutShapeSource]
+    protect_instances: list[int] = []
+
 class SamCaptureRequest(BaseModel):
     camera: dict                      # {pos,target,fov,W,H} in the recentered frame
     mode: str                         # "box" | "concept"
