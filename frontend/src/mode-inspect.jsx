@@ -12,7 +12,8 @@ function fmtCount(n) {
 }
 
 // A right-rail panel whose body collapses when its header is clicked.
-function CollapsiblePanel({ title, defaultOpen = false, children }) {
+// Exported so Label mode's Display panel reuses the same shell.
+export function CollapsiblePanel({ title, defaultOpen = false, children }) {
   const [open, setOpen] = useStateInspect(defaultOpen);
   return (
     <div className={'panel' + (open ? '' : ' collapsed')}>
