@@ -5,6 +5,7 @@ import { useState as useStateLabel, useMemo as useMemoLabel,
          useRef as useRefLabel } from 'react';
 import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
+import { CollapsiblePanel } from './mode-inspect.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
 import { focusSegment } from './segment-tools.jsx';
@@ -65,12 +66,27 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false, sam: false });
   const autoConfirmFor = (tool) =>
     tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
-  // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
-  // run — wildly different hues per segment make the grouping legible.
-  const [colorMode] = useStateLabel('class');
-  // Draw works on the raw RGB cloud, where bumping the point size makes the
-  // sparse subsample read denser (same slider as Inspect).
+  // Color mode picked in the Display panel; null = automatic — class colors
+  // while Presegment is active (so existing labels stay legible during
+  // selection; per-segment hues override per-point colors once hulls exist
+  // anyway), raw RGB for every other tool. Picking a pill pins the mode.
+  const [colorModeChoice, setColorModeChoice] = useStateLabel(null);
+  const colorMode = colorModeChoice ?? (isPreseg ? 'class' : 'rgb');
+  // Which color channels this scene offers (mirrors Inspect's Display panel).
+  const colorChannels = useMemoLabel(() => ({
+    rgb: !!cloud,
+    height: !!cloud,
+    class: !!cloud && !!cloud.classIds && !!cloud.classPalette,
+    instance: !!cloud && !!cloud.instanceIds,
+  }), [cloud]);
+  // Drop a pinned mode the scene can't honor — back to automatic.
+  useEffectLabel(() => {
+    if (cloud && colorModeChoice && !colorChannels[colorModeChoice]) setColorModeChoice(null);
+  }, [cloud, colorChannels, colorModeChoice]);
+  // Point size lives in the Display panel (same slider as Inspect); bumping
+  // it makes the sparse subsample read denser for Draw/Beam work.
   const [pointSize, setPointSize] = useStateLabel(0.012);
+  const [showFloor, setShowFloor] = useStateLabel(true);
   const [showDiff, setShowDiff] = useStateLabel(false);
   // Gizmo mode for the selected cuboid. null = no gizmo (edges only).
   const [transformMode, setTransformMode] = useStateLabel('translate');
@@ -1255,7 +1271,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm}
           segState={segState} setSegState={setSegState} classes={classes}
           viewerRef={viewerRef} cloud={cloud} promotedSegIds={promotedSegIds}
-          pointSize={pointSize} setPointSize={setPointSize}
           activeClass={activeClass} setActiveClass={setActiveClass}
           onExit={() => setActiveTool('presegment')}
           onToolApplied={onToolApplied}
@@ -1280,8 +1295,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           background={theme.bg}
           floorColor={theme.floor}
           navMode={navMode}
-          colorMode={isPreseg ? colorMode : 'rgb'}
+          colorMode={colorMode}
           pointSize={pointSize}
+          showFloor={showFloor}
           diffMask={diffMask}
           showDiff={showDiff}
           transformMode={selBox ? (transformMode || 'translate') : null}
@@ -1340,6 +1356,45 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               ▦ Mesh window
             </button>
           </div>
+        </div>
+
+        {/* Same Display controls as Inspect (minus mesh — that's the
+            companion window above), collapsed by default so the labeling
+            viewport stays clear. */}
+        <div className="inspect-right">
+          <CollapsiblePanel title="Display">
+            <div className="ctrl">
+              <label>Color by</label>
+              <div className="pill-group">
+                {[
+                  ['rgb', 'RGB'],
+                  ['height', 'Height'],
+                  ['class', 'Class'],
+                  ['instance', 'Instance'],
+                ].map(([k, l]) => {
+                  const enabled = !!colorChannels[k];
+                  return (
+                    <button key={k}
+                      className={'pill' + (colorMode === k ? ' active' : '') + (enabled ? '' : ' disabled')}
+                      disabled={!enabled}
+                      title={enabled ? '' : `not available — scene has no ${k} channel`}
+                      onClick={() => enabled && setColorModeChoice(k)}>{l}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="ctrl">
+              <label>Point size <span className="mono">{pointSize.toFixed(3)}</span></label>
+              <input type="range" min={0.002} max={1.5} step={0.005}
+                value={pointSize} className="slider"
+                onChange={(e) => setPointSize(Number(e.target.value))} />
+            </div>
+            <div className="ctrl row">
+              <label>Floor & grid</label>
+              <button className={'sw' + (showFloor ? ' on' : '')}
+                onClick={() => setShowFloor(!showFloor)}><i /></button>
+            </div>
+          </CollapsiblePanel>
         </div>
 
         <div className="vp-help-corner">

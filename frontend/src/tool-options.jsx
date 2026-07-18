@@ -52,7 +52,7 @@ function PresegOptions({
 }
 
 function DrawOptions({
-  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  viewerRef, classes, setSegState, onExit,
   activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
   protectInstances,
 }) {
@@ -63,8 +63,6 @@ function DrawOptions({
         classes={classes}
         setSegState={setSegState}
         onExit={onExit}
-        pointSize={pointSize}
-        setPointSize={setPointSize}
         defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
         onClassChange={(cid) => {
           const cls = classes.find((c) => c.class_id === cid);
@@ -79,7 +77,7 @@ function DrawOptions({
 }
 
 function BeamOptions({
-  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  viewerRef, classes, setSegState, onExit,
   activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
   activeSessionId, protectInstances,
 }) {
@@ -95,8 +93,6 @@ function BeamOptions({
         classes={classes}
         setSegState={setSegState}
         onExit={onExit}
-        pointSize={pointSize}
-        setPointSize={setPointSize}
         defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
         onClassChange={(cid) => {
           const cls = classes.find((c) => c.class_id === cid);

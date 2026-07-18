@@ -318,7 +318,7 @@ function DrawOverlay({ viewerRef, draw, setDraw, classes, defaultClassId, hideAp
 }
 
 export default function DrawMode({
-  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  viewerRef, classes, setSegState, onExit,
   defaultClassId, onClassChange, onApplied, protectInstances = [],
 }) {
   const [draw, setDraw] = useState(() => initDrawState());
@@ -476,8 +476,6 @@ export default function DrawMode({
         setDraw={setDraw}
         classes={classes}
         onApply={applySelection}
-        pointSize={pointSize}
-        setPointSize={setPointSize}
         hideApplied={hideApplied}
         setHideApplied={setHideApplied}
       />
@@ -489,7 +487,7 @@ export default function DrawMode({
 // LabelMode inside the left sidebar (portal-free: this component returns
 // plain divs; LabelMode places it).
 function DrawPanel({
-  draw, setDraw, classes, onApply, pointSize, setPointSize,
+  draw, setDraw, classes, onApply,
   hideApplied, setHideApplied,
 }) {
   const selected = draw.paths.filter((p) => draw.selection.has(p.key));
@@ -520,12 +518,6 @@ function DrawPanel({
             const v = parseFloat(e.target.value);
             if (Number.isFinite(v) && v > 0) setDraw((s) => setRadius(s, v));
           }} />
-      </div>
-      <div className="ctrl" style={{ margin: '6px 0' }}>
-        <label>Point size <span className="mono">{pointSize.toFixed(3)}</span></label>
-        <input type="range" min={0.002} max={1.5} step={0.005}
-          value={pointSize} className="slider"
-          onChange={(e) => setPointSize(Number(e.target.value))} />
       </div>
       <div style={{ maxHeight: 180, overflowY: 'auto' }}>
         {draw.paths.map((p) => {
