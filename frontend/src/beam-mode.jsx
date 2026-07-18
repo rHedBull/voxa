@@ -323,7 +323,7 @@ function BeamOverlay({ viewerRef, beam, setBeam, classes, defaultClassId, showCo
 }
 
 export default function BeamMode({
-  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  viewerRef, classes, setSegState, onExit,
   defaultClassId, onClassChange, onApplied, sessionId, protectInstances = [],
 }) {
   const [beam, setBeam] = useState(() => initBeamState());
@@ -508,8 +508,6 @@ export default function BeamMode({
         classes={classes}
         onApply={applyAll}
         onCommit={commitBatch}
-        pointSize={pointSize}
-        setPointSize={setPointSize}
         showCommitted={showCommitted}
         setShowCommitted={setShowCommitted}
       />
@@ -520,7 +518,7 @@ export default function BeamMode({
 // Side-panel section: beam list + width field + actions (rendered by
 // LabelMode inside the left sidebar, like DrawPanel).
 function BeamPanel({
-  beam, setBeam, classes, onApply, onCommit, pointSize, setPointSize,
+  beam, setBeam, classes, onApply, onCommit,
   showCommitted, setShowCommitted,
 }) {
   const selEdge = beam.selection?.kind === 'edge'
@@ -550,12 +548,6 @@ function BeamPanel({
             const v = parseFloat(e.target.value);
             if (Number.isFinite(v) && v > 0) setBeam((s) => setWidth(s, v));
           }} />
-      </div>
-      <div className="ctrl" style={{ margin: '6px 0' }}>
-        <label>Point size <span className="mono">{pointSize.toFixed(3)}</span></label>
-        <input type="range" min={0.002} max={1.5} step={0.005}
-          value={pointSize} className="slider"
-          onChange={(e) => setPointSize(Number(e.target.value))} />
       </div>
       <div style={{ maxHeight: 180, overflowY: 'auto' }}>
         {beam.edges.map((e) => {

@@ -83,8 +83,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   useEffectLabel(() => {
     if (cloud && colorModeChoice && !colorChannels[colorModeChoice]) setColorModeChoice(null);
   }, [cloud, colorChannels, colorModeChoice]);
-  // Draw works on the raw RGB cloud, where bumping the point size makes the
-  // sparse subsample read denser (same slider as Inspect).
+  // Point size lives in the Display panel (same slider as Inspect); bumping
+  // it makes the sparse subsample read denser for Draw/Beam work.
   const [pointSize, setPointSize] = useStateLabel(0.012);
   const [showFloor, setShowFloor] = useStateLabel(true);
   const [showDiff, setShowDiff] = useStateLabel(false);
@@ -1271,7 +1271,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm}
           segState={segState} setSegState={setSegState} classes={classes}
           viewerRef={viewerRef} cloud={cloud} promotedSegIds={promotedSegIds}
-          pointSize={pointSize} setPointSize={setPointSize}
           activeClass={activeClass} setActiveClass={setActiveClass}
           onExit={() => setActiveTool('presegment')}
           onToolApplied={onToolApplied}
