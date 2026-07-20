@@ -54,6 +54,40 @@ function nearestEdge(corners, baseY, camera) {
   return best;
 }
 
+// Fan-triangulate a closed ring of Vector3 into a flat position array (from the
+// centroid), and the side walls between a bottom and top ring — the translucent
+// fills that make the footprint/prism read as solid surfaces, mirroring the
+// Measure Surface (buildSurfaceMesh) and Volume (buildVolumeMesh) tools.
+function fanTris(ring) {
+  const c = new THREE.Vector3();
+  ring.forEach((p) => c.add(p));
+  c.multiplyScalar(1 / ring.length);
+  const pos = [];
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length];
+    pos.push(c.x, c.y, c.z, a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  return pos;
+}
+function wallTris(bot, top) {
+  const pos = [];
+  for (let i = 0; i < bot.length; i++) {
+    const b1 = bot[i], b2 = bot[(i + 1) % bot.length], t1 = top[i], t2 = top[(i + 1) % top.length];
+    pos.push(b1.x, b1.y, b1.z, b2.x, b2.y, b2.z, t2.x, t2.y, t2.z);
+    pos.push(b1.x, b1.y, b1.z, t2.x, t2.y, t2.z, t1.x, t1.y, t1.z);
+  }
+  return pos;
+}
+function fillMesh(positions, opacity) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+    color: ACCENT, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+  }));
+  m.raycast = () => {};
+  return m;
+}
+
 // Bounding-box-scaled marker radius so corner spheres read at any scene scale.
 function markerRadius(corners) {
   if (corners.length < 2) return 0.05;
@@ -207,24 +241,28 @@ function PrismOverlay({ viewerRef, prism, setPrism, onClose }) {
     }
 
     if (phase === 'footprint') {
-      // Open outline through the snapped corners (sits on the surface).
+      const pts = corners.map((c) => new THREE.Vector3(...c));
+      // Translucent fill of the traced surface (once it's an area), like the
+      // Measure Surface tool; open outline through the snapped corners.
+      if (corners.length >= 3) group.add(fillMesh(fanTris(pts), 0.18));
       if (corners.length >= 2) {
-        const geo = new THREE.BufferGeometry().setFromPoints(corners.map((c) => new THREE.Vector3(...c)));
-        group.add(noRay(new THREE.Line(geo, mat(0.95))));
+        group.add(noRay(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat(0.95))));
       }
       return;
     }
 
-    // Height phase: the flat prism the selection will actually use.
+    // Height phase: the flat prism the selection will actually use — filled
+    // (top/bottom faces + side walls) like the Measure Volume tool.
     const shape = prismShapeFromCorners(corners, prism.topY ?? prism.baseY);
     const lo = shape ? shape.y0 : prism.baseY;
     const hi = shape ? shape.y0 + shape.height : prism.baseY;
     const poly = corners.map((c) => [c[0], c[2]]);
     const ring = (y) => poly.map(([x, z]) => new THREE.Vector3(x, y, z));
-    group.add(noRay(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(ring(lo)), mat(0.95))));
-    group.add(noRay(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(ring(hi)), mat(0.95))));
-    const seg = [];
     const bot = ring(lo), top = ring(hi);
+    group.add(fillMesh([...fanTris(bot), ...fanTris(top), ...wallTris(bot, top)], 0.13));
+    group.add(noRay(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(bot), mat(0.95))));
+    group.add(noRay(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(top), mat(0.95))));
+    const seg = [];
     for (let i = 0; i < poly.length; i++) { seg.push(bot[i], top[i]); }
     group.add(noRay(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), mat(0.5))));
   }, [prism]);
