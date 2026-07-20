@@ -318,6 +318,45 @@ def cut_shape(req: CutShapeRequest):
         raise HTTPException(400, str(e))
 
 
+def _fit_box_core(seg, sources: list) -> dict:
+    """Resolve `sources` to a unioned full-res index set (same membership rules
+    as _cut_shape_core) and fit a gravity-aligned OBB around those points.
+    Raises ValueError (→ 400) if the union is empty."""
+    from labeling.fit_box import fit_gravity_obb
+    masks = []
+    for src in sources:
+        if src.kind in ("preseg", "instance"):
+            masks.append(seg.instance_ids == src.seg_id)
+        elif src.kind == "sam":
+            masks.append(seg.sam_ids == src.seg_id)
+        else:
+            raise ValueError(f"unknown source kind: {src.kind!r}")
+    if not masks:
+        raise ValueError("no sources given")
+    union = np.zeros(seg.instance_ids.shape[0], dtype=bool)
+    for m in masks:
+        union |= m
+    idx = np.nonzero(union)[0]
+    if idx.size == 0:
+        raise ValueError("selection resolved to zero points")
+    center, size, rotation = fit_gravity_obb(np.asarray(seg.positions)[idx])
+    return {"center": center, "size": size, "rotation": rotation}
+
+
+@router.post("/api/segment/fit-box")
+def fit_box(req: FitBoxRequest):
+    """Fit a gravity-aligned selection box around the currently-selected
+    points (presegments / SAM candidates / an instance). Returns an OBB
+    {center,size,rotation:[0,ry,0]} the frontend stages as the Box tool's
+    selBox — it labels nothing. See
+    docs/superpowers/specs/2026-07-20-fit-box-to-selection-design.md."""
+    seg = _require_seg()
+    try:
+        return _fit_box_core(seg, req.sources)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 def _require_session_seg():
     """Active SegmentSession that has a session dir (409 otherwise) — shared
     by the centerline/structure persistence routes."""

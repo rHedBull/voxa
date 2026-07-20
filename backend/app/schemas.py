@@ -185,6 +185,9 @@ class CutShapeRequest(BaseModel):
     sources: list[CutShapeSource]
     protect_instances: list[int] = []
 
+class FitBoxRequest(BaseModel):
+    sources: list[CutShapeSource]
+
 class DenoiseRequest(BaseModel):
     std_ratio: float = 2.0
     k: int = 16

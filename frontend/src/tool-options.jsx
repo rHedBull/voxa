@@ -22,7 +22,7 @@ function AutoConfirmToggle({
 function PresegOptions({
   presegRapid, setPresegRapid, setFastPos, autoConfirm, setAutoConfirm,
   segState, setSegState, classes, viewerRef, cloud, promotedSegIds,
-  onEditSelection,
+  onEditSelection, onFitBox,
 }) {
   return (
     <div className="tool-options tool-options-presegment">
@@ -46,6 +46,7 @@ function PresegOptions({
           cloud={cloud}
           excludeSegIds={promotedSegIds}
           onEditSelection={onEditSelection}
+          onFitBox={onFitBox}
         />
       )}
     </div>
@@ -132,7 +133,7 @@ function PrismOptions({
 
 function SamOptions({
   viewerRef, protectInstances, setSegState, segState,
-  autoConfirm, setAutoConfirm, activeSessionId, onEditSelection, onRemoveOutliers,
+  autoConfirm, setAutoConfirm, activeSessionId, onEditSelection, onRemoveOutliers, onFitBox,
 }) {
   return (
     <div className="tool-options tool-options-sam">
@@ -143,7 +144,7 @@ function SamOptions({
         protectInstances={protectInstances}
       />
       {segState && (
-        <SamSegmentList segState={segState} setSegState={setSegState} onEditSelection={onEditSelection} onRemoveOutliers={onRemoveOutliers} />
+        <SamSegmentList segState={segState} setSegState={setSegState} onEditSelection={onEditSelection} onRemoveOutliers={onRemoveOutliers} onFitBox={onFitBox} />
       )}
       {/* Accepting a mask only materializes a candidate (Task 6-12) — it
           doesn't label anything, so this toggle can't live next to "Add to

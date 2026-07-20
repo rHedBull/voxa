@@ -7,6 +7,7 @@ import { maskColor } from './sam-util.js';
 import { ContextMenu } from './context-menu.jsx';
 import { cutEligibility } from './cut-eligibility.js';
 import { removeOutliersEligibility } from './outlier-eligibility.js';
+import { fitEligibility } from './fit-eligibility.js';
 
 export function toggleSamSelection(samSelection, samSegId) {
   const next = new Set(samSelection);
@@ -14,7 +15,7 @@ export function toggleSamSelection(samSelection, samSegId) {
   return next;
 }
 
-export function SamSegmentList({ segState, setSegState, onEditSelection = null, onRemoveOutliers = null }) {
+export function SamSegmentList({ segState, setSegState, onEditSelection = null, onRemoveOutliers = null, onFitBox = null }) {
   const [cutMenu, setCutMenu] = useState(null); // {x, y} | null
 
   // Only 'sam'-sourced candidates belong here — 'preseg'-sourced cut
@@ -90,6 +91,13 @@ export function SamSegmentList({ segState, setSegState, onEditSelection = null, 
             onSelect: () => {
               if (!onRemoveOutliers) return;
               onRemoveOutliers({ source: 'sam', id: [...segState.samSelection][0] });
+            },
+          }, {
+            label: 'Fit box to selection…',
+            disabled: !fitEligibility({ list: 'sam', selectionSize: segState.samSelection.size }).eligible,
+            onSelect: () => {
+              if (!onFitBox) return;
+              onFitBox(Array.from(segState.samSelection).map((segId) => ({ kind: 'sam', segId })));
             },
           }]}
         />

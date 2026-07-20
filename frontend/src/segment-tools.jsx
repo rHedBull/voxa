@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { deriveFastQueue } from './fast-label.jsx';
 import { ContextMenu } from './context-menu.jsx';
 import { cutEligibility } from './cut-eligibility.js';
+import { fitEligibility } from './fit-eligibility.js';
 import { toggleSamSelection } from './sam-segment-list.jsx';
 import { maskColor } from './sam-util.js';
 
@@ -65,7 +66,7 @@ export function focusSegment(viewerRef, cloud, segState, segId) {
 // confirm flow here on purpose.
 export function PresegmentList({
   segState, setSegState, classes, viewerRef, cloud,
-  excludeSegIds = null, onEditSelection = null,
+  excludeSegIds = null, onEditSelection = null, onFitBox = null,
 }) {
   // Same canonical "unpromoted segments, largest first" list fast labeling
   // steps through — one builder so the sidebar and the queue can't drift.
@@ -180,6 +181,13 @@ export function PresegmentList({
               if (!onEditSelection) return;
               onEditSelection(Array.from(segState.selection).map((segId) => ({ kind: 'preseg', segId })));
             },
+          }, {
+            label: 'Fit box to selection…',
+            disabled: !fitEligibility({ list: 'preseg', selectionSize: segState.selection.size }).eligible,
+            onSelect: () => {
+              if (!onFitBox) return;
+              onFitBox(Array.from(segState.selection).map((segId) => ({ kind: 'preseg', segId })));
+            },
           }]}
         />
       )}
@@ -227,6 +235,14 @@ export function PresegmentList({
               // backend's kind:'preseg' path checks preseg_ids, which would
               // find nothing for a cut-out chunk.
               onEditSelection(Array.from(segState.samSelection).map((segId) => ({ kind: 'sam', segId })));
+            },
+          }, {
+            label: 'Fit box to selection…',
+            disabled: !fitEligibility({ list: 'sam', selectionSize: segState.samSelection?.size || 0 }).eligible,
+            onSelect: () => {
+              if (!onFitBox) return;
+              // kind:'sam' — same reasoning as the "Edit selection…" item above.
+              onFitBox(Array.from(segState.samSelection).map((segId) => ({ kind: 'sam', segId })));
             },
           }]}
         />
