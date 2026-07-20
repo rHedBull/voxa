@@ -162,7 +162,7 @@ class CenterlineApplyRequest(BaseModel):
     protect_instances: list[int] = []  # see ApplyShapeRequest
 
 class ApplyShapeRequest(BaseModel):
-    shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
+    shape: dict            # {type:'tube'|'obb'|'prism', ...} — validated in shape_indices
     target_class: int | str
     target_inst: int = -1
     merged_from: list[int] = []
@@ -176,7 +176,7 @@ class CutShapeSource(BaseModel):
     seg_id: int
 
 class CutShapeRequest(BaseModel):
-    shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
+    shape: dict            # {type:'tube'|'obb'|'prism', ...} — validated in shape_indices
     sources: list[CutShapeSource]
     protect_instances: list[int] = []
 

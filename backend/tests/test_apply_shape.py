@@ -65,6 +65,29 @@ def test_apply_shape_skips_protected_instances(client_with_loaded_annotated_scen
     assert r3.json()["n_affected"] == a_n
 
 
+def test_apply_shape_prism_labels_enclosed_points(client_with_loaded_annotated_scene):
+    # Fixture cloud is `rng.default_rng(0).standard_normal((8, 3))` (see
+    # conftest.py::write_scene_ply). A [-2,2]x[-2,2] XZ square combined with
+    # a y-band of [-1.0, 0.5] encloses exactly points {0,1,3,5,7} (point 4 is
+    # excluded by the XZ square, points 2 and 6 by the y-band) — verified by
+    # calling prism_indices directly on the same fixture coordinates.
+    client = client_with_loaded_annotated_scene
+    polygon = [[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
+    r = client.post("/api/segment/apply-shape", json={
+        "shape": {"type": "prism", "polygon": polygon, "y0": -1.0, "height": 1.5},
+        "target_class": "pipe", "target_inst": -1, "merged_from": [],
+        "protect_instances": [],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    # Non-empty apply-shape responses are serialized by the same
+    # `_serialize_apply` as every other shape type — `op` is the underlying
+    # `apply_reassign` op ("reassign"), not the route name; the OBB test above
+    # doesn't check it for the same reason.
+    assert body["op"] == "reassign"
+    assert body["n_affected"] == 5
+
+
 def test_apply_shape_unknown_type_400(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/apply-shape",
