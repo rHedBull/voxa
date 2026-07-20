@@ -47,11 +47,16 @@ separate (see Non-goals).
 
 ## Data flow
 
+The wire contract is `sources: [{kind, seg_id}, ...]` (see Backend) — the
+authoritative shape. The frontend holds a selection as `{source, ids}` (one
+list, an id set) and fans it out into that array before posting
+(`{source:'preseg', ids:[1,2,3]}` → `[{kind:'preseg', seg_id:1}, ...]`).
+
 ```
 Select rows (Presegment / SAM / Instances list)
   → right-click "Fit box to selection…"
-  → capture {source, ids} BEFORE any tool switch (selection clears on switch)
-  → POST /api/segment/fit-box {source, ids}
+  → capture the selection BEFORE any tool switch (selection clears on switch)
+  → POST /api/segment/fit-box { sources: [{kind, seg_id}, ...] }
   → backend: resolve source membership → full-res indices (union)
              → seg.positions[idx] → fit gravity-aligned OBB
              → {center, size, rotation:[0,ry,0]}
@@ -65,6 +70,14 @@ is an ordinary Box selection: apply resolves the OBB to full-res points via
 `shape_indices('obb')` and `apply_reassign`s them, honoring `protect_instances`
 (confirmed = locked). This is exactly the existing Box behavior — no new apply
 path.
+
+**Fitting to a confirmed instance cannot extend that instance.** Because apply
+carries `protect_instances` = the confirmed segIds, the confirmed instance's own
+points are dropped by the reassign; the resulting box labels only the
+*surrounding* unconfirmed/unlabeled points into a **new** instance. This is the
+intended "grab the rest of a partially-labeled object" workflow — but it does
+not (and by the confirmed=locked rule must not) re-write the confirmed points.
+To grow a confirmed instance itself, un-confirm it first.
 
 ## Backend
 
