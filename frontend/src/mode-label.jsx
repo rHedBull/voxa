@@ -356,6 +356,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const [exportOpen, setExportOpen] = useStateLabel(false);
 
+  const [denoiseRatio, setDenoiseRatio] = useStateLabel(2.0);
+  const [denoiseInstId, setDenoiseInstId] = useStateLabel(null);  // backend instance id of the live denoise result
+  const [denoiseBusy, setDenoiseBusy] = useStateLabel(false);
+
   // Per-class point counts (class_id → n_points) for the export wizard's
   // "~0 after filters" guard. Derived from the load-time segment_summary;
   // null when the session wasn't loaded from a prelabel (then the wizard
@@ -595,6 +599,54 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       }]);
     }
   }, [cutModal, classes, instances, counts, onChange, setSegState]);
+
+  // Feature C: global "Detect outliers". Runs cloud-wide statistical outlier
+  // removal on the backend and stages the outliers as one unconfirmed Exclude
+  // pointset. Re-runs pass the tracked denoiseInstId as replaceInst so the
+  // backend erases the prior result first; we then drop the old row and add the
+  // new one (re-running never stacks Exclude instances). Mirrors
+  // onCutConfirmedHandler's segState patch + Instances-panel row append.
+  const runDenoise = useCallbackLabel(async () => {
+    if (!segState || denoiseBusy) return;
+    setDenoiseBusy(true);
+    try {
+      const resp = await VoxaAPI.denoise({
+        stdRatio: denoiseRatio,
+        replaceInst: denoiseInstId,           // erase the prior result first
+        protectInstances: protectedSegIds,
+      });
+      // Drop the previous denoise row (its points were just erased server-side).
+      const cls = classes.find((c) => c.class_id === 6);   // Exclude / Review
+      const kept = instances.filter((i) => i.segId !== denoiseInstId);
+      if (resp.instance_id == null) {
+        onChange(kept);
+        setDenoiseInstId(null);
+      } else {
+        const idx = resp.indices;                            // Int32Array (decoded in api.js)
+        const afterClass = new Int8Array(idx.length).fill(cls.class_id);
+        const afterInstance = new Int32Array(idx.length).fill(resp.instance_id);
+        setSegState((s) => (s ? applyDelta(s, {
+          indices: idx, after_class: afterClass, after_instance: afterInstance,
+        }) : s));
+        onChange([...kept, {
+          id: newId(),
+          segId: resp.instance_id,
+          kind: 'pointset',
+          cls: cls.id,
+          label: `${cls.label} ${(counts[cls.id] || 0) + 1}`,
+          color: cls.color,
+          source: 'denoise',
+          confirmed: false,
+        }]);
+        setDenoiseInstId(resp.instance_id);
+      }
+    } catch (e) {
+      console.error('denoise failed', e);
+    } finally {
+      setDenoiseBusy(false);
+    }
+  }, [segState, denoiseBusy, denoiseRatio, denoiseInstId, protectedSegIds,
+      classes, instances, counts, onChange, setSegState]);
 
   // Always populated when there are confirmed instances, regardless of the
   // hide toggle. The Viewer uses it to compute "points labeled / left" stats
@@ -1246,6 +1298,22 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             onClick={() => setExportOpen(true)}>
             ⬇ Export…
           </button>
+        )}
+        {isAnnotated && (
+          <div className="denoise-row" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              className="ghost-btn"
+              disabled={!activeSessionId || denoiseBusy}
+              title={activeSessionId ? 'Detect stray outlier points and stage them as Exclude'
+                                     : 'Open a session first'}
+              onClick={runDenoise}>
+              {denoiseBusy ? '… Detecting' : '✧ Detect outliers'}
+            </button>
+            <input type="range" min="1" max="3" step="0.1"
+              value={denoiseRatio}
+              onChange={(e) => setDenoiseRatio(parseFloat(e.target.value))}
+              title={`Aggressiveness (σ=${denoiseRatio.toFixed(1)}; lower = greedier)`} />
+          </div>
         )}
         <div className="side-hd">
           <span>Classes</span>
