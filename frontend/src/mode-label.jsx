@@ -21,6 +21,7 @@ import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
 import { ClassPickerModal } from './class-picker.jsx';
 import { cutEligibility } from './cut-eligibility.js';
+import { fitEligibility } from './fit-eligibility.js';
 import CutModal from './cut-mode.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
@@ -553,6 +554,27 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const openCutModal = useCallbackLabel((sources, instanceClassId = null) => {
     setCutModal({ sources, instanceClassId });
   }, []);
+
+  // Fit a gravity-aligned Box selection volume around the current selection's
+  // points, then hand it to the Box tool (staged, unconfirmed). Capture happens
+  // here — BEFORE setActiveTool('box'), which clears the preseg/SAM selection.
+  const fitBoxToSelection = useCallbackLabel(async (sources) => {
+    try {
+      const obb = await VoxaAPI.fitBox(sources);
+      // FULL selBox shape (mirror toggleBoxSelect) — id is mandatory or the box
+      // is invisible and non-transformable (Viewer gates on LABEL_SEL_BOX_ID).
+      setSelBox({
+        id: LABEL_SEL_BOX_ID,
+        label: 'box-select',
+        cls: 0,
+        color: LABEL_SEL_BOX_COLOR,
+        center: obb.center, size: obb.size, rotation: obb.rotation,
+      });
+      setActiveTool('box');
+    } catch (e) {
+      console.error('fit-box failed', e);
+    }
+  }, [setSelBox, setActiveTool]);
 
   // Reports the raw VoxaAPI.cutShape(...) response upward from CutModal.
   // Mirrors confirmSegmentSelection/confirmSamSelection/applyBox: this is the
@@ -1284,7 +1306,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           transformMode={transformMode} setTransformMode={setTransformMode}
           onAutoFit={autoFitBox}
           onApply={() => setClassPickerOpen(true)}
-          onEditSelection={openCutModal} />
+          onEditSelection={openCutModal}
+          onFitBox={fitBoxToSelection} />
       </aside>
 
       {/* Center: viewport */}
@@ -1597,6 +1620,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 onSelect: () => {
                   if (!target || !Number.isFinite(target.segId)) return;
                   openCutModal([{ kind: 'instance', segId: target.segId }], target.cls);
+                },
+              }, {
+                // Fitting only READS the source points — a confirmed instance is
+                // still eligible (see fit-eligibility.js).
+                label: 'Fit box to selection…',
+                disabled: !fitEligibility({
+                  list: 'instance',
+                  isSelected: instCutMenu.instId === selectedId,
+                }).eligible,
+                onSelect: () => {
+                  if (!target || !Number.isFinite(target.segId)) return;
+                  fitBoxToSelection([{ kind: 'instance', segId: target.segId }]);
                 },
               }]}
             />

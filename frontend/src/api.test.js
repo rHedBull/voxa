@@ -404,6 +404,20 @@ describe('centerline API', () => {
     expect(result.instance.indices).toEqual(Int32Array.from([1, 2, 3]));
   });
 
+  it('fitBox posts sources and returns the OBB', async () => {
+    const obb = { center: [0, 0, 0], size: [1, 2, 3], rotation: [0, 0.5, 0] };
+    let capturedUrl, capturedOpts;
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      capturedUrl = url;
+      capturedOpts = opts;
+      return { ok: true, json: async () => obb };
+    }));
+    const result = await VoxaAPI.fitBox([{ kind: 'preseg', segId: 7 }]);
+    expect(capturedUrl).toBe('/api/segment/fit-box');
+    expect(JSON.parse(capturedOpts.body)).toEqual({ sources: [{ kind: 'preseg', seg_id: 7 }] });
+    expect(result).toEqual(obb);
+  });
+
   it('samProject decodes each sam segment so segment-state can be patched', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
