@@ -25,7 +25,8 @@
 - `frontend/src/api.js` (modify) — `denoise(...)` and `denoiseSelection(...)` clients (decode `scan_indices_b64` → `indices` inside, mirroring `cutShape`).
 - `frontend/src/segment-state.js` (modify) — `export` the existing `retireSamIdsForIndices` (currently module-private, line 48) so Feature B's SAM shrink can reuse it.
 - `frontend/src/sam-segment-list.jsx` (modify) — add an `onRemoveOutliers` prop and a second "Remove outliers" item to the SAM-row context menu (the SAM menu lives HERE, not in `mode-label.jsx`).
-- `frontend/src/mode-label.jsx` (modify) — "Detect outliers" button + aggressiveness slider, the two handlers, re-run instance-id tracking, thread `onRemoveOutliers` into `<SamSegmentList>`, and add the "Remove outliers" item to the Instances-panel context menu.
+- `frontend/src/tool-options.jsx` (modify) — `SamSegmentList` is rendered inside `SamOptions` here (not in `mode-label.jsx`); forward the new `onRemoveOutliers` prop through `SamOptions` exactly the way `onEditSelection` is forwarded.
+- `frontend/src/mode-label.jsx` (modify) — "Detect outliers" button + aggressiveness slider, the two handlers, re-run instance-id tracking, pass `onRemoveOutliers` to `<ToolOptions>`, and add the "Remove outliers" item to the Instances-panel context menu.
 
 **Tests**
 - `backend/tests/test_outliers.py` (new) — pure-fn unit tests.
@@ -805,11 +806,13 @@ git commit -m "feat(frontend): Detect outliers button + aggressiveness slider (F
 **Files:**
 - Modify: `frontend/src/segment-state.js` (export `retireSamIdsForIndices`)
 - Modify: `frontend/src/sam-segment-list.jsx` (SAM-row menu — the SAM menu lives here, NOT in `mode-label.jsx`)
-- Modify: `frontend/src/mode-label.jsx` (handler + Instances-panel menu + thread the new prop)
+- Modify: `frontend/src/tool-options.jsx` (`SamOptions` renders `SamSegmentList` — forward the new prop)
+- Modify: `frontend/src/mode-label.jsx` (handler + Instances-panel menu + pass the new prop to `<ToolOptions>`)
 
 **Grounding (verified against the code):**
 - Both context menus are built with `ContextMenu items={[{ label, disabled, onSelect }]}` — items use **`onSelect`** and a **`disabled`** boolean, NOT `onClick` and NOT conditional array-spread (`context-menu.jsx:35`; existing "Edit selection…" items at `sam-segment-list.jsx:78-83` and `mode-label.jsx:1592-1601`). Match that shape: render "Remove outliers" always, gate it with `disabled`.
-- The SAM menu is inside `SamSegmentList` (`sam-segment-list.jsx`), which today takes `{ segState, setSegState, onEditSelection }`. Add an `onRemoveOutliers` prop and thread it from `mode-label.jsx:1287`.
+- The SAM menu is inside `SamSegmentList` (`sam-segment-list.jsx`), which today takes `{ segState, setSegState, onEditSelection }`. Add an `onRemoveOutliers` prop.
+- **Prop threading (4 hops, mirror `onEditSelection`):** `mode-label.jsx` renders `<ToolOptions … onEditSelection={openCutModal} />` (~line 1287). `ToolOptions` spreads `{...props}` to `SamOptions` (`tool-options.jsx:203`), so a prop added on `<ToolOptions>` reaches `SamOptions` automatically — BUT `SamOptions` destructures its props **by name** (`tool-options.jsx:135`) and forwards only named ones to `<SamSegmentList>` (`tool-options.jsx:146`). So `onRemoveOutliers` must be (a) passed on `<ToolOptions>` in `mode-label.jsx`, (b) added to the `SamOptions` destructure at `tool-options.jsx:135`, and (c) forwarded to `<SamSegmentList>` at `tool-options.jsx:146`. Do exactly what `onEditSelection` does — `ToolOptions` itself needs no change (it already spreads `{...props}`).
 - `retireSamIdsForIndices(state, indices)` (`segment-state.js:48`) is the exact SAM-shrink helper — it clears candidacy for those indices and shrinks/drops the `samSegments` count (returns state unchanged if none carry a live sam id). It is currently **module-private**; export it. Do NOT use `applySamDelta` with `samSegId: -1` — that unconditionally does `samSegments.set(-1, …)` (`segment-state.js:90`) and injects a phantom candidate.
 
 - [ ] **Step 1: Export the SAM-shrink helper**
@@ -862,9 +865,17 @@ Add `onRemoveOutliers = null` to the `SamSegmentList({ … })` destructured prop
 
 (Eligibility requires exactly one selected candidate, so `[...segState.samSelection][0]` is the target id.)
 
-- [ ] **Step 4: Thread the prop + add the Instances-panel item (`mode-label.jsx`)**
+- [ ] **Step 4: Thread the prop through `SamOptions` (`tool-options.jsx`)**
 
-Pass the handler into the SAM list at ~line 1287:
+`SamOptions` destructures props by name, so forward `onRemoveOutliers` exactly like `onEditSelection`:
+- Add `onRemoveOutliers` to the `SamOptions({ … })` destructure (`tool-options.jsx:135`).
+- Add `onRemoveOutliers={onRemoveOutliers}` to the `<SamSegmentList … />` render (`tool-options.jsx:146`).
+
+`ToolOptions` itself needs no edit — it already spreads `{...props}` to `SamOptions`.
+
+- [ ] **Step 5: Pass the handler + add the Instances-panel item (`mode-label.jsx`)**
+
+Pass the handler into `<ToolOptions>` at ~line 1287 (alongside `onEditSelection={openCutModal}`):
 
 ```jsx
           onRemoveOutliers={removeOutliers}
@@ -887,19 +898,19 @@ In the Instances-panel context menu (`instCutMenu`, ~line 1592), make `items` a 
                 },
 ```
 
-- [ ] **Step 5: Verify build**
+- [ ] **Step 6: Verify build**
 
 Run (from `frontend/`): `npx vitest run`
 Expected: PASS (whole suite green; existing `sam-segment-list.jsdom.test.jsx` / `context-menu.test.jsx` still pass)
 
-- [ ] **Step 6: Browser-verify** — REQUIRED SUB-SKILL: `browser-verification`
+- [ ] **Step 7: Browser-verify** — REQUIRED SUB-SKILL: `browser-verification`
 
 Throwaway session; restart backend first. Create a SAM candidate (or use an existing one) with visible edge-strays, select exactly one, right-click its row → "Remove outliers" → confirm the strays drop from the candidate (screenshot before/after, per `feedback_verify_selection_visually`). Repeat on an unconfirmed instance. Zero console errors; `/api/segment/denoise-selection` returns 200. Confirm the item is **disabled** on a confirmed instance and when 0 or >1 SAM candidates are selected.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add frontend/src/segment-state.js frontend/src/sam-segment-list.jsx frontend/src/mode-label.jsx
+git add frontend/src/segment-state.js frontend/src/sam-segment-list.jsx frontend/src/tool-options.jsx frontend/src/mode-label.jsx
 git commit -m "feat(frontend): Remove outliers context-menu item (Feature B)"
 ```
 
