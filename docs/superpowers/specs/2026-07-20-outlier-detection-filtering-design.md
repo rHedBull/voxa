@@ -67,9 +67,10 @@ Returns the flagged **outlier** indices, expressed in the full-res index space.
 | C (global) | *all* points | a floating speck is far from *any* neighbor cloud-wide |
 | B (selection) | the selection's members | an edge-stray is far from the selection's *core* even though it sits near real geometry cloud-wide |
 
-Grounding: `SegmentSession` already holds full-res `self.positions` and a prebuilt
-`cKDTree` (`self._tree`, `segment_state.py:263-264`). Global SOR reuses `self._tree`;
-selection SOR builds a small tree over the selected subset.
+Grounding: `SegmentSession` already holds full-res `self.positions` and a
+**lazily-built** `cKDTree` (`self._tree` via `_ensure_tree()`, `segment_state.py:261-265`
+— built on first query, not at construction). Global SOR calls `_ensure_tree()` and
+reuses `self._tree`; selection SOR builds a small tree over the selected subset.
 
 ### Cost
 
@@ -93,8 +94,8 @@ instance with class `unknown`** (id 6, "Exclude / Review", hotkey `0` in
 3. Outliers arrive as an **unconfirmed** Exclude pointset, highlighted like any
    selection. User eyeballs what was caught.
 4. Too greedy / too timid → adjust the slider and **re-run**. Each run **replaces**
-   the prior denoise instance (delete-prior-then-recreate) so tweaking the strength
-   never piles up junk instances.
+   the prior denoise instance so tweaking the strength never piles up junk
+   instances (see re-run identity below).
 5. **Confirm** when happy. Confirming locks the points (confirmed = locked), so no
    later volume apply overwrites them, and the export wizard can filter the Exclude
    class out.
@@ -106,8 +107,19 @@ instance with class `unknown`** (id 6, "Exclude / Review", hotkey `0` in
 → materialize outlier indices as a `pointset` instance, class `unknown`, unconfirmed
 → returns the instance (id + point count) for the frontend to highlight.
 
-Re-run identity: the endpoint deletes any existing "denoise" instance before
-materializing the new one. The frontend tracks that instance id across re-runs.
+**Re-run identity.** `/denoise` is **stateless**: it always materializes a fresh
+Exclude instance and returns its id. Replacement is owned by the **frontend** —
+`mode-label.jsx` holds the current denoise instance id in state; on re-run it first
+deletes that instance via the **existing delete-instance path**, then calls
+`/denoise` and stores the returned id. No backend "last denoise" state and no
+`replace_inst` schema field. If the user has meanwhile confirmed or hand-edited the
+denoise instance, the frontend simply drops its tracked id and the next run creates a
+new one (a confirmed Exclude instance is locked and kept, not clobbered).
+
+**Undo.** Each re-run is an ordinary delete + materialize, so both land on the undo
+stack like any other apply. Re-runs are therefore undoable, **not** special-cased to
+be undo-transparent (YAGNI — the review loop is short and consistency with every
+other apply is worth more than a cleaner undo history).
 
 ### UI
 
@@ -198,8 +210,8 @@ A helper mirroring `cut-eligibility.js`:
 - `backend/labeling/outliers.py` (new) — `statistical_outlier_indices`.
 - `backend/routes/segment.py` — `/denoise`, `/denoise-selection` handlers.
 - `backend/labeling/segment_state.py` — reuse `apply_reassign`,
-  `materialize_*`/`_retire_sam_ids`; possibly a small helper to materialize the
-  Exclude instance and replace a prior one.
+  `materialize_*`/`_retire_sam_ids` as-is (no new state; `/denoise` is stateless,
+  replacement is frontend-owned).
 - `backend/app/schemas.py` — request/response schemas.
 
 **Frontend**
