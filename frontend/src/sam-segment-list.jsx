@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react';
 import { maskColor } from './sam-util.js';
 import { ContextMenu } from './context-menu.jsx';
 import { cutEligibility } from './cut-eligibility.js';
+import { removeOutliersEligibility } from './outlier-eligibility.js';
 
 export function toggleSamSelection(samSelection, samSegId) {
   const next = new Set(samSelection);
@@ -13,7 +14,7 @@ export function toggleSamSelection(samSelection, samSegId) {
   return next;
 }
 
-export function SamSegmentList({ segState, setSegState, onEditSelection = null }) {
+export function SamSegmentList({ segState, setSegState, onEditSelection = null, onRemoveOutliers = null }) {
   const [cutMenu, setCutMenu] = useState(null); // {x, y} | null
 
   // Only 'sam'-sourced candidates belong here — 'preseg'-sourced cut
@@ -81,6 +82,14 @@ export function SamSegmentList({ segState, setSegState, onEditSelection = null }
             onSelect: () => {
               if (!onEditSelection) return;
               onEditSelection(Array.from(segState.samSelection).map((segId) => ({ kind: 'sam', segId })));
+            },
+          },
+          {
+            label: 'Remove outliers',
+            disabled: !removeOutliersEligibility({ list: 'sam', selectionSize: segState.samSelection.size }).eligible,
+            onSelect: () => {
+              if (!onRemoveOutliers) return;
+              onRemoveOutliers({ source: 'sam', id: [...segState.samSelection][0] });
             },
           }]}
         />

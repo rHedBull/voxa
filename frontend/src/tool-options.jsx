@@ -132,7 +132,7 @@ function PrismOptions({
 
 function SamOptions({
   viewerRef, protectInstances, setSegState, segState,
-  autoConfirm, setAutoConfirm, activeSessionId, onEditSelection,
+  autoConfirm, setAutoConfirm, activeSessionId, onEditSelection, onRemoveOutliers,
 }) {
   return (
     <div className="tool-options tool-options-sam">
@@ -143,7 +143,7 @@ function SamOptions({
         protectInstances={protectInstances}
       />
       {segState && (
-        <SamSegmentList segState={segState} setSegState={setSegState} onEditSelection={onEditSelection} />
+        <SamSegmentList segState={segState} setSegState={setSegState} onEditSelection={onEditSelection} onRemoveOutliers={onRemoveOutliers} />
       )}
       {/* Accepting a mask only materializes a candidate (Task 6-12) — it
           doesn't label anything, so this toggle can't live next to "Add to

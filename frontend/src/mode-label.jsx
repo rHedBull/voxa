@@ -13,7 +13,7 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import ExportWizard from './export-wizard.jsx';
-import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
+import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply, filterSamSelectionOnToolSwitch, retireSamIdsForIndices } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
 import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
@@ -21,6 +21,7 @@ import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
 import { ClassPickerModal } from './class-picker.jsx';
 import { cutEligibility } from './cut-eligibility.js';
+import { removeOutliersEligibility } from './outlier-eligibility.js';
 import CutModal from './cut-mode.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
@@ -647,6 +648,31 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     }
   }, [segState, denoiseBusy, denoiseRatio, denoiseInstId, protectedSegIds,
       classes, instances, counts, onChange, setSegState]);
+
+  // Feature B: right-click "Remove outliers" strips a selection's spatial
+  // strays back to unlabeled (instance) or drops their SAM candidacy (sam).
+  const removeOutliers = useCallbackLabel(async ({ source, id }) => {
+    if (!segState) return;
+    try {
+      const resp = await VoxaAPI.denoiseSelection({ source, id, stdRatio: denoiseRatio });
+      if (!resp.n_removed || !resp.indices) return;
+      const idx = resp.indices;                       // Int32Array (decoded in api.js)
+      setSegState((s) => {
+        if (!s) return s;
+        if (source === 'sam') {
+          // Strays lose SAM candidacy; candidate shrinks (mirrors backend
+          // remove_sam_points -> _retire_sam_ids).
+          return retireSamIdsForIndices(s, idx);
+        }
+        // instance: strays back to unlabeled
+        const afterClass = new Int8Array(idx.length).fill(-1);
+        const afterInstance = new Int32Array(idx.length).fill(-1);
+        return applyDelta(s, { indices: idx, after_class: afterClass, after_instance: afterInstance });
+      });
+    } catch (e) {
+      console.error('removeOutliers failed', e);
+    }
+  }, [segState, denoiseRatio, setSegState]);
 
   // Always populated when there are confirmed instances, regardless of the
   // hide toggle. The Viewer uses it to compute "points labeled / left" stats
@@ -1352,7 +1378,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           transformMode={transformMode} setTransformMode={setTransformMode}
           onAutoFit={autoFitBox}
           onApply={() => setClassPickerOpen(true)}
-          onEditSelection={openCutModal} />
+          onEditSelection={openCutModal}
+          onRemoveOutliers={removeOutliers} />
       </aside>
 
       {/* Center: viewport */}
@@ -1665,6 +1692,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 onSelect: () => {
                   if (!target || !Number.isFinite(target.segId)) return;
                   openCutModal([{ kind: 'instance', segId: target.segId }], target.cls);
+                },
+              },
+              {
+                label: 'Remove outliers',
+                disabled: !removeOutliersEligibility({
+                  list: 'instance',
+                  isSelected: instCutMenu.instId === selectedId,
+                  confirmed: !!target?.confirmed,
+                }).eligible,
+                onSelect: () => {
+                  if (!target || !Number.isFinite(target.segId)) return;
+                  removeOutliers({ source: 'instance', id: target.segId });
                 },
               }]}
             />
