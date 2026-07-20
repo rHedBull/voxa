@@ -52,10 +52,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const fastMode = activeTool === 'presegment' && presegRapid;
   const drawMode = activeTool === 'draw';
   const beamMode = activeTool === 'beam';
+  const prismMode = activeTool === 'prism';
   // Sub-modes whose overlay owns viewport input (capture-phase keys +
   // pointer): global pick/hotkey handlers stand down. A future 5th tool
   // adds one term here instead of touching every gate.
-  const subModeOwnsInput = drawMode || beamMode;
+  const subModeOwnsInput = drawMode || beamMode || prismMode;
   // Presegmentation is a way to *select* points; its segments (hulls, boxes,
   // per-segment hue coloring) only show while the Presegment tool is active.
   // Every other tool works on the raw RGB cloud.
@@ -63,7 +64,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   // Per-tool auto-confirm (added here to avoid a forward reference in Tasks 8/9;
   // threaded into apply paths in Task 10).
-  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false, sam: false });
+  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false, sam: false, prism: false });
   const autoConfirmFor = (tool) =>
     tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
   // Color mode picked in the Display panel; null = automatic — class colors
@@ -968,7 +969,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const instancesRef = useRefLabel(instances);
   instancesRef.current = instances;
   const onToolApplied = useCallbackLabel(({
-    instanceId, classId, mergedFrom = [], source = 'draw', obb = null,
+    instanceId, classId, mergedFrom = [], source = 'draw', obb = null, prism = null,
   }) => {
     const cls = classes.find((c) => c.class_id === classId);
     if (!cls) return;
@@ -976,9 +977,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const kept = instancesRef.current.filter(
       (i) => !(i.kind === 'pointset' && absorbed.has(i.segId)));
     const existing = kept.find((i) => i.kind === 'pointset' && i.segId === instanceId);
-    const volume = obb ? {
-      center: [...obb.center], size: [...obb.size], rotation: [...obb.rotation],
-    } : {};
+    const volume = obb
+      ? { center: [...obb.center], size: [...obb.size], rotation: [...obb.rotation] }
+      : prism
+        ? { prism: { polygon: prism.polygon.map((v) => [...v]), y0: prism.y0, height: prism.height } }
+        : {};
     const next = existing
       ? kept.map((i) => i === existing ? { ...i, cls: cls.id, color: cls.color, ...volume } : i)
       : [...kept, {
