@@ -21,6 +21,7 @@ import { evtToNdc } from './viewer.jsx';
 import { VoxaAPI } from './api.js';
 import { applyDelta } from './segment-state.js';
 import { prismShapeFromCorners, footprintBaseY } from './prism-geom.js';
+import { ClassPickerModal } from './class-picker.jsx';
 
 // phase 'footprint': placing snapped corners. phase 'height': footprint closed;
 // `committed` false = aiming the height live, true = height locked, awaiting a
@@ -101,18 +102,21 @@ function markerRadius(corners) {
 
 // Capture-phase keyboard driver (like BeamKeys) — runs before mode-label.jsx's
 // handler, which early-returns while a sub-mode owns input.
-function PrismKeys({ prism, setPrism, classes, defaultClassId, onApply, onExit, onClose, onBackToFootprint }) {
+function PrismKeys({ prism, setPrism, classes, pickerOpen, onApply, onOpenPicker, onExit, onClose, onBackToFootprint }) {
   const prismRef = useRef(prism);
   prismRef.current = prism;
   useEffect(() => {
     const handler = (e) => {
+      // While the class picker is open it owns the keyboard (hotkey → pick,
+      // Esc → close). Standing down here avoids double-handling the same key.
+      if (pickerOpen) return;
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       const p = prismRef.current;
       const canClose = p.phase === 'footprint' && p.corners.length >= 3;
       const ready = p.phase === 'height' && p.committed;
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        if (ready) { e.preventDefault(); e.stopPropagation(); onApply(defaultClassId); }
+        if (ready) { e.preventDefault(); e.stopPropagation(); onOpenPicker(); }
         else if (canClose) { e.preventDefault(); e.stopPropagation(); onClose(); }
         return;
       }
@@ -120,7 +124,7 @@ function PrismKeys({ prism, setPrism, classes, defaultClassId, onApply, onExit, 
 
       let handled = true;
       if (e.key === 'Enter') {
-        if (ready) onApply(defaultClassId);
+        if (ready) onOpenPicker();
         else if (canClose) onClose();
         else handled = false;
       } else if (e.key === 'Escape') {
@@ -141,7 +145,7 @@ function PrismKeys({ prism, setPrism, classes, defaultClassId, onApply, onExit, 
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [classes, defaultClassId, onApply, onExit, onClose, onBackToFootprint, setPrism]);
+  }, [classes, pickerOpen, onApply, onOpenPicker, onExit, onClose, onBackToFootprint, setPrism]);
   return null;
 }
 
@@ -366,10 +370,10 @@ function PrismPanel({ prism, onClear, onApply }) {
             <label>Height</label>
             <div className="ins-input" style={{ display: 'flex', alignItems: 'center' }}>{h.toFixed(2)} m</div>
           </div>
-          <p className="tool-opt-hint">Press a class key, Ctrl+Enter, or Apply to label · Backspace to re-aim · Esc to cancel</p>
+          <p className="tool-opt-hint">Press a class key to label, or Ctrl+Enter / the button to pick a class · Backspace to re-aim · Esc to cancel</p>
           <div className="tool-opt-toggle">
             <button onClick={onClear}>Clear</button>
-            <button className="active" onClick={onApply}>Apply (Ctrl+Enter)</button>
+            <button className="active" onClick={onApply}>Pick class… (Ctrl+Enter)</button>
           </div>
         </>
       )}
@@ -378,15 +382,24 @@ function PrismPanel({ prism, onClear, onApply }) {
 }
 
 export default function PrismMode({
-  viewerRef, classes, setSegState, onExit, defaultClassId,
+  viewerRef, classes, counts, setSegState, onExit,
   onApplied, protectInstances = [],
 }) {
   const [prism, setPrism] = useState(EMPTY_PRISM);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const prismRef = useRef(prism);
   prismRef.current = prism;
   const protectInstancesRef = useRef(protectInstances);
   protectInstancesRef.current = protectInstances;
-  const reset = useCallback(() => setPrism(EMPTY_PRISM), []);
+  const reset = useCallback(() => { setPickerOpen(false); setPrism(EMPTY_PRISM); }, []);
+
+  // Classify goes through the shared class picker (same modal as Box) so the
+  // user chooses the label — the old default-class apply silently produced
+  // "Exclude / Review". Only valid once the height is committed.
+  const requestClassify = useCallback(() => {
+    const p = prismRef.current;
+    if (p.phase === 'height' && p.committed) setPickerOpen(true);
+  }, []);
 
   // Close the footprint → enter the height stage. `dropLast` drops the extra
   // corner a closing double-click added. Fixes the base plane + the height-aim
@@ -449,12 +462,17 @@ export default function PrismMode({
 
   return (
     <>
-      <PrismKeys prism={prism} setPrism={setPrism} classes={classes}
-        defaultClassId={defaultClassId} onApply={applyPrism} onExit={onExit}
+      <PrismKeys prism={prism} setPrism={setPrism} classes={classes} pickerOpen={pickerOpen}
+        onApply={applyPrism} onOpenPicker={requestClassify} onExit={onExit}
         onClose={closeNow} onBackToFootprint={backToFootprint} />
       <PrismOverlay viewerRef={viewerRef} prism={prism} setPrism={setPrism} onClose={closeFootprint} />
       <PrismRubberBand viewerRef={viewerRef} prism={prism} />
-      <PrismPanel prism={prism} onClear={reset} onApply={() => applyPrism(defaultClassId)} />
+      <PrismPanel prism={prism} onClear={reset} onApply={requestClassify} />
+      {pickerOpen && (
+        <ClassPickerModal classes={classes} counts={counts}
+          onPick={(cls) => { setPickerOpen(false); applyPrism(cls.class_id); }}
+          onClose={() => setPickerOpen(false)} />
+      )}
     </>
   );
 }

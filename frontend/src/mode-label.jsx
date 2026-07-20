@@ -19,6 +19,7 @@ import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
+import { ClassPickerModal } from './class-picker.jsx';
 import { cutEligibility } from './cut-eligibility.js';
 import CutModal from './cut-mode.jsx';
 
@@ -1272,7 +1273,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           activeTool={activeTool}
           presegRapid={presegRapid} setPresegRapid={setPresegRapid} setFastPos={setFastPos}
           autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm}
-          segState={segState} setSegState={setSegState} classes={classes}
+          segState={segState} setSegState={setSegState} classes={classes} counts={counts}
           viewerRef={viewerRef} cloud={cloud} promotedSegIds={promotedSegIds}
           activeClass={activeClass} setActiveClass={setActiveClass}
           onExit={() => setActiveTool('presegment')}
@@ -1613,47 +1614,4 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 // selection as a new unconfirmed pointset instance with that class. Esc
 // dismisses without creating anything. Selection survives a cancel so the
 // user can pick again or hit Ctrl+Enter once more.
-function ClassPickerModal({ classes, counts, onPick, onClose }) {
-  useEffectLabel(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-        return;
-      }
-      const cls = classes.find((c) => c.hotkey === e.key);
-      if (cls) {
-        e.preventDefault();
-        e.stopPropagation();
-        onPick(cls);
-      }
-    };
-    // Capture phase so we beat the LabelMode global keydown that would
-    // otherwise also handle the hotkey (e.g. "1" → setActiveClass).
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [classes, onPick, onClose]);
-
-  return (
-    <div className="class-picker-overlay" onClick={onClose}>
-      <div className="class-picker-card" onClick={(e) => e.stopPropagation()}>
-        <div className="class-picker-title">Pick class for new instance</div>
-        <div className="class-picker-list">
-          {classes.map((c) => (
-            <button key={c.id}
-              className="class-picker-row"
-              onClick={() => onPick(c)}
-              title={`Press ${c.hotkey || '–'}`}>
-              <span className="class-swatch" style={{ background: c.color }} />
-              <span className="class-picker-label">{c.label}</span>
-              <span className="class-picker-count">{counts[c.id] || 0}</span>
-              <span className="class-picker-hk">{c.hotkey || '–'}</span>
-            </button>
-          ))}
-        </div>
-        <div className="class-picker-hint">Press a number to assign · Esc to cancel</div>
-      </div>
-    </div>
-  );
-}
 

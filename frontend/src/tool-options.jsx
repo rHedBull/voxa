@@ -109,8 +109,8 @@ function BeamOptions({
 }
 
 function PrismOptions({
-  viewerRef, classes, setSegState, onExit,
-  activeClass, onToolApplied, autoConfirm, setAutoConfirm,
+  viewerRef, classes, counts, setSegState, onExit,
+  onToolApplied, autoConfirm, setAutoConfirm,
   activeSessionId, protectInstances,
 }) {
   return (
@@ -119,9 +119,9 @@ function PrismOptions({
         key={activeSessionId}
         viewerRef={viewerRef}
         classes={classes}
+        counts={counts}
         setSegState={setSegState}
         onExit={onExit}
-        defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
         onApplied={onToolApplied}
         protectInstances={protectInstances}
       />
