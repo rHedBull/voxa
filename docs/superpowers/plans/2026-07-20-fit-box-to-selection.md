@@ -519,7 +519,17 @@ Near `openCutModal` (~line 553):
 const fitBoxToSelection = useCallbackLabel(async (sources) => {
   try {
     const obb = await VoxaAPI.fitBox(sources);
-    setSelBox({ center: obb.center, size: obb.size, rotation: obb.rotation });
+    // MUST build the FULL selBox shape (see toggleBoxSelect, ~line 315). The
+    // Viewer gates visibility + gizmo on id === LABEL_SEL_BOX_ID:
+    // visibleInstanceIds / selectedId (~line 1296) both key off it. A box
+    // missing that id renders invisible and can't be transformed by G/R/Y.
+    setSelBox({
+      id: LABEL_SEL_BOX_ID,
+      label: 'box-select',
+      cls: 0,
+      color: LABEL_SEL_BOX_COLOR,
+      center: obb.center, size: obb.size, rotation: obb.rotation,
+    });
     setActiveTool('box');
   } catch (e) {
     console.error('fit-box failed', e);
@@ -530,10 +540,10 @@ const fitBoxToSelection = useCallbackLabel(async (sources) => {
 }, [setSelBox, setActiveTool]);
 ```
 
-Verify `selBox` shape: the Box tool's `selBox` already carries
-`{ center, size, rotation }` (it is transformed by G/R/Y — see the `setSelBox`
-patch sites around line 1070/1092). Confirm the exact field names by reading the
-Box draw code before finalizing, and match them.
+`LABEL_SEL_BOX_ID` / `LABEL_SEL_BOX_COLOR` are module constants at the top of
+`mode-label.jsx` (~line 33-34) — already in scope, no import needed. The
+`{ center, size, rotation }` fields come straight from the endpoint (rotation is
+`[0, ry, 0]`).
 
 - [ ] **Step 2: Pass `onFitBox` to the two list components**
 
