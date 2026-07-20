@@ -198,6 +198,19 @@ class SegmentSession:
                 "indices": indices, "n_affected": int(indices.size),
                 "n_protected": n_protected}
 
+    def remove_sam_points(self, indices: np.ndarray) -> dict:
+        """Drop SAM candidacy for these points and persist — used by
+        per-selection "remove outliers" to shrink a candidate. Reuses the
+        same _retire_sam_ids bookkeeping that a real label triggers, then
+        schedules an autosave (unlike the private helper, which is only
+        ever called mid-apply where the caller autosaves)."""
+        indices = np.asarray(indices, dtype=np.int32)
+        if indices.size == 0:
+            return {"op": "remove_sam_points", "n_affected": 0}
+        self._retire_sam_ids(indices)
+        self.schedule_autosave(write_arrays=True)
+        return {"op": "remove_sam_points", "n_affected": int(indices.size)}
+
     def undo(self) -> Optional[dict]:
         if not self._undo:
             return None
