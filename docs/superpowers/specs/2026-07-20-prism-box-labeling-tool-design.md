@@ -26,37 +26,70 @@ is the shared pipeline. Every apply produces a `kind:'pointset'` instance.
 
 - **Vertex editing** — to change a footprint you Clear and redraw (mirrors Box's
   "Clear box"). No per-vertex drag, no gizmo.
-- **Non-horizontal base planes** — the base plane is always world-horizontal
-  (Y-up), extruding vertically. Snap-to-surface (arbitrary normal) and
-  camera-aligned screen-space sweeps were considered and explicitly deferred.
+- **Non-horizontal / arbitrary-normal base planes** — the extrusion axis is always
+  world-vertical (Y-up) and the prism base is horizontal (at `y0`). v2 snaps each
+  corner's *placement* to the cloud surface (so the footprint sits on the geometry
+  and reads naturally), but the base-plane *orientation* stays horizontal — a
+  fitted arbitrary-normal plane and camera-aligned screen-space sweeps remain out
+  of scope.
 - **Curve tools** — a round tank is approximated by a many-vertex polygon; there
   is no arc/spline primitive.
 - **Self-intersecting polygons** — v1 assumes a simple polygon. Concave is fully
   supported (winding handles it); self-intersecting is undefined-but-safe (see
   Edge cases).
 
-## Interaction model
+## Interaction model (v2 — mirrors the Measure Surface + Volume tools)
 
-The tool is the 6th entry in the viewport tool rail (`⬠ Prism`).
+The tool is the 6th entry in the viewport tool rail (`⬠ Prism`). The interaction
+mirrors voxa's sibling app `engine/product/demo`'s **Surface** measure tool (the
+footprint) and its **Volume** measure tool (the height), because the original v1
+model — corners dropped onto an invisible fixed plane at the first click's height,
+height by scroll — read as disconnected from the geometry ("works kinda strange").
+See `product/demo/src/use-measure-tool.js` for the reference implementation.
 
-1. **Draw the footprint.** Click to place vertices. The **first click fixes the
-   base plane**: a horizontal plane at that point's Y (`y0`). Every subsequent
-   vertex ray-casts onto that same `y0` plane, so all vertices are coplanar. A
-   rubber-band edge follows the cursor.
-2. **Close.** Click the first vertex again, or press **Enter**. **Backspace**
-   removes the last vertex; **Esc** cancels the whole in-progress polygon.
-   Minimum 3 vertices.
-3. **Set height.** After the polygon closes, **scroll** grows/shrinks the
-   extrusion height, which grows **up** from the `y0` plane (`y0 → y0+height`).
-   This reuses Beam's scroll-to-size gesture. A metres field in the tool-options
-   panel shows the current height and accepts a typed exact value.
-4. **Apply.** Ctrl+Enter → class picker, or a class hotkey directly (the shared
-   apply pipeline). The prism vanishes; its enclosed points become a `pointset`
-   instance. A per-tool **auto-confirm on apply** toggle is available, like the
-   other tools.
+1. **Draw the footprint (Surface-tool style).** Click to place corners; each
+   corner **snaps to the real cloud surface** under the cursor via
+   `viewerRef.firstHitUnderCursor` (its true 3D `world` position) — *not* a fixed
+   plane. A **dashed rubber-band** runs from the last placed corner to the cursor,
+   updated **imperatively** on `pointermove` (a camera-facing plane through the
+   anchor, never a per-move cloud raycast — the measure tool throttles/avoids that
+   because raycasting millions of points per move hitches the main thread). The
+   footprint outline is drawn through the snapped 3D corners, so it sits *on* the
+   geometry. A click is a `pointerdown`+`pointerup` within ~5 px (a drag is a
+   camera move, not a placement).
+2. **Close.** **Double-click** or **Enter** closes (minimum 3 corners; the
+   double-click's own trailing corner is dropped — its two constituent clicks each
+   fire the placement handler). **Backspace** drops the last corner; **Esc**
+   cancels the in-progress footprint (empty → exits the tool).
+3. **Set height (Volume-tool style).** On close, enter a **height stage**: the
+   footprint's **camera-nearest edge** defines a vertical plane; moving the mouse
+   up/down **grows/shrinks the height live** (raycast against that plane, height =
+   `pt.y − baseY`); a **click commits** the height. Orbit is disabled for the
+   whole in-progress interaction (footprint chain + height aim) and re-enabled on
+   commit/Esc/tool-exit — the measure tool's exact pattern. A `suppressNextClick`
+   guard swallows the closing double-click's trailing `click` so it can't commit a
+   zero height.
+4. **Classify.** After the height commits, Ctrl+Enter → class picker, or a class
+   hotkey directly (the shared apply pipeline). The prism vanishes; its enclosed
+   points become a `pointset` instance. A per-tool **auto-confirm on apply** toggle
+   is available, like the other tools.
 
-No gizmo at any stage — consistent with the "no-gizmo v1" constraint and with
-pointsets being display-only.
+No gizmo at any stage — consistent with pointsets being display-only.
+
+**Geometry mapping (frontend-only — the emitted shape and the whole backend are
+unchanged).** The snapped corners give each a `(x, y, z)`. The prism is built as:
+`polygon` = the corners' **XZ**; **base `y0` = the minimum corner Y** (lowest
+snapped corner); the height-aim gives a top Y; `height = |topY − y0|`, with `y0`
+normalized to the *lower* of base/top so the extrude works upward or downward. The
+descriptor sent to `apply-shape` is the same `{type:'prism', polygon, y0, height}`
+as before, so `prism_indices`, `materialize`, the `Cuboid.prism` schema, and the
+`pointsInsidePrism` parity mirror are **all reused unchanged** — this redesign
+touches only `frontend/src/prism-mode.jsx`.
+
+**Superseded from v1:** the fixed horizontal base plane at the first click's height
+(corners now snap to the surface individually), and scroll-to-set-height (now
+aim-to-set-height). The tool-options metres field becomes a read-only display of
+the committed height.
 
 ## Geometry & backend containment
 
@@ -123,19 +156,26 @@ any density). The prism persists the same way:
   to `TOOLS`. Gating in `toolAvailable`: needs `segState` (same as Box — its
   geometry rides in `instances_gt.json`; it does **not** need the raw source or
   a preseg). The rail (`tool-rail.jsx`) renders from `TOOLS` and needs no change.
-- **`frontend/src/prism-mode.jsx`** (new, mirrors `beam-mode.jsx`/`draw-mode.jsx`)
-  — owns draw state (vertices, `y0`, `height`), the viewport interaction
-  handlers (plane-click to place a vertex, scroll to set height, Enter/Backspace/
-  Esc), and the in-progress **polygon + extrusion preview** rendered as a
-  Viewport overlay using the same mechanism as the Box selection box and Beam
-  graph.
-- **`frontend/src/prism-geom.js`** (new) — `pointsInsidePrism(points, prism)` for
-  the live in-viewport preview highlight, **mirroring** `prism_indices` so the
-  applied label matches the on-screen selection exactly (the way
-  `pointsInsideOBB` in `mode-edit.jsx` mirrors `obb_indices`). Parity is
-  locked by a shared fixture (see Testing).
-- **`frontend/src/tool-options.jsx`** — add `PrismOptions`: Draw / Clear buttons,
-  a height metres field + scroll hint, and the shared `AutoConfirmToggle`.
+- **`frontend/src/prism-mode.jsx`** (the only file this v2 redesign rewrites)
+  — owns the two-stage draw state (footprint corners as snapped `[x,y,z]`; then a
+  height stage `{footprint, height, baseY, heightEdge}`) and the viewport
+  interaction, ported from `product/demo/src/use-measure-tool.js`'s Surface (click
+  to snap a corner via `firstHitUnderCursor`, imperative dashed rubber-band on
+  `pointermove`, double-click/Enter to close) and Volume (camera-nearest-edge
+  vertical plane, mouse-move height aim, click-to-commit with the `suppressNextClick`
+  guard, orbit disabled during the interaction) handlers. Renders the in-progress
+  footprint outline + corner markers + rubber-band, and after close the extrusion
+  wireframe preview, as a Viewport overlay via `viewerRef.attachOverlayGroup()`.
+  A small pure helper turns snapped corners + the aimed top Y into the emitted
+  `{polygon, y0, height}` (XZ projection, `y0 = min corner Y`, signed-height
+  normalization) — unit-tested independently of the Three.js interaction.
+- **`frontend/src/prism-geom.js`** — `pointsInsidePrism(points, prism)`, the
+  parity mirror of `prism_indices` (shared fixture, see Testing). Reused unchanged
+  from v1; available for a future live point-highlight preview (the current
+  overlay, like the measure tools, is wireframe-only).
+- **`frontend/src/tool-options.jsx`** — `PrismOptions` mounts `PrismMode`; its
+  panel shows the stage hint and a **read-only committed-height display** (no
+  scroll hint, no editable metres field), plus the shared `AutoConfirmToggle`.
 - **`frontend/src/mode-label.jsx`** — wire the apply handler (build the `prism`
   descriptor, POST `apply-shape` threading `protectedSegIds`, stamp the instance
   row) and pass the prism preview props into the `Viewer`.
@@ -146,10 +186,15 @@ any density). The prism persists the same way:
   apply is a benign no-op returning `n_affected: 0`, exactly like an empty box.
   Not an error.
 - **Self-intersecting polygon** → point-in-polygon is evaluated by winding; the
-  result is well-defined-but-unintuitive. v1 does not detect or block it
-  (disclosed limitation); it cannot corrupt state.
-- **Height 0 or negative** → the metres field clamps to a small positive minimum;
-  scroll cannot drive height below it.
+  result is well-defined-but-unintuitive. Not detected or blocked (disclosed
+  limitation); it cannot corrupt state.
+- **Corner click over empty space** (`firstHitUnderCursor` misses) → the corner is
+  simply not placed (same as the measure tools). The first corner in particular
+  requires a surface hit.
+- **Degenerate height** → a height-commit whose aimed top is within a small epsilon
+  of the base is treated as a stray click and ignored (mirrors the Volume tool's
+  `MIN_FOOTPRINT`/near-zero-extent bail-out), so no zero-height prism is applied.
+  Signed aim is normalized so extruding up or down both yield `height > 0`.
 - **Overextended prism over confirmed points** → those points are protected and
   reported via `n_protected` (Confirmed = locked), never overwritten.
 
@@ -169,7 +214,12 @@ any density). The prism persists the same way:
 - `pointsInsidePrism` parity against the shared fixture (same expected mask as the
   backend).
 - `toolAvailable('prism', …)` gating (session required; no raw source needed).
-- `PrismOptions` renders (Draw/Clear, height field, auto-confirm).
+- **The v2 geometry-mapping helper** (snapped corners + aimed top Y → emitted
+  `{polygon, y0, height}`): XZ projection preserves order; `y0 = min corner Y`;
+  aiming above the base gives `height = topY − y0`; aiming *below* the base
+  normalizes to `y0 = topY`, `height = baseY − topY` (both extrude directions →
+  `height > 0`); a near-zero aim yields no shape. This pure helper is where the v2
+  logic is unit-tested — the Three.js interaction itself is verified in-browser.
 
 ## Out of scope / future
 
