@@ -287,6 +287,29 @@ export const VoxaAPI = {
       nProtected: j.n_protected,
     };
   },
+  async denoise({ stdRatio = 2.0, k = 16, replaceInst = null, protectInstances = [] }) {
+    const r = await fetch('/api/segment/denoise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        std_ratio: stdRatio, k,
+        replace_inst: replaceInst, protect_instances: protectInstances,
+      }),
+    });
+    if (!r.ok) throw new Error(`denoise failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return { ...j, indices: j.scan_indices_b64 ? b64ToInt32(j.scan_indices_b64) : null };
+  },
+  async denoiseSelection({ source, id, stdRatio = 2.0, k = 16 }) {
+    const r = await fetch('/api/segment/denoise-selection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, id, std_ratio: stdRatio, k }),
+    });
+    if (!r.ok) throw new Error(`denoiseSelection failed: ${r.status} ${await r.text()}`);
+    const j = await r.json();
+    return { ...j, indices: j.scan_indices_b64 ? b64ToInt32(j.scan_indices_b64) : null };
+  },
   async samCapture({ camera, mode, box = null, text = null }) {
     const r = await fetch('/api/sam/capture', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
