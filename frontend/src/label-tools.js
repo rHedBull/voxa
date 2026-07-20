@@ -3,6 +3,7 @@
 export const TOOLS = [
   { id: 'presegment', icon: '◱', label: 'Presegment' },
   { id: 'box',        icon: '▭', label: 'Box' },
+  { id: 'prism',      icon: '⬠', label: 'Prism' },
   { id: 'draw',       icon: '✎', label: 'Draw' },
   { id: 'beam',       icon: '⌶', label: 'Beam' },
   { id: 'sam',        icon: '✦', label: 'SAM' },
