@@ -72,3 +72,22 @@ test('clicking the enabled item invokes onEditSelection with {kind:sam,segId} so
   fireEvent.click(screen.getByText('Edit selection…'));
   expect(onEditSelection).toHaveBeenCalledWith([{ kind: 'sam', segId: 1 }]);
 });
+
+test('empty samSelection -> "Fit box to selection…" item is disabled (matches fitEligibility)', () => {
+  const segState = makeSegState(new Set());
+  render(<SamSegmentList segState={segState} setSegState={() => {}} />);
+  fireEvent.contextMenu(screen.getByText('SAM #1'));
+  const item = screen.getByText('Fit box to selection…');
+  expect(item.className).toContain('disabled');
+});
+
+test('non-empty samSelection -> "Fit box to selection…" item is enabled and calls onFitBox with {kind:sam,segId} sources', () => {
+  const segState = makeSegState(new Set([1]));
+  const onFitBox = vi.fn();
+  render(<SamSegmentList segState={segState} setSegState={() => {}} onFitBox={onFitBox} />);
+  fireEvent.contextMenu(screen.getByText('SAM #1'));
+  const item = screen.getByText('Fit box to selection…');
+  expect(item.className).not.toContain('disabled');
+  fireEvent.click(item);
+  expect(onFitBox).toHaveBeenCalledWith([{ kind: 'sam', segId: 1 }]);
+});

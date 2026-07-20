@@ -136,3 +136,30 @@ test('right-clicking a selected cut-candidate row opens an enabled "Edit selecti
   // recursive cut must resolve against that array, not preseg_ids.
   expect(onEditSelection).toHaveBeenCalledWith([{ kind: 'sam', segId: 0 }]);
 });
+
+test('right-clicking a selected cut-candidate row opens an enabled "Fit box to selection…" wired to kind:sam', () => {
+  const segState = makeSegStateWithCandidates(
+    new Map([[0, { nPoints: 6723, source: 'preseg' }]]),
+    new Set([0]),
+  );
+  const onFitBox = vi.fn();
+  render(<PresegmentList segState={segState} setSegState={() => {}} classes={classes}
+    viewerRef={{ current: null }} cloud={null} onFitBox={onFitBox} />);
+  fireEvent.contextMenu(screen.getByText('Cut #0'));
+  const item = screen.getByText('Fit box to selection…');
+  expect(item.className).not.toContain('disabled');
+  fireEvent.click(item);
+  // kind:'sam', NOT 'preseg' — same reasoning as the "Edit selection…" test above.
+  expect(onFitBox).toHaveBeenCalledWith([{ kind: 'sam', segId: 0 }]);
+});
+
+test('empty samSelection -> cut-candidate "Fit box to selection…" item is disabled', () => {
+  const segState = makeSegStateWithCandidates(
+    new Map([[0, { nPoints: 6723, source: 'preseg' }]]),
+  );
+  render(<PresegmentList segState={segState} setSegState={() => {}} classes={classes}
+    viewerRef={{ current: null }} cloud={null} />);
+  fireEvent.contextMenu(screen.getByText('Cut #0'));
+  const item = screen.getByText('Fit box to selection…');
+  expect(item.className).toContain('disabled');
+});
