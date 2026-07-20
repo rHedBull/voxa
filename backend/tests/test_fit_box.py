@@ -81,3 +81,43 @@ def test_fewer_than_three_points():
 def test_zero_points_raises():
     with pytest.raises(ValueError):
         fit_gravity_obb(np.empty((0, 3), dtype=np.float32))
+
+
+# --- endpoint tests ---
+
+def test_fit_box_returns_containing_obb(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/fit-box",
+                    json={"sources": [{"kind": "preseg", "seg_id": 0}]})
+    assert r.status_code == 200
+    obb = r.json()
+    assert obb["rotation"][0] == 0.0 and obb["rotation"][2] == 0.0
+    assert len(obb["center"]) == 3 and len(obb["size"]) == 3
+    assert all(s > 0 for s in obb["size"])
+
+
+def test_fit_box_union_contains_both_presegs(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/fit-box",
+                    json={"sources": [{"kind": "preseg", "seg_id": 0},
+                                      {"kind": "preseg", "seg_id": 1}]})
+    assert r.status_code == 200
+    from app.core import _state
+    seg = _state["seg"]
+    inside = set(obb_indices(np.asarray(seg.positions), r.json()).tolist())
+    for pid in (0, 1):
+        members = np.nonzero(seg.instance_ids == pid)[0].tolist()
+        assert members and set(members).issubset(inside)
+
+
+def test_fit_box_empty_union_400(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/fit-box",
+                    json={"sources": [{"kind": "preseg", "seg_id": 999999}]})
+    assert r.status_code == 400
+
+
+def test_fit_box_no_session_409(client):
+    r = client.post("/api/segment/fit-box",
+                    json={"sources": [{"kind": "preseg", "seg_id": 0}]})
+    assert r.status_code == 409

@@ -185,6 +185,9 @@ class CutShapeRequest(BaseModel):
     sources: list[CutShapeSource]
     protect_instances: list[int] = []
 
+class FitBoxRequest(BaseModel):
+    sources: list[CutShapeSource]
+
 class SamCaptureRequest(BaseModel):
     camera: dict                      # {pos,target,fov,W,H} in the recentered frame
     mode: str                         # "box" | "concept"
