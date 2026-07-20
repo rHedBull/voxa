@@ -287,6 +287,16 @@ export const VoxaAPI = {
       nProtected: j.n_protected,
     };
   },
+
+  async fitBox(sources) {
+    const r = await fetch('/api/segment/fit-box', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sources: sources.map((s) => ({ kind: s.kind, seg_id: s.segId })) }),
+    });
+    if (!r.ok) throw new Error(`fitBox failed: ${r.status} ${await r.text()}`);
+    return r.json(); // { center, size, rotation }
+  },
   async samCapture({ camera, mode, box = null, text = null }) {
     const r = await fetch('/api/sam/capture', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
