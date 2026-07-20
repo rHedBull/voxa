@@ -47,16 +47,23 @@ model — corners dropped onto an invisible fixed plane at the first click's hei
 height by scroll — read as disconnected from the geometry ("works kinda strange").
 See `product/demo/src/use-measure-tool.js` for the reference implementation.
 
-1. **Draw the footprint (Surface-tool style).** Click to place corners; each
-   corner **snaps to the real cloud surface** under the cursor via
-   `viewerRef.firstHitUnderCursor` (its true 3D `world` position) — *not* a fixed
-   plane. A **dashed rubber-band** runs from the last placed corner to the cursor,
-   updated **imperatively** on `pointermove` (a camera-facing plane through the
-   anchor, never a per-move cloud raycast — the measure tool throttles/avoids that
-   because raycasting millions of points per move hitches the main thread). The
-   footprint outline is drawn through the snapped 3D corners, so it sits *on* the
-   geometry. A click is a `pointerdown`+`pointerup` within ~5 px (a drag is a
+1. **Draw the footprint (on a horizontal base plane).** The **first** click
+   snaps to the cloud surface via `viewerRef.firstHitUnderCursor` and its `world.y`
+   fixes a **horizontal base plane** (`baseY`). Every **later** corner is the
+   camera ray ∩ that plane, so all corners are **coplanar** at `baseY`. A
+   **dashed rubber-band** previews on the *same* plane, updated imperatively on
+   `pointermove` (never a per-move cloud raycast — that would hitch the main
+   thread). A click is a `pointerdown`+`pointerup` within ~5 px (a drag is a
    camera move, not a placement).
+
+   > **Why coplanar, not per-corner surface-snap** (superseded design): v2 first
+   > snapped *every* corner to its own surface point (Surface-measure-tool style).
+   > But a vertical prism needs a **planar XZ footprint**, and over depth-varying
+   > geometry the per-corner XZ projection scrambled the click order into a
+   > **self-intersecting (bowtie) polygon** — the even-odd point-in-polygon then
+   > filled a bowtie region, so the selection did not match the drawn footprint.
+   > Coplanar placement (the Measure **Volume** tool's model) keeps the polygon
+   > simple: a projective map of a plane preserves a simple polygon.
 2. **Close.** **Double-click** or **Enter** closes (minimum 3 corners; the
    double-click's own trailing corner is dropped — its two constituent clicks each
    fire the placement handler). **Backspace** drops the last corner; **Esc**
