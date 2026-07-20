@@ -45,7 +45,7 @@ export function applyDelta(state, { indices, after_class, after_instance }) {
 // candidates in the cyan overlay/SAM segments list) the moment another tool
 // labels over points a SAM mask had claimed. No-ops (returns state as-is,
 // no copy) when none of the indices currently carry a live sam id.
-function retireSamIdsForIndices(state, indices) {
+export function retireSamIdsForIndices(state, indices) {
   const shrink = new Map();
   for (let k = 0; k < indices.length; k++) {
     const old = state.samIds[indices[k]];

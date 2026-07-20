@@ -188,6 +188,36 @@ class CutShapeRequest(BaseModel):
 class FitBoxRequest(BaseModel):
     sources: list[CutShapeSource]
 
+class DenoiseRequest(BaseModel):
+    std_ratio: float = 2.0
+    k: int = 16
+    # When set, the prior denoise instance is erased to unlabeled before the
+    # new outlier set is applied (backend-owned re-run replacement).
+    replace_inst: Optional[int] = None
+    # Confirmed instances that denoise must not overwrite ("confirmed = locked").
+    protect_instances: list[int] = []
+
+class DenoiseResponse(BaseModel):
+    instance_id: Optional[int] = None
+    n_affected: int = 0
+    n_protected: int = 0
+    scan_indices_b64: Optional[str] = None
+    dirty: bool = False
+
+class DenoiseSelectionRequest(BaseModel):
+    source: Literal["sam", "instance"]
+    id: int
+    std_ratio: float = 2.0
+    k: int = 16
+
+class DenoiseSelectionResponse(BaseModel):
+    source: str
+    id: int
+    n_removed: int = 0
+    n_kept: int = 0
+    scan_indices_b64: Optional[str] = None   # the removed (outlier) points
+    dirty: bool = False
+
 class SamCaptureRequest(BaseModel):
     camera: dict                      # {pos,target,fov,W,H} in the recentered frame
     mode: str                         # "box" | "concept"

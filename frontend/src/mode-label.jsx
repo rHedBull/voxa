@@ -13,7 +13,7 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import ExportWizard from './export-wizard.jsx';
-import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
+import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply, filterSamSelectionOnToolSwitch, retireSamIdsForIndices } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
 import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
@@ -21,6 +21,7 @@ import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
 import { ClassPickerModal } from './class-picker.jsx';
 import { cutEligibility } from './cut-eligibility.js';
+import { removeOutliersEligibility } from './outlier-eligibility.js';
 import { fitEligibility } from './fit-eligibility.js';
 import CutModal from './cut-mode.jsx';
 
@@ -357,6 +358,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const [exportOpen, setExportOpen] = useStateLabel(false);
 
+  const [denoiseRatio, setDenoiseRatio] = useStateLabel(2.0);
+  const [denoiseInstId, setDenoiseInstId] = useStateLabel(null);  // backend instance id of the live denoise result
+  const [denoiseBusy, setDenoiseBusy] = useStateLabel(false);
+
   // Per-class point counts (class_id → n_points) for the export wizard's
   // "~0 after filters" guard. Derived from the load-time segment_summary;
   // null when the session wasn't loaded from a prelabel (then the wizard
@@ -617,6 +622,82 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       }]);
     }
   }, [cutModal, classes, instances, counts, onChange, setSegState]);
+
+  // Feature C: global "Detect outliers". Runs cloud-wide statistical outlier
+  // removal on the backend and stages the outliers as one unconfirmed Exclude
+  // pointset. Re-runs pass the tracked denoiseInstId as replaceInst so the
+  // backend erases the prior result first; we then drop the old row and add the
+  // new one (re-running never stacks Exclude instances). Mirrors
+  // onCutConfirmedHandler's segState patch + Instances-panel row append.
+  const runDenoise = useCallbackLabel(async () => {
+    if (!segState || denoiseBusy) return;
+    setDenoiseBusy(true);
+    try {
+      const resp = await VoxaAPI.denoise({
+        stdRatio: denoiseRatio,
+        replaceInst: denoiseInstId,           // erase the prior result first
+        protectInstances: protectedSegIds,
+      });
+      // Drop the previous denoise row (its points were just erased server-side).
+      // Look up the Exclude class by its stable string key (like everywhere
+      // else in this file), not a hardcoded numeric id.
+      const cls = classes.find((c) => c.id === 'unknown');   // Exclude / Review
+      if (!cls) { console.error('denoise: no "unknown" (Exclude) class in config'); return; }
+      const kept = instances.filter((i) => i.segId !== denoiseInstId);
+      if (resp.instance_id == null) {
+        onChange(kept);
+        setDenoiseInstId(null);
+      } else {
+        const idx = resp.indices;                            // Int32Array (decoded in api.js)
+        const afterClass = new Int8Array(idx.length).fill(cls.class_id);
+        const afterInstance = new Int32Array(idx.length).fill(resp.instance_id);
+        setSegState((s) => (s ? applyDelta(s, {
+          indices: idx, after_class: afterClass, after_instance: afterInstance,
+        }) : s));
+        onChange([...kept, {
+          id: newId(),
+          segId: resp.instance_id,
+          kind: 'pointset',
+          cls: cls.id,
+          label: `${cls.label} ${(counts[cls.id] || 0) + 1}`,
+          color: cls.color,
+          source: 'denoise',
+          confirmed: false,
+        }]);
+        setDenoiseInstId(resp.instance_id);
+      }
+    } catch (e) {
+      console.error('denoise failed', e);
+    } finally {
+      setDenoiseBusy(false);
+    }
+  }, [segState, denoiseBusy, denoiseRatio, denoiseInstId, protectedSegIds,
+      classes, instances, counts, onChange, setSegState]);
+
+  // Feature B: right-click "Remove outliers" strips a selection's spatial
+  // strays back to unlabeled (instance) or drops their SAM candidacy (sam).
+  const removeOutliers = useCallbackLabel(async ({ source, id }) => {
+    if (!segState) return;
+    try {
+      const resp = await VoxaAPI.denoiseSelection({ source, id, stdRatio: denoiseRatio });
+      if (!resp.n_removed || !resp.indices) return;
+      const idx = resp.indices;                       // Int32Array (decoded in api.js)
+      setSegState((s) => {
+        if (!s) return s;
+        if (source === 'sam') {
+          // Strays lose SAM candidacy; candidate shrinks (mirrors backend
+          // remove_sam_points -> _retire_sam_ids).
+          return retireSamIdsForIndices(s, idx);
+        }
+        // instance: strays back to unlabeled
+        const afterClass = new Int8Array(idx.length).fill(-1);
+        const afterInstance = new Int32Array(idx.length).fill(-1);
+        return applyDelta(s, { indices: idx, after_class: afterClass, after_instance: afterInstance });
+      });
+    } catch (e) {
+      console.error('removeOutliers failed', e);
+    }
+  }, [segState, denoiseRatio, setSegState]);
 
   // Always populated when there are confirmed instances, regardless of the
   // hide toggle. The Viewer uses it to compute "points labeled / left" stats
@@ -1269,6 +1350,22 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             ⬇ Export…
           </button>
         )}
+        {isAnnotated && (
+          <div className="denoise-row" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              className="ghost-btn"
+              disabled={!activeSessionId || denoiseBusy}
+              title={activeSessionId ? 'Detect stray outlier points and stage them as Exclude'
+                                     : 'Open a session first'}
+              onClick={runDenoise}>
+              {denoiseBusy ? '… Detecting' : '✧ Detect outliers'}
+            </button>
+            <input type="range" min="1" max="3" step="0.1"
+              value={denoiseRatio}
+              onChange={(e) => setDenoiseRatio(parseFloat(e.target.value))}
+              title={`Aggressiveness (σ=${denoiseRatio.toFixed(1)}; lower = greedier)`} />
+          </div>
+        )}
         <div className="side-hd">
           <span>Classes</span>
           <span className="badge-soft">{instances.length}</span>
@@ -1307,6 +1404,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onAutoFit={autoFitBox}
           onApply={() => setClassPickerOpen(true)}
           onEditSelection={openCutModal}
+          onRemoveOutliers={removeOutliers}
           onFitBox={fitBoxToSelection} />
       </aside>
 
@@ -1620,6 +1718,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 onSelect: () => {
                   if (!target || !Number.isFinite(target.segId)) return;
                   openCutModal([{ kind: 'instance', segId: target.segId }], target.cls);
+                },
+              },
+              {
+                label: 'Remove outliers',
+                disabled: !removeOutliersEligibility({
+                  list: 'instance',
+                  isSelected: instCutMenu.instId === selectedId,
+                  confirmed: !!target?.confirmed,
+                }).eligible,
+                onSelect: () => {
+                  if (!target || !Number.isFinite(target.segId)) return;
+                  removeOutliers({ source: 'instance', id: target.segId });
                 },
               }, {
                 // Fitting only READS the source points — a confirmed instance is

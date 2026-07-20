@@ -129,6 +129,87 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     return body
 
 
+# Exclude/Review class id, sourced from classes.yaml so it can't drift from
+# config (the mapping's single home is app.core._voxa_class_name_to_id).
+EXCLUDE_CLASS_ID = _voxa_class_name_to_id().get("unknown", 6)
+
+
+def _denoise_core(seg, req: "DenoiseRequest") -> dict:
+    """Shared core for /denoise: run global statistical-outlier detection
+    over the whole cloud and materialize the flagged points as one
+    unconfirmed Exclude pointset (Feature C)."""
+    from labeling.outliers import statistical_outlier_indices
+
+    def _empty(n_protected: int = 0) -> dict:
+        return {"instance_id": None, "n_affected": 0, "n_protected": n_protected,
+                "scan_indices_b64": None, "dirty": bool(seg.dirty)}
+
+    # Backend-owned re-run replacement: erase the prior denoise instance's
+    # points to unlabeled BEFORE recomputing (deleteInstance on the frontend
+    # only drops the row, never the working-array labels).
+    if req.replace_inst is not None:
+        old = np.flatnonzero(seg.instance_ids == int(req.replace_inst))
+        if old.size:
+            seg.apply_reassign(old, target_inst=None, target_class=None)
+    all_idx = np.arange(seg.positions.shape[0], dtype=np.int64)
+    # Whole-cloud population == every point, so reuse the session's cached
+    # KD-tree: a strength re-run then skips rebuilding a multi-million-pt tree.
+    outliers = statistical_outlier_indices(
+        seg.positions, all_idx, k=int(req.k), std_ratio=float(req.std_ratio),
+        tree=seg._ensure_tree())
+    if outliers.size == 0:
+        return _empty()
+    out = seg.apply_reassign(
+        outliers.astype(np.int32), target_inst=-1, target_class=EXCLUDE_CLASS_ID,
+        protect_instances=req.protect_instances)
+    if out["n_affected"] == 0:            # everything caught was locked/confirmed
+        return _empty(out.get("n_protected", 0))
+    return {"instance_id": int(out["new_instance_id"]),
+            "n_affected": int(out["n_affected"]),
+            "n_protected": out.get("n_protected", 0),
+            "scan_indices_b64": _b64(out["indices"].astype(np.int32, copy=False)),
+            "dirty": bool(seg.dirty)}
+
+
+@router.post("/api/segment/denoise", response_model=DenoiseResponse)
+def denoise(req: DenoiseRequest):
+    """Global outlier detection: flag spatial outliers cloud-wide and
+    materialize them as one unconfirmed Exclude pointset (Feature C).
+    See docs/superpowers/specs/2026-07-20-outlier-detection-filtering-design.md."""
+    seg = _require_seg()
+    return _denoise_core(seg, req)
+
+
+@router.post("/api/segment/denoise-selection", response_model=DenoiseSelectionResponse)
+def denoise_selection(req: DenoiseSelectionRequest):
+    """Per-selection "remove outliers" (Feature B): strip a selection's
+    spatial outliers back to unlabeled. SAM candidate -> drop candidacy;
+    unconfirmed instance -> erase to (-1,-1). Presegs are out of scope."""
+    from labeling.outliers import statistical_outlier_indices
+    seg = _require_seg()
+    if req.source == "sam":
+        membership = seg.sam_ids == int(req.id)
+    else:
+        membership = seg.instance_ids == int(req.id)
+    subset = np.flatnonzero(membership).astype(np.int64)
+    if subset.size == 0:
+        raise HTTPException(404, f"{req.source} selection {req.id} is empty")
+    outliers = statistical_outlier_indices(
+        seg.positions, subset, k=int(req.k), std_ratio=float(req.std_ratio))
+    n_kept = int(subset.size - outliers.size)
+    if outliers.size == 0:
+        return DenoiseSelectionResponse(source=req.source, id=req.id,
+                                        n_removed=0, n_kept=n_kept, dirty=bool(seg.dirty))
+    out_i32 = outliers.astype(np.int32)
+    if req.source == "sam":
+        seg.remove_sam_points(out_i32)
+    else:
+        seg.apply_reassign(out_i32, target_inst=None, target_class=None)
+    return DenoiseSelectionResponse(
+        source=req.source, id=req.id, n_removed=int(outliers.size), n_kept=n_kept,
+        scan_indices_b64=_b64(out_i32), dirty=bool(seg.dirty))
+
+
 @router.post("/api/segment/apply-shape")
 def apply_shape(req: ApplyShapeRequest):
     """Generic shape-based label apply: resolve `req.shape` (tube or obb) to
