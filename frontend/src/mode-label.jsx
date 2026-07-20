@@ -617,7 +617,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         protectInstances: protectedSegIds,
       });
       // Drop the previous denoise row (its points were just erased server-side).
-      const cls = classes.find((c) => c.class_id === 6);   // Exclude / Review
+      // Look up the Exclude class by its stable string key (like everywhere
+      // else in this file), not a hardcoded numeric id.
+      const cls = classes.find((c) => c.id === 'unknown');   // Exclude / Review
+      if (!cls) { console.error('denoise: no "unknown" (Exclude) class in config'); return; }
       const kept = instances.filter((i) => i.segId !== denoiseInstId);
       if (resp.instance_id == null) {
         onChange(kept);

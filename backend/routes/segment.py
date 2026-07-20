@@ -129,7 +129,9 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     return body
 
 
-EXCLUDE_CLASS_ID = 6   # config/classes.yaml -> unknown, "Exclude / Review"
+# Exclude/Review class id, sourced from classes.yaml so it can't drift from
+# config (the mapping's single home is app.core._voxa_class_name_to_id).
+EXCLUDE_CLASS_ID = _voxa_class_name_to_id().get("unknown", 6)
 
 
 def _denoise_core(seg, req: "DenoiseRequest") -> dict:
@@ -137,26 +139,31 @@ def _denoise_core(seg, req: "DenoiseRequest") -> dict:
     over the whole cloud and materialize the flagged points as one
     unconfirmed Exclude pointset (Feature C)."""
     from labeling.outliers import statistical_outlier_indices
+
+    def _empty(n_protected: int = 0) -> dict:
+        return {"instance_id": None, "n_affected": 0, "n_protected": n_protected,
+                "scan_indices_b64": None, "dirty": bool(seg.dirty)}
+
     # Backend-owned re-run replacement: erase the prior denoise instance's
     # points to unlabeled BEFORE recomputing (deleteInstance on the frontend
     # only drops the row, never the working-array labels).
     if req.replace_inst is not None:
-        old = np.flatnonzero(seg.instance_ids == int(req.replace_inst)).astype(np.int32)
+        old = np.flatnonzero(seg.instance_ids == int(req.replace_inst))
         if old.size:
             seg.apply_reassign(old, target_inst=None, target_class=None)
     all_idx = np.arange(seg.positions.shape[0], dtype=np.int64)
+    # Whole-cloud population == every point, so reuse the session's cached
+    # KD-tree: a strength re-run then skips rebuilding a multi-million-pt tree.
     outliers = statistical_outlier_indices(
-        seg.positions, all_idx, k=int(req.k), std_ratio=float(req.std_ratio))
+        seg.positions, all_idx, k=int(req.k), std_ratio=float(req.std_ratio),
+        tree=seg._ensure_tree())
     if outliers.size == 0:
-        return {"instance_id": None, "n_affected": 0, "n_protected": 0,
-                "scan_indices_b64": None, "dirty": bool(seg.dirty)}
+        return _empty()
     out = seg.apply_reassign(
         outliers.astype(np.int32), target_inst=-1, target_class=EXCLUDE_CLASS_ID,
-        protect_instances=req.protect_instances or None)
+        protect_instances=req.protect_instances)
     if out["n_affected"] == 0:            # everything caught was locked/confirmed
-        return {"instance_id": None, "n_affected": 0,
-                "n_protected": out.get("n_protected", 0),
-                "scan_indices_b64": None, "dirty": bool(seg.dirty)}
+        return _empty(out.get("n_protected", 0))
     return {"instance_id": int(out["new_instance_id"]),
             "n_affected": int(out["n_affected"]),
             "n_protected": out.get("n_protected", 0),

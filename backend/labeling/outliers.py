@@ -19,6 +19,7 @@ def statistical_outlier_indices(
     subset_idx: np.ndarray,
     k: int = 16,
     std_ratio: float = 2.0,
+    tree: "cKDTree | None" = None,
 ) -> np.ndarray:
     """Return the indices (into `positions`) of the spatial outliers among
     `positions[subset_idx]`.
@@ -27,6 +28,11 @@ def statistical_outlier_indices(
     neighbours within the subset; flag points whose mean distance exceeds
     `mean + std_ratio * std` of that distribution. Density-adaptive: the
     threshold comes from the subset's own distances.
+
+    `tree`, if given, MUST be a `cKDTree` already built over exactly
+    `positions[subset_idx]` in the same order — an optimisation the caller
+    uses only for the whole-cloud case (`subset_idx` covers every point), so
+    a re-run doesn't rebuild a multi-million-point tree. Omit it otherwise.
     """
     subset_idx = np.asarray(subset_idx, dtype=np.int64).ravel()
     n = subset_idx.size
@@ -34,7 +40,8 @@ def statistical_outlier_indices(
     if n < k + 1:
         return np.empty(0, dtype=np.int64)
     pts = positions[subset_idx]
-    tree = cKDTree(pts)
+    if tree is None:
+        tree = cKDTree(pts)
     # query k+1 because the first neighbour is the point itself (dist 0).
     dists, _ = tree.query(pts, k=k + 1)
     mean_knn = dists[:, 1:].mean(axis=1)      # drop the self-distance column
