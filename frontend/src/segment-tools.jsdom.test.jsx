@@ -52,6 +52,25 @@ test('clicking the enabled item invokes onEditSelection with {kind:preseg,segId}
   expect(onEditSelection).toHaveBeenCalledWith([{ kind: 'preseg', segId: 1 }]);
 });
 
+test('non-empty selection -> "Fit box to selection…" item is enabled and calls onFitBox with {kind:preseg,segId} sources', () => {
+  const segState = makeSegState(new Set([1]));
+  const onFitBox = vi.fn();
+  render(<PresegmentList segState={segState} setSegState={() => {}} classes={classes}
+    viewerRef={{ current: null }} cloud={null} onFitBox={onFitBox} />);
+  fireEvent.contextMenu(screen.getByText('#1'));
+  const item = screen.getByText('Fit box to selection…');
+  expect(item.className).not.toContain('disabled');
+  fireEvent.click(item);
+  expect(onFitBox).toHaveBeenCalledWith([{ kind: 'preseg', segId: 1 }]);
+});
+
+test('empty selection -> "Fit box to selection…" item is disabled (matches fitEligibility)', () => {
+  const segState = makeSegState(new Set());
+  render(<PresegmentList segState={segState} setSegState={() => {}} classes={classes} viewerRef={{ current: null }} cloud={null} />);
+  fireEvent.contextMenu(screen.getByText('#1'));
+  expect(screen.getByText('Fit box to selection…').className).toContain('disabled');
+});
+
 // ── source:'preseg' cut candidates (segState.samSegments) ──────────────────
 // These live in the mutable SAM-candidate layer, not segState.instanceFull —
 // PresegmentList must surface them as a visually distinct second section,
