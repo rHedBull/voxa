@@ -38,6 +38,15 @@
 - Create: `backend/labeling/fit_box.py`
 - Test: `backend/tests/test_fit_box.py`
 
+> **As-built note:** the footprint step below was written as 2D PCA, but PCA is
+> only a statistical orientation estimate and missed the axis-aligned-recovery
+> tolerance in `test_axis_aligned_box_recovers_bounds`. It was replaced during
+> implementation with the **exact minimum-area rectangle via rotating calipers
+> over the convex hull** (`scipy.spatial.ConvexHull`, already a dependency) —
+> the projection/center/padding/degenerate-fallback logic below is unchanged.
+> The spec's Backend section is the authoritative description. The PCA snippet
+> is retained here as the original plan of record.
+
 The math (yaw-only OBB, Euler-XYZ `Rx·Ry·Rz` convention, so `rotation = [0, ry, 0]`):
 - Vertical: `sy = y.max - y.min`, `cy = midpoint`.
 - Footprint: 2D PCA on the X/Z columns → dominant direction `(dx, dz)`. Yaw `θ = atan2(-dz, dx)` so the box's local x-axis (world column `[cosθ, 0, -sinθ]` of `euler_xyz_matrix(0,θ,0)`) aligns with the principal direction. Project points onto `u=(cosθ,-sinθ)` and `v=(sinθ,cosθ)` in XZ, take min/max → extents `sx, sz` and center `(cx, cz)`.

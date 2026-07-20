@@ -28,7 +28,8 @@ separate (see Non-goals).
   (Voxa has none today; adding one is out of scope).
 - **Box shape:** a **gravity-aligned (yaw-only) oriented box**. One axis is
   locked to world-up (Y); the footprint is the tightest rotated rectangle in the
-  X/Z plane (2D PCA), extended to the full vertical extent. `rotation = [0, ry, 0]`.
+  X/Z plane (exact minimum-area rectangle via rotating calipers over the convex
+  hull), extended to the full vertical extent. `rotation = [0, ry, 0]`.
 - **Result is staged, not applied.** The fit produces an editable Box-tool
   `selBox`; the user then transforms (G/R/Y) and labels through the normal Box
   pipeline. Nothing is classified by the fit itself.
@@ -111,20 +112,24 @@ instance): `{ center: [x,y,z], size: [sx,sy,sz], rotation: [0, ry, 0] }`.
 A pure, unit-tested `fit_gravity_obb(points: np.ndarray) -> (center, size, rotation)`:
 
 - **Vertical (Y):** `y0, y1 = points[:,1].min(), max()`; `cy=(y0+y1)/2`, `sy=y1-y0`.
-- **Footprint (X/Z):** 2D PCA on `points[:, [0,2]]`.
-  - Covariance eigen-decomposition → principal direction; `ry = atan2(...)` of
-    that direction, matching the **Rx·Ry·Rz** Euler-XYZ convention that
-    `scenes/reproject.py::euler_xyz_matrix` and `shapes.py::_obb_mask` compose
-    (with `rx=rz=0`, `Ry` is the only rotation, so parity reduces to getting the
-    yaw sign right — locked by a round-trip test, see Testing).
-  - Rotate the XZ points by `-ry` into box-local axes, take `min/max` along each
-    → footprint center (`cx,cz` back in world) and extents (`sx,sz`).
+- **Footprint (X/Z):** the **exact minimum-area rectangle** of `points[:, [0,2]]`,
+  found via **rotating calipers over the convex hull** (`scipy.spatial.ConvexHull`,
+  already a backend dependency). For a convex region the minimum-area bounding
+  rectangle always shares an edge with the hull, so testing one orientation per
+  hull edge is provably optimal — unlike a covariance/PCA estimate, which only
+  approximates the tightest box and can be visibly loose on axis-aligned data.
+  - The winning orientation gives `ry`, matching the **Rx·Ry·Rz** Euler-XYZ
+    convention that `scenes/reproject.py::euler_xyz_matrix` and `shapes.py::obb_indices`
+    compose (with `rx=rz=0`, `Ry` is the only rotation, so parity reduces to
+    getting the yaw sign right — locked by a round-trip containment test, see Testing).
+  - Project the XZ points onto the box-local axes at angle `ry`, take `min/max`
+    along each → footprint center (`cx,cz` back in world) and extents (`sx,sz`).
 - **Padding:** add a small epsilon to each size (match the existing `+0.005` in
   `/api/auto-fit`) so the box provably contains every source point despite float
   rounding.
-- **Degenerate fallbacks:** fewer than 3 points, or a near-zero secondary
-  eigenvalue (collinear XZ) → `ry = 0` (axis-aligned) and clamp each size to a
-  small positive minimum. Never returns a zero-volume box.
+- **Degenerate fallbacks:** fewer than 3 points, or a collinear/degenerate hull
+  (`QhullError`) → `ry = 0` (axis-aligned) and clamp each footprint size to a
+  small positive minimum (`MIN_SIZE`). Never returns a zero-volume box.
 
 Reuses `euler_xyz_matrix` / the existing OBB math rather than hand-rolling a new
 rotation (per the coordinate-system gotcha in CLAUDE.md).

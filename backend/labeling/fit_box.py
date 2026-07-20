@@ -70,4 +70,9 @@ def fit_gravity_obb(points):
     cx = cu * c + cv * s
     cz = -cu * s + cv * c
 
-    return ([cx, cy, cz], [sx, sy, sz], [0.0, theta, 0.0])
+    # Cast to Python float so the values serialize cleanly when the endpoint
+    # returns this dict straight through FastAPI (np.float64 can trip the
+    # JSON encoder).
+    return ([float(cx), float(cy), float(cz)],
+            [float(sx), float(sy), float(sz)],
+            [0.0, float(theta), 0.0])

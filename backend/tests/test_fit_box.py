@@ -12,10 +12,10 @@ def _obb_dict(center, size, rotation):
 
 def test_axis_aligned_box_recovers_bounds():
     # A filled axis-aligned box; fit should recover its center + extents (+pad).
-    # NOTE: 2D PCA picks the higher-variance horizontal axis (z, extent 6) as
-    # dominant, so ry ≈ ±π/2 and the footprint axes (size[0]/size[2]) may SWAP.
-    # The eigenvector sign from eigh is also arbitrary (ry can come back as π).
-    # So assert on the SORTED extents + containment, never positional size[i].
+    # NOTE: the min-area-rectangle fit may align the box's local x-axis to
+    # EITHER horizontal extent (and with either sign of ry), so the footprint
+    # axes (size[0]/size[2]) can SWAP and ry can be 0 or ±π/2. So assert on the
+    # SORTED extents + containment, never positional size[i].
     rng = np.random.default_rng(0)
     pts = rng.uniform([-2, -1, -3], [2, 1, 3], size=(2000, 3)).astype(np.float32)
     center, size, rotation = fit_gravity_obb(pts)
