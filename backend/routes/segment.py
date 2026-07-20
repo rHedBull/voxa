@@ -173,6 +173,36 @@ def denoise(req: DenoiseRequest):
     return _denoise_core(seg, req)
 
 
+@router.post("/api/segment/denoise-selection", response_model=DenoiseSelectionResponse)
+def denoise_selection(req: DenoiseSelectionRequest):
+    """Per-selection "remove outliers" (Feature B): strip a selection's
+    spatial outliers back to unlabeled. SAM candidate -> drop candidacy;
+    unconfirmed instance -> erase to (-1,-1). Presegs are out of scope."""
+    from labeling.outliers import statistical_outlier_indices
+    seg = _require_seg()
+    if req.source == "sam":
+        membership = seg.sam_ids == int(req.id)
+    else:
+        membership = seg.instance_ids == int(req.id)
+    subset = np.flatnonzero(membership).astype(np.int64)
+    if subset.size == 0:
+        raise HTTPException(404, f"{req.source} selection {req.id} is empty")
+    outliers = statistical_outlier_indices(
+        seg.positions, subset, k=int(req.k), std_ratio=float(req.std_ratio))
+    n_kept = int(subset.size - outliers.size)
+    if outliers.size == 0:
+        return DenoiseSelectionResponse(source=req.source, id=req.id,
+                                        n_removed=0, n_kept=n_kept, dirty=bool(seg.dirty))
+    out_i32 = outliers.astype(np.int32)
+    if req.source == "sam":
+        seg.remove_sam_points(out_i32)
+    else:
+        seg.apply_reassign(out_i32, target_inst=None, target_class=None)
+    return DenoiseSelectionResponse(
+        source=req.source, id=req.id, n_removed=int(outliers.size), n_kept=n_kept,
+        scan_indices_b64=_b64(out_i32), dirty=bool(seg.dirty))
+
+
 @router.post("/api/segment/apply-shape")
 def apply_shape(req: ApplyShapeRequest):
     """Generic shape-based label apply: resolve `req.shape` (tube or obb) to

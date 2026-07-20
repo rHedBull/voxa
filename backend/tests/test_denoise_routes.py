@@ -70,3 +70,46 @@ def test_denoise_empty_returns_null_instance():
     body = client.post("/api/segment/denoise", json={"std_ratio": 50.0}).json()
     assert body["instance_id"] is None
     assert body["n_affected"] == 0
+
+
+def _client_with_selection(kind):
+    """Seed a SAM candidate or an instance whose members = a tight core plus
+    a couple of far strays, and return (client, seg, id, stray_full_indices)."""
+    import main
+    from app.core import _state
+    core = np.random.default_rng(2).normal(0, 0.1, size=(120, 3)).astype(np.float32)
+    strays = np.array([[7, 0, 0], [0, 7, 0]], dtype=np.float32)
+    pos = np.vstack([core, strays])          # strays at 120, 121
+    seg = SegmentSession(np.full(pos.shape[0], -1, np.int8),
+                         np.full(pos.shape[0], -1, np.int32), pos)
+    members = np.arange(0, 122, dtype=np.int32)   # whole cloud is the selection
+    if kind == "sam":
+        out = seg.materialize_sam_segment(members, source="sam")
+        sid = out["sam_seg_id"]
+    else:
+        out = seg.apply_reassign(members, target_inst=-1, target_class=0)  # class pipe
+        sid = out["new_instance_id"]
+    _state["seg"] = seg
+    return TestClient(main.app), seg, sid, [120, 121]
+
+
+def test_denoise_selection_sam_retires_strays():
+    client, seg, sid, strays = _client_with_selection("sam")
+    r = client.post("/api/segment/denoise-selection",
+                    json={"source": "sam", "id": sid, "std_ratio": 1.5})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["n_removed"] == 2
+    assert bool((seg.sam_ids[strays] == -1).all())
+    assert seg.sam_segments[sid]["n_points"] == 120
+
+
+def test_denoise_selection_instance_erases_strays():
+    client, seg, sid, strays = _client_with_selection("instance")
+    r = client.post("/api/segment/denoise-selection",
+                    json={"source": "instance", "id": sid, "std_ratio": 1.5})
+    body = r.json()
+    assert body["n_removed"] == 2
+    # strays back to unlabeled; core still labelled with the instance
+    assert bool((seg.instance_ids[strays] == -1).all())
+    assert int((seg.instance_ids == sid).sum()) == 120
