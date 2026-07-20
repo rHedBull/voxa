@@ -2,13 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { TOOLS, toolAvailable, defaultTool } from './label-tools.js';
 
 describe('label-tools', () => {
-  it('lists the five selection tools in rail order', () => {
-    expect(TOOLS.map((t) => t.id)).toEqual(['presegment', 'box', 'draw', 'beam', 'sam']);
+  it('lists the six selection tools in rail order', () => {
+    expect(TOOLS.map((t) => t.id)).toEqual(['presegment', 'box', 'prism', 'draw', 'beam', 'sam']);
   });
   it('gates all tools on a segment session (apply needs one); draw/beam/sam also on annotated', () => {
     const raw = { segState: null, isAnnotated: false };
     // No session → nothing can apply, including Box.
     expect(toolAvailable('box', raw)).toBe(false);
+    expect(toolAvailable('prism', raw)).toBe(false);
     expect(toolAvailable('presegment', raw)).toBe(false);
     expect(toolAvailable('draw', raw)).toBe(false);
     expect(toolAvailable('beam', raw)).toBe(false);
@@ -16,6 +17,7 @@ describe('label-tools', () => {
     // Session but not annotated tier → Box + Presegment work, Draw/Beam/SAM don't.
     const sessionOnly = { segState: {}, isAnnotated: false };
     expect(toolAvailable('box', sessionOnly)).toBe(true);
+    expect(toolAvailable('prism', sessionOnly)).toBe(true);
     expect(toolAvailable('presegment', sessionOnly)).toBe(true);
     expect(toolAvailable('draw', sessionOnly)).toBe(false);
     expect(toolAvailable('beam', sessionOnly)).toBe(false);

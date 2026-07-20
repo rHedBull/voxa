@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from labeling.shapes import obb_indices
 from labeling.shapes import shape_indices
+from labeling.shapes import prism_indices
 
 
 def test_obb_axis_aligned_selects_interior():
@@ -140,3 +141,60 @@ def test_beam_style_obb_matches_frame_membership(a, b):
     assert strict.sum() > 5           # sanity: the positive leg isn't vacuous
     assert got[strict].all()
     assert not got[outside].any()
+
+
+def _grid_xz(y_values):
+    # Points on a 5x5 XZ grid (x,z in 0..4) at each given y. Row-major:
+    # index = yi*25 + x*5 + z.
+    pts = []
+    for y in y_values:
+        for x in range(5):
+            for z in range(5):
+                pts.append([float(x), float(y), float(z)])
+    return np.asarray(pts, dtype=np.float32).reshape(-1)
+
+
+def test_prism_square_footprint_and_y_band():
+    # Square footprint strictly enclosing the x,z in {1,2,3} block (edges at
+    # 0.5/3.5 so grid points are interior, NOT on the boundary — even-odd
+    # ray-cast excludes on-edge points); band y in [0,1]. Two y-layers at
+    # y=0 (inside band) and y=5 (outside band).
+    pts = _grid_xz([0.0, 5.0])
+    prism = {"polygon": [[0.5, 0.5], [3.5, 0.5], [3.5, 3.5], [0.5, 3.5]],
+             "y0": 0.0, "height": 1.0}
+    idx = prism_indices(pts, prism)
+    got = set(idx.tolist())
+    # Expect the 3x3 block x in {1,2,3}, z in {1,2,3} at y=0 only.
+    expect = {0 * 25 + x * 5 + z for x in (1, 2, 3) for z in (1, 2, 3)}
+    assert got == expect
+
+
+def test_prism_concave_L_footprint():
+    # Concave L: excludes the top-right quadrant. A box cannot express this.
+    pts = _grid_xz([0.0])
+    poly = [[0, 0], [4, 0], [4, 2], [2, 2], [2, 4], [0, 4]]
+    prism = {"polygon": poly, "y0": -0.5, "height": 1.0}
+    idx = set(prism_indices(pts, prism).tolist())
+    # (3,3) is in the excluded notch -> out; (1,3) and (3,1) are in -> in.
+    assert (0 * 25 + 3 * 5 + 3) not in idx     # x=3,z=3 excluded
+    assert (0 * 25 + 1 * 5 + 3) in idx         # x=1,z=3 included
+    assert (0 * 25 + 3 * 5 + 1) in idx         # x=3,z=1 included
+
+
+def test_prism_empty_when_band_misses():
+    pts = _grid_xz([0.0])
+    prism = {"polygon": [[1, 1], [3, 1], [3, 3], [1, 3]], "y0": 10.0, "height": 1.0}
+    assert prism_indices(pts, prism).tolist() == []
+
+
+def test_prism_degenerate_polygon_selects_nothing():
+    pts = _grid_xz([0.0])
+    prism = {"polygon": [[1, 1], [2, 2]], "y0": 0.0, "height": 1.0}  # < 3 verts
+    assert prism_indices(pts, prism).tolist() == []
+
+
+def test_shape_indices_dispatches_prism():
+    pts = _grid_xz([0.0])
+    shape = {"type": "prism", "polygon": [[0.5, 0.5], [3.5, 0.5], [3.5, 3.5], [0.5, 3.5]],
+             "y0": 0.0, "height": 1.0}
+    assert len(shape_indices(pts, shape)) == 9

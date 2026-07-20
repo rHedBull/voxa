@@ -31,3 +31,6 @@ scripts/stage_dumps/
 
 # git worktrees (superpowers:using-git-worktrees)
 .worktrees/
+
+# superpowers brainstorming visual companion
+.superpowers/

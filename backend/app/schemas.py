@@ -91,8 +91,13 @@ class Cuboid(BaseModel):
     center: Optional[list[float]] = None   # [x,y,z]; null for pointset
     size: Optional[list[float]] = None     # [w,h,d]; null for pointset
     rotation: list[float] = [0.0, 0.0, 0.0]   # euler xyz radians
+    # Prism selection volume (source == 'prism'): {polygon:[[x,z],...],
+    # y0, height}. Null for every other kind. Inert display-only data a raw
+    # export rasterizes (materialize.collect_volumes), mirroring how box/beam
+    # persist center/size/rotation. Spec 2026-07-20 §Persistence.
+    prism: Optional[dict] = None
     conf: float = 1.0
-    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'preseg' | 'box' | 'beam' | 'draw' | 'recommendation'
+    source: str = "manual"   # 'manual' | 'auto' | 'fit' | 'preseg' | 'box' | 'beam' | 'draw' | 'prism' | 'recommendation'
     confirmed: bool = False  # set true via Ctrl+Enter; hides interior points in main view
     kind: str = "cuboid"     # 'cuboid' | 'pointset'
     segId: Optional[int] = None  # set for pointset (and preseg-promoted) instances; per-point membership key in segState.instanceFull
@@ -162,7 +167,7 @@ class CenterlineApplyRequest(BaseModel):
     protect_instances: list[int] = []  # see ApplyShapeRequest
 
 class ApplyShapeRequest(BaseModel):
-    shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
+    shape: dict            # {type:'tube'|'obb'|'prism', ...} — validated in shape_indices
     target_class: int | str
     target_inst: int = -1
     merged_from: list[int] = []
@@ -176,7 +181,7 @@ class CutShapeSource(BaseModel):
     seg_id: int
 
 class CutShapeRequest(BaseModel):
-    shape: dict            # {type:'tube'|'obb', ...} — validated in shape_indices
+    shape: dict            # {type:'tube'|'obb'|'prism', ...} — validated in shape_indices
     sources: list[CutShapeSource]
     protect_instances: list[int] = []
 

@@ -8,7 +8,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from app.core import _subsample_indices  # seeded, ascending indices into range(N)
-from labeling.shapes import obb_indices
+from labeling.shapes import obb_indices, prism_indices
 from labeling.centerline import tube_indices
 
 
@@ -23,16 +23,17 @@ def materialize_downsample(positions, colors, class_ids, instance_ids, n):
 
 
 def collect_volumes(instances, centerlines):
-    """Volumetric instances only (source in {'box','beam','draw'}). Box/beam ->
+    """Volumetric instances only (source in {'box','beam','draw','prism'}). Box/beam ->
     obb from center/size/rotation; draw -> tube from the instance's centerlines
-    paths (grouped by instance_id == segId). Each carries its apply-order `seq`."""
+    paths (grouped by instance_id == segId); prism -> prism from the instance's
+    persisted polygon/y0/height. Each carries its apply-order `seq`."""
     paths_by_inst = {}
     for p in (centerlines or {}).get("paths", []):
         paths_by_inst.setdefault(int(p["instance_id"]), []).append(p)
     out = []
     for inst in instances:
         src = inst.get("source")
-        if src not in ("box", "beam", "draw") or inst.get("segId") is None:
+        if src not in ("box", "beam", "draw", "prism") or inst.get("segId") is None:
             continue
         seq = inst.get("seq")
         iid = int(inst["segId"])  # symmetric int key with paths_by_inst; the seq
@@ -44,6 +45,9 @@ def collect_volumes(instances, centerlines):
         elif src == "draw" and iid in paths_by_inst:
             out.append({"kind": "tube", "instance_id": iid, "seq": seq,
                         "paths": paths_by_inst[iid]})
+        elif src == "prism" and inst.get("prism"):
+            out.append({"kind": "prism", "instance_id": iid, "seq": seq,
+                        "prism": inst["prism"]})
     return out
 
 
@@ -107,6 +111,8 @@ def replay_labels(index: ReplayIndex, target_pos):
             idx = obb_indices(target_pos, v["shape"])
         elif v["kind"] == "tube":
             idx = tube_indices(target_pos, v["paths"])
+        elif v["kind"] == "prism":
+            idx = prism_indices(target_pos, v["prism"])
         else:
             raise ValueError(f"unknown volume kind: {v['kind']!r}")
         mask[idx] = True

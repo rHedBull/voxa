@@ -1,6 +1,7 @@
 import { PresegmentList } from './segment-tools.jsx';
 import DrawMode from './draw-mode.jsx';
 import BeamMode from './beam-mode.jsx';
+import PrismMode from './prism-mode.jsx';
 import SamMode from './sam-mode.jsx';
 import { SamSegmentList } from './sam-segment-list.jsx';
 
@@ -52,7 +53,7 @@ function PresegOptions({
 }
 
 function DrawOptions({
-  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  viewerRef, classes, setSegState, onExit,
   activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
   protectInstances,
 }) {
@@ -63,8 +64,6 @@ function DrawOptions({
         classes={classes}
         setSegState={setSegState}
         onExit={onExit}
-        pointSize={pointSize}
-        setPointSize={setPointSize}
         defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
         onClassChange={(cid) => {
           const cls = classes.find((c) => c.class_id === cid);
@@ -79,7 +78,7 @@ function DrawOptions({
 }
 
 function BeamOptions({
-  viewerRef, classes, setSegState, onExit, pointSize, setPointSize,
+  viewerRef, classes, setSegState, onExit,
   activeClass, setActiveClass, onToolApplied, autoConfirm, setAutoConfirm,
   activeSessionId, protectInstances,
 }) {
@@ -95,8 +94,6 @@ function BeamOptions({
         classes={classes}
         setSegState={setSegState}
         onExit={onExit}
-        pointSize={pointSize}
-        setPointSize={setPointSize}
         defaultClassId={classes.find((c) => c.id === activeClass)?.class_id ?? classes[0]?.class_id ?? 0}
         onClassChange={(cid) => {
           const cls = classes.find((c) => c.class_id === cid);
@@ -107,6 +104,28 @@ function BeamOptions({
         sessionId={activeSessionId}
       />
       <AutoConfirmToggle tool="beam" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
+    </div>
+  );
+}
+
+function PrismOptions({
+  viewerRef, classes, counts, setSegState, onExit,
+  onToolApplied, autoConfirm, setAutoConfirm,
+  activeSessionId, protectInstances,
+}) {
+  return (
+    <div className="tool-options tool-options-prism">
+      <PrismMode
+        key={activeSessionId}
+        viewerRef={viewerRef}
+        classes={classes}
+        counts={counts}
+        setSegState={setSegState}
+        onExit={onExit}
+        onApplied={onToolApplied}
+        protectInstances={protectInstances}
+      />
+      <AutoConfirmToggle tool="prism" autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm} />
     </div>
   );
 }
@@ -180,6 +199,7 @@ export default function ToolOptions(props) {
   if (activeTool === 'presegment') return <PresegOptions {...props} />;
   if (activeTool === 'draw') return <DrawOptions {...props} />;
   if (activeTool === 'beam') return <BeamOptions {...props} />;
+  if (activeTool === 'prism') return <PrismOptions {...props} />;
   if (activeTool === 'sam') return <SamOptions {...props} />;
   if (activeTool === 'box') return <BoxOptions {...props} />;
   return null;

@@ -5,6 +5,7 @@ import { useState as useStateLabel, useMemo as useMemoLabel,
          useRef as useRefLabel } from 'react';
 import * as THREE from 'three';
 import { Viewer } from './viewer.jsx';
+import { CollapsiblePanel } from './mode-inspect.jsx';
 import { ViewportToolbar, ToolButton, HUDChip, CameraPresets, NavModeToggle, HelpButton } from './viewport-atoms.jsx';
 import { VoxaAPI, newId } from './api.js';
 import { focusSegment } from './segment-tools.jsx';
@@ -18,6 +19,7 @@ import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
+import { ClassPickerModal } from './class-picker.jsx';
 import { cutEligibility } from './cut-eligibility.js';
 import CutModal from './cut-mode.jsx';
 
@@ -51,10 +53,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const fastMode = activeTool === 'presegment' && presegRapid;
   const drawMode = activeTool === 'draw';
   const beamMode = activeTool === 'beam';
+  const prismMode = activeTool === 'prism';
   // Sub-modes whose overlay owns viewport input (capture-phase keys +
   // pointer): global pick/hotkey handlers stand down. A future 5th tool
   // adds one term here instead of touching every gate.
-  const subModeOwnsInput = drawMode || beamMode;
+  const subModeOwnsInput = drawMode || beamMode || prismMode;
   // Presegmentation is a way to *select* points; its segments (hulls, boxes,
   // per-segment hue coloring) only show while the Presegment tool is active.
   // Every other tool works on the raw RGB cloud.
@@ -62,15 +65,30 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   // Per-tool auto-confirm (added here to avoid a forward reference in Tasks 8/9;
   // threaded into apply paths in Task 10).
-  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false, sam: false });
+  const [autoConfirm, setAutoConfirm] = useStateLabel({ box: false, draw: false, presegment: false, beam: false, sam: false, prism: false });
   const autoConfirmFor = (tool) =>
     tool === 'presegment' ? (presegRapid || autoConfirm.presegment) : !!autoConfirm[tool];
-  // Stateful so PresegmentButton can flip to 'instance' after a RANSAC
-  // run — wildly different hues per segment make the grouping legible.
-  const [colorMode] = useStateLabel('class');
-  // Draw works on the raw RGB cloud, where bumping the point size makes the
-  // sparse subsample read denser (same slider as Inspect).
+  // Color mode picked in the Display panel; null = automatic — class colors
+  // while Presegment is active (so existing labels stay legible during
+  // selection; per-segment hues override per-point colors once hulls exist
+  // anyway), raw RGB for every other tool. Picking a pill pins the mode.
+  const [colorModeChoice, setColorModeChoice] = useStateLabel(null);
+  const colorMode = colorModeChoice ?? (isPreseg ? 'class' : 'rgb');
+  // Which color channels this scene offers (mirrors Inspect's Display panel).
+  const colorChannels = useMemoLabel(() => ({
+    rgb: !!cloud,
+    height: !!cloud,
+    class: !!cloud && !!cloud.classIds && !!cloud.classPalette,
+    instance: !!cloud && !!cloud.instanceIds,
+  }), [cloud]);
+  // Drop a pinned mode the scene can't honor — back to automatic.
+  useEffectLabel(() => {
+    if (cloud && colorModeChoice && !colorChannels[colorModeChoice]) setColorModeChoice(null);
+  }, [cloud, colorChannels, colorModeChoice]);
+  // Point size lives in the Display panel (same slider as Inspect); bumping
+  // it makes the sparse subsample read denser for Draw/Beam work.
   const [pointSize, setPointSize] = useStateLabel(0.012);
+  const [showFloor, setShowFloor] = useStateLabel(true);
   const [showDiff, setShowDiff] = useStateLabel(false);
   // Gizmo mode for the selected cuboid. null = no gizmo (edges only).
   const [transformMode, setTransformMode] = useStateLabel('translate');
@@ -952,7 +970,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const instancesRef = useRefLabel(instances);
   instancesRef.current = instances;
   const onToolApplied = useCallbackLabel(({
-    instanceId, classId, mergedFrom = [], source = 'draw', obb = null,
+    instanceId, classId, mergedFrom = [], source = 'draw', obb = null, prism = null,
   }) => {
     const cls = classes.find((c) => c.class_id === classId);
     if (!cls) return;
@@ -960,9 +978,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const kept = instancesRef.current.filter(
       (i) => !(i.kind === 'pointset' && absorbed.has(i.segId)));
     const existing = kept.find((i) => i.kind === 'pointset' && i.segId === instanceId);
-    const volume = obb ? {
-      center: [...obb.center], size: [...obb.size], rotation: [...obb.rotation],
-    } : {};
+    const volume = obb
+      ? { center: [...obb.center], size: [...obb.size], rotation: [...obb.rotation] }
+      : prism
+        ? { prism: { polygon: prism.polygon.map((v) => [...v]), y0: prism.y0, height: prism.height } }
+        : {};
     const next = existing
       ? kept.map((i) => i === existing ? { ...i, cls: cls.id, color: cls.color, ...volume } : i)
       : [...kept, {
@@ -1253,9 +1273,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           activeTool={activeTool}
           presegRapid={presegRapid} setPresegRapid={setPresegRapid} setFastPos={setFastPos}
           autoConfirm={autoConfirm} setAutoConfirm={setAutoConfirm}
-          segState={segState} setSegState={setSegState} classes={classes}
+          segState={segState} setSegState={setSegState} classes={classes} counts={counts}
           viewerRef={viewerRef} cloud={cloud} promotedSegIds={promotedSegIds}
-          pointSize={pointSize} setPointSize={setPointSize}
           activeClass={activeClass} setActiveClass={setActiveClass}
           onExit={() => setActiveTool('presegment')}
           onToolApplied={onToolApplied}
@@ -1280,8 +1299,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           background={theme.bg}
           floorColor={theme.floor}
           navMode={navMode}
-          colorMode={isPreseg ? colorMode : 'rgb'}
+          colorMode={colorMode}
           pointSize={pointSize}
+          showFloor={showFloor}
           diffMask={diffMask}
           showDiff={showDiff}
           transformMode={selBox ? (transformMode || 'translate') : null}
@@ -1340,6 +1360,45 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               ▦ Mesh window
             </button>
           </div>
+        </div>
+
+        {/* Same Display controls as Inspect (minus mesh — that's the
+            companion window above), collapsed by default so the labeling
+            viewport stays clear. */}
+        <div className="inspect-right">
+          <CollapsiblePanel title="Display">
+            <div className="ctrl">
+              <label>Color by</label>
+              <div className="pill-group">
+                {[
+                  ['rgb', 'RGB'],
+                  ['height', 'Height'],
+                  ['class', 'Class'],
+                  ['instance', 'Instance'],
+                ].map(([k, l]) => {
+                  const enabled = !!colorChannels[k];
+                  return (
+                    <button key={k}
+                      className={'pill' + (colorMode === k ? ' active' : '') + (enabled ? '' : ' disabled')}
+                      disabled={!enabled}
+                      title={enabled ? '' : `not available — scene has no ${k} channel`}
+                      onClick={() => enabled && setColorModeChoice(k)}>{l}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="ctrl">
+              <label>Point size <span className="mono">{pointSize.toFixed(3)}</span></label>
+              <input type="range" min={0.002} max={1.5} step={0.005}
+                value={pointSize} className="slider"
+                onChange={(e) => setPointSize(Number(e.target.value))} />
+            </div>
+            <div className="ctrl row">
+              <label>Floor & grid</label>
+              <button className={'sw' + (showFloor ? ' on' : '')}
+                onClick={() => setShowFloor(!showFloor)}><i /></button>
+            </div>
+          </CollapsiblePanel>
         </div>
 
         <div className="vp-help-corner">
@@ -1555,47 +1614,4 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 // selection as a new unconfirmed pointset instance with that class. Esc
 // dismisses without creating anything. Selection survives a cancel so the
 // user can pick again or hit Ctrl+Enter once more.
-function ClassPickerModal({ classes, counts, onPick, onClose }) {
-  useEffectLabel(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-        return;
-      }
-      const cls = classes.find((c) => c.hotkey === e.key);
-      if (cls) {
-        e.preventDefault();
-        e.stopPropagation();
-        onPick(cls);
-      }
-    };
-    // Capture phase so we beat the LabelMode global keydown that would
-    // otherwise also handle the hotkey (e.g. "1" → setActiveClass).
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [classes, onPick, onClose]);
-
-  return (
-    <div className="class-picker-overlay" onClick={onClose}>
-      <div className="class-picker-card" onClick={(e) => e.stopPropagation()}>
-        <div className="class-picker-title">Pick class for new instance</div>
-        <div className="class-picker-list">
-          {classes.map((c) => (
-            <button key={c.id}
-              className="class-picker-row"
-              onClick={() => onPick(c)}
-              title={`Press ${c.hotkey || '–'}`}>
-              <span className="class-swatch" style={{ background: c.color }} />
-              <span className="class-picker-label">{c.label}</span>
-              <span className="class-picker-count">{counts[c.id] || 0}</span>
-              <span className="class-picker-hk">{c.hotkey || '–'}</span>
-            </button>
-          ))}
-        </div>
-        <div className="class-picker-hint">Press a number to assign · Esc to cancel</div>
-      </div>
-    </div>
-  );
-}
 

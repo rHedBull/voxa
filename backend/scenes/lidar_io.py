@@ -20,18 +20,27 @@ from scenes.scene_registry import SceneSource
 
 
 # A small palette used when classes.json carries no per-class color (it
-# currently doesn't). Stable index → hex.
+# currently doesn't). Stable index → hex. Must cover every id in
+# engine/data/lidar/classes.json (version 6 = ids 0-14): the `cid % len`
+# lookup below wraps out-of-range ids onto earlier entries, silently giving
+# two classes the same color — append a distinct color here whenever a class
+# is appended there.
 _FALLBACK_PALETTE = [
     "#5b8def",  # 0 pipe (blue)
     "#10b981",  # 1 tank (green)
     "#f5a524",  # 2 equipment (amber)
     "#a855f7",  # 3 structural (purple)
     "#ef4444",  # 4 double (red)
-    "#06b6d4",  # 5 cyan
-    "#facc15",  # 6 yellow
-    "#84cc16",  # 7 lime
-    "#f472b6",  # 8 pink
-    "#22d3ee",  # 9 sky
+    "#06b6d4",  # 5 fitting (cyan)
+    "#facc15",  # 6 unknown (yellow)
+    "#84cc16",  # 7 wall (lime)
+    "#f472b6",  # 8 floor (pink)
+    "#22d3ee",  # 9 ceiling (sky)
+    "#f97316",  # 10 beam (orange)
+    "#8b5cf6",  # 11 pillar (violet)
+    "#e11d48",  # 12 stair (crimson)
+    "#d946ef",  # 13 cable (fuchsia)
+    "#9ca3af",  # 14 other (grey)
 ]
 
 

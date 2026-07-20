@@ -7,7 +7,7 @@ organized around three clearly separated modes.
 | Mode | Purpose |
 |------|---------|
 | **Inspect** | Fast scrubby review of a scan — color-by toggles, point size, scene stats, camera presets |
-| **Label** | Cuboid annotation with a class palette, per-instance inspector, hide-by-class, optional auto-fit |
+| **Label** | Cuboid annotation with a class palette, per-instance inspector, hide-by-class, optional auto-fit, and the same Display panel as Inspect (color-by, point size, floor toggle) |
 | **Compare** | Side-by-side ground-truth vs prediction with synced cameras and a server-computed diff (precision / recall / F1 / IoU + per-instance TP/FP/FN table) |
 
 ## Quick start
