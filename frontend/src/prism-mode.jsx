@@ -229,9 +229,12 @@ function PrismOverlay({ viewerRef, prism, setPrism, onClose }) {
     group.add(noRay(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), mat(0.5))));
   }, [prism]);
 
-  // Pointer interaction: place/close corners (footprint), aim/commit height.
-  // Non-capture, no stopPropagation — orbit coexists (a drag orbits, a click
-  // places/commits), the same way the Measure Surface/Volume tools do it.
+  // Pointer interaction: place corners (footprint), aim/commit height.
+  // Orbit stays enabled throughout; BOTH placing a corner AND committing a
+  // height go through the same pointerdown→pointerup distance test, so an
+  // orbit-drag (moved > CLICK_PX) never places or commits — only a real click
+  // does. (Committing on a raw native `click` would let a drag-release lock in
+  // a stale height; distinguishing click-from-drag here is what prevents that.)
   useEffect(() => {
     const v = viewerRef.current;
     const dom = v?.domElement?.();
@@ -253,15 +256,22 @@ function PrismOverlay({ viewerRef, prism, setPrism, onClose }) {
       down = { x: e.clientX, y: e.clientY };
     };
     const onUp = (e) => {
-      const p = prismRef.current;
-      if (p.phase !== 'footprint') return;
       if (!down) return;
       const { x, y } = down; down = null;
-      if (Math.hypot(e.clientX - x, e.clientY - y) > CLICK_PX) return;   // drag = orbit
-      const hit = v.firstHitUnderCursor?.(e);
-      if (!hit) return;                                                  // clicked empty space
-      setPrism((s) => (s.phase === 'footprint'
-        ? { ...s, corners: [...s.corners, [hit.world.x, hit.world.y, hit.world.z]] } : s));
+      if (Math.hypot(e.clientX - x, e.clientY - y) > CLICK_PX) return;   // drag = orbit, not a click
+      const p = prismRef.current;
+      if (p.phase === 'footprint') {
+        const hit = v.firstHitUnderCursor?.(e);
+        if (!hit) return;                                                // clicked empty space
+        setPrism((s) => (s.phase === 'footprint'
+          ? { ...s, corners: [...s.corners, [hit.world.x, hit.world.y, hit.world.z]] } : s));
+      } else if (p.phase === 'height' && !p.committed) {
+        // Commit the aimed height. topY sits at baseY right after close (and
+        // during the closing dblclick's own clicks), so the height-0 guard
+        // drops those — no explicit click-suppressor needed.
+        if (p.topY == null || Math.abs(p.topY - p.baseY) < MIN_HEIGHT) return;
+        setPrism((s) => (s.phase === 'height' ? { ...s, committed: true } : s));
+      }
     };
     const onDblClick = (e) => {
       // Both constituent clicks of the dblclick already ran onUp (adding two
@@ -273,32 +283,21 @@ function PrismOverlay({ viewerRef, prism, setPrism, onClose }) {
     };
     const onMove = (e) => {
       const p = prismRef.current;
-      if (p.phase !== 'height' || p.committed || e.buttons !== 0) return;  // drag = camera
+      if (p.phase !== 'height' || p.committed || e.buttons !== 0) return;  // held button = drag, freeze aim
       const topY = aimTopY(e);
       if (topY == null) return;
       setPrism((s) => (s.phase === 'height' && !s.committed ? { ...s, topY } : s));
-    };
-    const onClick = () => {
-      // The closing double-click's trailing click (and any drag-release click)
-      // lands here with topY still at baseY — the height-0 guard drops it, so
-      // no explicit click-suppression is needed.
-      const p = prismRef.current;
-      if (p.phase !== 'height' || p.committed || p.topY == null) return;
-      if (Math.abs(p.topY - p.baseY) < MIN_HEIGHT) return;   // stray click, not a real height
-      setPrism((s) => (s.phase === 'height' ? { ...s, committed: true } : s));
     };
 
     dom.addEventListener('pointerdown', onDown);
     dom.addEventListener('pointerup', onUp);
     dom.addEventListener('pointermove', onMove);
     dom.addEventListener('dblclick', onDblClick);
-    dom.addEventListener('click', onClick);
     return () => {
       dom.removeEventListener('pointerdown', onDown);
       dom.removeEventListener('pointerup', onUp);
       dom.removeEventListener('pointermove', onMove);
       dom.removeEventListener('dblclick', onDblClick);
-      dom.removeEventListener('click', onClick);
     };
   }, [viewerRef, setPrism]);
 
@@ -366,6 +365,10 @@ export default function PrismMode({
     });
   }, [viewerRef]);
 
+  // Stable identity so PrismKeys' keydown effect doesn't re-subscribe every
+  // render — PrismMode re-renders on every pointermove during the height aim.
+  const closeNow = useCallback(() => closeFootprint(false), [closeFootprint]);
+
   const backToFootprint = useCallback(() => {
     setPrism((s) => (s.phase === 'height'
       ? { ...EMPTY_PRISM, phase: 'footprint', corners: s.corners } : s));
@@ -410,7 +413,7 @@ export default function PrismMode({
     <>
       <PrismKeys prism={prism} setPrism={setPrism} classes={classes}
         defaultClassId={defaultClassId} onApply={applyPrism} onExit={onExit}
-        onClose={() => closeFootprint(false)} onBackToFootprint={backToFootprint} />
+        onClose={closeNow} onBackToFootprint={backToFootprint} />
       <PrismOverlay viewerRef={viewerRef} prism={prism} setPrism={setPrism} onClose={closeFootprint} />
       <PrismRubberBand viewerRef={viewerRef} prism={prism} />
       <PrismPanel prism={prism} onClear={reset} onApply={() => applyPrism(defaultClassId)} />
