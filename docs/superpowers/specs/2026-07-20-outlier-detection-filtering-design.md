@@ -102,24 +102,33 @@ instance with class `unknown`** (id 6, "Exclude / Review", hotkey `0` in
 
 ### Endpoint
 
-`POST /api/segment/denoise` `{k?, std_ratio}`
+`POST /api/segment/denoise` `{k?, std_ratio, replace_inst?, protect_instances}`
+→ (if `replace_inst` set) erase that instance's points to unlabeled first
 → `statistical_outlier_indices(positions, all_idx, k, std_ratio)`
-→ materialize outlier indices as a `pointset` instance, class `unknown`, unconfirmed
-→ returns the instance (id + point count) for the frontend to highlight.
+→ `apply_reassign(outliers, target_inst=-1, target_class=6, protect_instances=…)`
+  (materializes a fresh `pointset` instance, class `unknown`, unconfirmed; confirmed
+  instances are protected so denoise never eats already-confirmed geometry)
+→ returns `{instance_id, n_affected, scan_indices_b64}` for the frontend to add the
+  row and highlight.
 
-**Re-run identity.** `/denoise` is **stateless**: it always materializes a fresh
-Exclude instance and returns its id. Replacement is owned by the **frontend** —
-`mode-label.jsx` holds the current denoise instance id in state; on re-run it first
-deletes that instance via the **existing delete-instance path**, then calls
-`/denoise` and stores the returned id. No backend "last denoise" state and no
-`replace_inst` schema field. If the user has meanwhile confirmed or hand-edited the
-denoise instance, the frontend simply drops its tracked id and the next run creates a
-new one (a confirmed Exclude instance is locked and kept, not clobbered).
+**Re-run identity — backend-owned replacement.** The frontend's `deleteInstance`
+(`mode-label.jsx:729`) only drops the metadata row; it does **not** erase working-array
+points. So replacing the denoise instance must happen server-side: `/denoise` accepts
+an optional `replace_inst` id and, when present, erases that instance's points to
+`(-1,-1)` via `apply_reassign(target_inst=None, target_class=None)` **before**
+computing/applying the new outlier set. Without this, points that were outliers at the
+old strength but not the new one would stay orphaned as Exclude under a dead instance
+id. `mode-label.jsx` tracks the current denoise instance id and passes it as
+`replace_inst` on each re-run, swapping its row for the returned one. If the user has
+meanwhile confirmed the denoise instance, the frontend drops its tracked id and omits
+`replace_inst` — the confirmed Exclude instance is protected and kept, and the next run
+creates a new one.
 
-**Undo.** Each re-run is an ordinary delete + materialize, so both land on the undo
-stack like any other apply. Re-runs are therefore undoable, **not** special-cased to
-be undo-transparent (YAGNI — the review loop is short and consistency with every
-other apply is worth more than a cleaner undo history).
+**Undo.** Each re-run is ordinary `apply_reassign` calls (an erase of the prior
+instance, then a reassign of the new outliers), so both land on the undo stack like
+any other apply. Re-runs are therefore undoable, **not** special-cased to be
+undo-transparent (YAGNI — the review loop is short and consistency with every other
+apply is worth more than a cleaner undo history).
 
 ### UI
 
