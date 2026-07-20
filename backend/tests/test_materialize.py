@@ -58,6 +58,19 @@ def test_collect_volumes_box_and_tube():
     assert obb["seq"] == 2 and obb["shape"]["size"] == [1, 1, 1]
 
 
+def test_collect_volumes_includes_prism():
+    instances = [{
+        "source": "prism", "segId": 7, "seq": 3,
+        "prism": {"polygon": [[0, 0], [2, 0], [2, 2], [0, 2]],
+                  "y0": 0.0, "height": 1.0},
+    }]
+    vols = collect_volumes(instances, centerlines=None)
+    assert len(vols) == 1
+    v = vols[0]
+    assert v["kind"] == "prism" and v["instance_id"] == 7 and v["seq"] == 3
+    assert v["prism"]["height"] == 1.0
+
+
 def test_collect_volumes_beam_source_is_obb():
     instances = [
         {"source": "beam", "segId": 7, "seq": 3,
@@ -156,6 +169,29 @@ def test_replay_legacy_cuboid_is_not_a_volume_uses_nn():
     cls, inst = replay_labels(idx, np.array([[1.5, 0, 0]], dtype=np.float32))
     assert inst[0] == 30
     assert cls[0] == 3
+
+
+def test_replay_labels_rasterizes_prism_exactly():
+    # A vertical prism (XZ polygon, Y-up band) volume, mirroring the OBB
+    # replay tests above but for source=='prism'. Interior/exterior points
+    # are kept strictly away from the polygon edges/band boundary so the
+    # even-odd ray-cast and y0/y0+height comparisons are unambiguous.
+    prism = {"polygon": [[0, 0], [2, 0], [2, 2], [0, 2]], "y0": 0.0, "height": 1.0}
+    volP = {"kind": "prism", "instance_id": 7, "seq": 3, "prism": prism}
+    scan_pos = [[1, 0.5, 1], [9, 9, 9]]
+    work_inst = [7, 20]
+    seq_by_inst = {7: 3, 20: 0}
+    inst_class_id = {7: 5, 20: 2}
+    idx = _index(scan_pos, work_inst, [volP], seq_by_inst, inst_class_id)
+
+    target_pos = np.array([
+        [1.0, 0.5, 1.0],   # strictly interior (center of polygon, mid-band)
+        [5.0, 0.5, 5.0],   # strictly exterior (far outside polygon)
+    ], dtype=np.float32)
+    cls, inst = replay_labels(idx, target_pos)
+
+    assert inst[0] == 7 and cls[0] == 5
+    assert inst[1] == 20 and cls[1] == 2
 
 
 def test_replay_multi_path_tube_second_segment():
