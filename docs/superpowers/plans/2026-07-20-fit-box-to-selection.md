@@ -61,16 +61,20 @@ def _obb_dict(center, size, rotation):
 
 
 def test_axis_aligned_box_recovers_bounds():
-    # A filled axis-aligned box; fit should recover its center/size (+pad), ry≈0.
+    # A filled axis-aligned box; fit should recover its center + extents (+pad).
+    # NOTE: 2D PCA picks the higher-variance horizontal axis (z, extent 6) as
+    # dominant, so ry ≈ ±π/2 and the footprint axes (size[0]/size[2]) may SWAP.
+    # The eigenvector sign from eigh is also arbitrary (ry can come back as π).
+    # So assert on the SORTED extents + containment, never positional size[i].
     rng = np.random.default_rng(0)
     pts = rng.uniform([-2, -1, -3], [2, 1, 3], size=(2000, 3)).astype(np.float32)
     center, size, rotation = fit_gravity_obb(pts)
     assert rotation[0] == 0.0 and rotation[2] == 0.0
-    assert abs(rotation[1]) < 1e-3 or abs(abs(rotation[1]) - np.pi / 2) < 1e-3
     np.testing.assert_allclose(center, [0, 0, 0], atol=0.05)
-    # Size ~ full extent (4,2,6) + small pad, and never smaller than the extent.
-    assert size[0] >= 4.0 and size[1] >= 2.0 and size[2] >= 6.0
-    assert size[0] < 4.1 and size[1] < 2.1 and size[2] < 6.1
+    # Sorted extents ~ (2, 4, 6) + small pad, order-independent.
+    np.testing.assert_allclose(sorted(size), [2, 4, 6], atol=0.05)
+    # And the box actually contains every point (the real invariant).
+    assert obb_indices(pts, _obb_dict(center, size, rotation)).size == pts.shape[0]
 
 
 def test_containment_parity_after_yaw():
@@ -229,21 +233,21 @@ class FitBoxRequest(BaseModel):
 
 - [ ] **Step 2: Write failing endpoint tests**
 
-Append to `backend/tests/test_fit_box.py`. Follow the existing fixture style in
-`backend/tests/test_segment_endpoints.py` for building a session with a loaded
-cloud + preseg (copy its setup fixture / helper; do NOT invent a new one). The
-tests assert:
+Append to `backend/tests/test_fit_box.py`. Mirror the pattern in
+`backend/tests/test_cut_shape.py`, which uses the shared fixture
+**`client_with_loaded_annotated_scene`** (defined in `backend/tests/conftest.py`)
+— it yields **just `client`** (not a tuple) with an active `SegmentSession`.
+`build_annotated_root` fixes the instance array to `[-1,0,0,1,1,2,-1,3]`, so
+preseg **`seg_id` 0 and 1 are always present** (id 0 → 2 points, id 1 → 2 points).
+The `client` fixture (also in conftest, no loaded scene) drives the 409 test.
 
 ```python
 # --- endpoint tests (append) ---
-# Use whatever session/preseg fixture test_segment_endpoints.py exposes; name it
-# `seg_session` here for illustration. It must yield a TestClient with an active
-# SegmentSession whose preseg_ids/instance_ids are populated.
 
-def test_fit_box_returns_containing_obb(seg_session):
-    client, preseg_id = seg_session  # a preseg id present in instance_ids
+def test_fit_box_returns_containing_obb(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/fit-box",
-                    json={"sources": [{"kind": "preseg", "seg_id": preseg_id}]})
+                    json={"sources": [{"kind": "preseg", "seg_id": 0}]})
     assert r.status_code == 200
     obb = r.json()
     assert obb["rotation"][0] == 0.0 and obb["rotation"][2] == 0.0
@@ -251,22 +255,39 @@ def test_fit_box_returns_containing_obb(seg_session):
     assert all(s > 0 for s in obb["size"])
 
 
-def test_fit_box_empty_union_400(seg_session):
-    client, _ = seg_session
+def test_fit_box_union_contains_both_presegs(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/fit-box",
+                    json={"sources": [{"kind": "preseg", "seg_id": 0},
+                                      {"kind": "preseg", "seg_id": 1}]})
+    assert r.status_code == 200
+    # Fetch the active session's points, feed the returned OBB back through
+    # obb_indices, and assert every point of BOTH presegs is contained.
+    from app.core import _state
+    seg = _state["seg"]
+    inside = set(obb_indices(np.asarray(seg.positions), r.json()).tolist())
+    for pid in (0, 1):
+        members = np.nonzero(seg.instance_ids == pid)[0].tolist()
+        assert members and set(members).issubset(inside)
+
+
+def test_fit_box_empty_union_400(client_with_loaded_annotated_scene):
+    client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/fit-box",
                     json={"sources": [{"kind": "preseg", "seg_id": 999999}]})
     assert r.status_code == 400
 
 
-def test_fit_box_no_session_409(client):  # `client` = plain TestClient, no session
+def test_fit_box_no_session_409(client):  # `client` = conftest fixture, no scene
     r = client.post("/api/segment/fit-box",
                     json={"sources": [{"kind": "preseg", "seg_id": 0}]})
     assert r.status_code == 409
 ```
 
-Add a multi-source union test if the fixture exposes ≥2 preseg ids: assert the
-returned box contains the points of BOTH (fetch `seg.positions`, `obb_indices`,
-assert both memberships are subsets of the returned index set).
+Verify the active-session accessor before finalizing: the union test reads
+`_state["seg"]` / `seg.positions` / `seg.instance_ids` — confirm those exact
+names against `app/core.py` (grep `_state[` and the `SegmentSession` attrs) and
+adjust if they differ.
 
 - [ ] **Step 3: Run tests, verify they fail**
 
@@ -529,7 +550,12 @@ At the instance context-menu block (~line 1582, next to the existing
 {
   label: 'Fit box to selection…',
   disabled: !fitEligibility({ list: 'instance', isSelected: true, confirmed: target.confirmed }).eligible,
-  onClick: () => fitBoxToSelection([{ kind: 'instance', segId: target.segId }]),
+  // ContextMenu items use onSelect, NOT onClick (see the sibling item at ~1597).
+  // Mirror its guard so a row with no valid segId is a no-op, not a crash.
+  onSelect: () => {
+    if (!target || !Number.isFinite(target.segId)) return;
+    fitBoxToSelection([{ kind: 'instance', segId: target.segId }]);
+  },
 },
 ```
 
