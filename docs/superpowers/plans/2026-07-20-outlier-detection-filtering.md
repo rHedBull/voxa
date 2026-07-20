@@ -22,8 +22,10 @@
 
 **Frontend**
 - `frontend/src/outlier-eligibility.js` (new) — pure rule for enabling "Remove outliers" (mirrors `cut-eligibility.js`).
-- `frontend/src/api.js` (modify) — `denoise(...)` and `denoiseSelection(...)` clients.
-- `frontend/src/mode-label.jsx` (modify) — "Detect outliers" button + aggressiveness slider, the two handlers, re-run instance-id tracking, and the "Remove outliers" context-menu item.
+- `frontend/src/api.js` (modify) — `denoise(...)` and `denoiseSelection(...)` clients (decode `scan_indices_b64` → `indices` inside, mirroring `cutShape`).
+- `frontend/src/segment-state.js` (modify) — `export` the existing `retireSamIdsForIndices` (currently module-private, line 48) so Feature B's SAM shrink can reuse it.
+- `frontend/src/sam-segment-list.jsx` (modify) — add an `onRemoveOutliers` prop and a second "Remove outliers" item to the SAM-row context menu (the SAM menu lives HERE, not in `mode-label.jsx`).
+- `frontend/src/mode-label.jsx` (modify) — "Detect outliers" button + aggressiveness slider, the two handlers, re-run instance-id tracking, thread `onRemoveOutliers` into `<SamSegmentList>`, and add the "Remove outliers" item to the Instances-panel context menu.
 
 **Tests**
 - `backend/tests/test_outliers.py` (new) — pure-fn unit tests.
@@ -324,7 +326,7 @@ Append to `backend/tests/test_denoise_routes.py`:
 from fastapi.testclient import TestClient
 
 
-def _client_with_cloud(monkeypatch):
+def _client_with_cloud():
     """Load a session with a planted-speck cloud into _state and return a
     TestClient. Mirrors how other route tests seed _state."""
     import main
@@ -338,8 +340,8 @@ def _client_with_cloud(monkeypatch):
     return TestClient(main.app), seg
 
 
-def test_denoise_materializes_exclude_instance(monkeypatch):
-    client, seg = _client_with_cloud(monkeypatch)
+def test_denoise_materializes_exclude_instance():
+    client, seg = _client_with_cloud()
     r = client.post("/api/segment/denoise", json={"std_ratio": 2.0})
     assert r.status_code == 200
     body = r.json()
@@ -351,8 +353,8 @@ def test_denoise_materializes_exclude_instance(monkeypatch):
     assert bool((seg.instance_ids[speck_idx] == inst).all())
 
 
-def test_denoise_replace_inst_erases_prior(monkeypatch):
-    client, seg = _client_with_cloud(monkeypatch)
+def test_denoise_replace_inst_erases_prior():
+    client, seg = _client_with_cloud()
     first = client.post("/api/segment/denoise", json={"std_ratio": 2.0}).json()
     inst1 = first["instance_id"]
     # Re-run replacing inst1: a stricter ratio flags fewer/equal points, and
@@ -366,8 +368,8 @@ def test_denoise_replace_inst_erases_prior(monkeypatch):
     assert int((seg.instance_ids == inst1).sum()) == 0
 
 
-def test_denoise_empty_returns_null_instance(monkeypatch):
-    client, seg = _client_with_cloud(monkeypatch)
+def test_denoise_empty_returns_null_instance():
+    client, seg = _client_with_cloud()
     # Absurdly high ratio flags nothing.
     body = client.post("/api/segment/denoise", json={"std_ratio": 50.0}).json()
     assert body["instance_id"] is None
@@ -424,6 +426,13 @@ def denoise(req: DenoiseRequest):
     seg = _require_seg()
     return _denoise_core(seg, req)
 ```
+
+Note (accepted divergence from spec): `statistical_outlier_indices` builds a fresh
+`cKDTree` over all points on each call rather than reusing `seg._ensure_tree()`. This
+rebuilds the (~single-digit-million-point) tree on every slider re-run, but keeps the
+SOR function pure and single-responsibility. Acceptable under the spec's
+"synchronous + spinner" budget; do not prematurely optimize by threading the cached
+tree into the pure function.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -635,6 +644,8 @@ git commit -m "feat(frontend): removeOutliersEligibility rule"
 
 - [ ] **Step 1: Add the methods**
 
+Mirror `cutShape` (~line 265): decode the base64 index payload **inside** the client with the existing `b64ToInt32` (`api.js:396`) and expose a ready `indices` field, so callers never touch base64. Confirm `b64ToInt32` is imported/in scope in `api.js` (it is — used at the top of the file).
+
 ```javascript
   async denoise({ stdRatio = 2.0, k = 16, replaceInst = null, protectInstances = [] }) {
     const r = await fetch('/api/segment/denoise', {
@@ -646,7 +657,8 @@ git commit -m "feat(frontend): removeOutliersEligibility rule"
       }),
     });
     if (!r.ok) throw new Error(`denoise failed: ${r.status} ${await r.text()}`);
-    return r.json();
+    const j = await r.json();
+    return { ...j, indices: j.scan_indices_b64 ? b64ToInt32(j.scan_indices_b64) : null };
   },
 
   async denoiseSelection({ source, id, stdRatio = 2.0, k = 16 }) {
@@ -656,7 +668,8 @@ git commit -m "feat(frontend): removeOutliersEligibility rule"
       body: JSON.stringify({ source, id, std_ratio: stdRatio, k }),
     });
     if (!r.ok) throw new Error(`denoiseSelection failed: ${r.status} ${await r.text()}`);
-    return r.json();
+    const j = await r.json();
+    return { ...j, indices: j.scan_indices_b64 ? b64ToInt32(j.scan_indices_b64) : null };
   },
 ```
 
@@ -712,7 +725,7 @@ Add the handler near `onCutConfirmedHandler`:
         onChange(kept);
         setDenoiseInstId(null);
       } else {
-        const idx = decodeIndices(resp.scan_indices_b64);   // Int32Array
+        const idx = resp.indices;                            // Int32Array (decoded in api.js)
         const afterClass = new Int8Array(idx.length).fill(6);
         const afterInstance = new Int32Array(idx.length).fill(resp.instance_id);
         setSegState((s) => (s ? applyDelta(s, {
@@ -740,7 +753,7 @@ Add the handler near `onCutConfirmedHandler`:
 ```
 
 Notes for the implementer:
-- Reuse the SAME base64→Int32Array decoder the cut/SAM path already uses (find how `resp.instance.indices` / `m.indices` get decoded from `scan_indices_b64` — likely a `decodeIndices`/`b64ToInt32` helper in `api.js` or `mode-label.jsx`; use it, do not hand-roll). If the cut path returns already-decoded `indices` from the API layer, mirror that: decode inside `api.js` `denoise()` and expose `resp.indices` instead of `resp.scan_indices_b64`. Match whichever pattern cut uses.
+- The API client already decodes indices (Task 7 exposes `resp.indices` as an `Int32Array`, mirroring `cutShape` which returns `resp.instance.indices` / `m.indices`). Do not hand-roll base64 decoding here.
 - `applyDelta`, `newId`, `useStateLabel`, `useCallbackLabel`, `useMemoLabel` are already imported/defined in this file (used by `onCutConfirmedHandler`); reuse them.
 - `classes.find(c => c.class_id === 6)` — confirm the class-object shape (`class_id` numeric vs `id` string) from how `onCutConfirmedHandler` reads `cls.class_id` and `cls.id`.
 
@@ -790,24 +803,36 @@ git commit -m "feat(frontend): Detect outliers button + aggressiveness slider (F
 ### Task 9: Wire Feature B — "Remove outliers" context-menu item
 
 **Files:**
-- Modify: `frontend/src/mode-label.jsx`
+- Modify: `frontend/src/segment-state.js` (export `retireSamIdsForIndices`)
+- Modify: `frontend/src/sam-segment-list.jsx` (SAM-row menu — the SAM menu lives here, NOT in `mode-label.jsx`)
+- Modify: `frontend/src/mode-label.jsx` (handler + Instances-panel menu + thread the new prop)
 
-Read how "Edit selection…" is added to the SAM-list and Instances-panel context menus (search `onEditSelection`, `openCutModal`, and the menu-item array near lines 1287, 1599) — add a sibling "Remove outliers" item gated by `removeOutliersEligibility`.
+**Grounding (verified against the code):**
+- Both context menus are built with `ContextMenu items={[{ label, disabled, onSelect }]}` — items use **`onSelect`** and a **`disabled`** boolean, NOT `onClick` and NOT conditional array-spread (`context-menu.jsx:35`; existing "Edit selection…" items at `sam-segment-list.jsx:78-83` and `mode-label.jsx:1592-1601`). Match that shape: render "Remove outliers" always, gate it with `disabled`.
+- The SAM menu is inside `SamSegmentList` (`sam-segment-list.jsx`), which today takes `{ segState, setSegState, onEditSelection }`. Add an `onRemoveOutliers` prop and thread it from `mode-label.jsx:1287`.
+- `retireSamIdsForIndices(state, indices)` (`segment-state.js:48`) is the exact SAM-shrink helper — it clears candidacy for those indices and shrinks/drops the `samSegments` count (returns state unchanged if none carry a live sam id). It is currently **module-private**; export it. Do NOT use `applySamDelta` with `samSegId: -1` — that unconditionally does `samSegments.set(-1, …)` (`segment-state.js:90`) and injects a phantom candidate.
 
-- [ ] **Step 1: Add the handler**
+- [ ] **Step 1: Export the SAM-shrink helper**
+
+In `frontend/src/segment-state.js` change line 48 from `function retireSamIdsForIndices(` to `export function retireSamIdsForIndices(`. (No behavior change — `applyDelta` still calls it locally.) Run `npx vitest run src/` afterward to confirm nothing broke.
+
+- [ ] **Step 2: Add the handler in `mode-label.jsx`**
+
+Import at the top: `removeOutliersEligibility` from `./outlier-eligibility.js` and `retireSamIdsForIndices` from `./segment-state.js` (add to the existing `segment-state.js` import).
 
 ```javascript
   const removeOutliers = useCallbackLabel(async ({ source, id }) => {
     if (!segState) return;
     try {
       const resp = await VoxaAPI.denoiseSelection({ source, id, stdRatio: denoiseRatio });
-      if (!resp.n_removed) return;
-      const idx = decodeIndices(resp.scan_indices_b64);
+      if (!resp.n_removed || !resp.indices) return;
+      const idx = resp.indices;                       // Int32Array (decoded in api.js)
       setSegState((s) => {
         if (!s) return s;
         if (source === 'sam') {
-          // Removed points lose SAM candidacy -> clear their sam id locally.
-          return applySamDelta(s, { indices: idx, samSegId: -1, source: 'sam' });
+          // Strays lose SAM candidacy; candidate shrinks (mirrors backend
+          // remove_sam_points -> _retire_sam_ids).
+          return retireSamIdsForIndices(s, idx);
         }
         // instance: strays back to unlabeled
         const afterClass = new Int8Array(idx.length).fill(-1);
@@ -820,48 +845,61 @@ Read how "Edit selection…" is added to the SAM-list and Instances-panel contex
   }, [segState, denoiseRatio, setSegState]);
 ```
 
-Notes:
-- Confirm `applySamDelta`'s contract for "clear candidacy" — it may expect `samSegId: -1` or a dedicated retire path. Match exactly how `onCutConfirmedHandler` / the SAM confirm path mutate `samIds` locally. If `applySamDelta` can't express a retire, mirror whatever the existing SAM-retire-on-label local update does.
-- Reuse the same `decodeIndices` chosen in Task 8.
+- [ ] **Step 3: Add the SAM-list menu item (`sam-segment-list.jsx`)**
 
-- [ ] **Step 2: Add the menu item (SAM list)**
-
-Where the SAM-list context menu builds its items (near the `onEditSelection` wiring for SAM), add, using the eligibility gate:
+Add `onRemoveOutliers = null` to the `SamSegmentList({ … })` destructured props, import `removeOutliersEligibility` from `./outlier-eligibility.js`, and make the `ContextMenu` `items` a two-entry array — keep the existing "Edit selection…" item and append:
 
 ```jsx
-  // inside the SAM-row context-menu items:
-  ...(removeOutliersEligibility({ list: 'sam', selectionSize: samSelection.size }).eligible
-    ? [{ label: 'Remove outliers', onClick: () => removeOutliers({ source: 'sam', id: theSelectedSamId }) }]
-    : []),
+          {
+            label: 'Remove outliers',
+            disabled: !removeOutliersEligibility({ list: 'sam', selectionSize: segState.samSelection.size }).eligible,
+            onSelect: () => {
+              if (!onRemoveOutliers) return;
+              onRemoveOutliers({ source: 'sam', id: [...segState.samSelection][0] });
+            },
+          },
 ```
 
-`theSelectedSamId` = the single selected candidate id (since eligibility requires `selectionSize === 1`, read it from `samSelection` — `[...samSelection][0]`). Match the existing menu-item object shape used by "Edit selection…".
+(Eligibility requires exactly one selected candidate, so `[...segState.samSelection][0]` is the target id.)
 
-- [ ] **Step 3: Add the menu item (Instances panel)**
+- [ ] **Step 4: Thread the prop + add the Instances-panel item (`mode-label.jsx`)**
 
-Where the Instances-panel row context menu wires "Edit selection…" (near line 1599, the `openCutModal([{ kind:'instance', segId: target.segId }], target.cls)` call), add a sibling gated by:
+Pass the handler into the SAM list at ~line 1287:
 
 ```jsx
-  ...(removeOutliersEligibility({ list: 'instance', isSelected: target.id === selectedId, confirmed: target.confirmed }).eligible
-    ? [{ label: 'Remove outliers', onClick: () => removeOutliers({ source: 'instance', id: target.segId }) }]
-    : []),
+          onRemoveOutliers={removeOutliers}
 ```
 
-Import `removeOutliersEligibility` at the top of `mode-label.jsx`.
+In the Instances-panel context menu (`instCutMenu`, ~line 1592), make `items` a two-entry array — keep "Edit selection…" and append (reusing the `target`/`elig` already computed there; compute a second eligibility for this item):
 
-- [ ] **Step 4: Verify build**
+```jsx
+                {
+                  label: 'Remove outliers',
+                  disabled: !removeOutliersEligibility({
+                    list: 'instance',
+                    isSelected: instCutMenu.instId === selectedId,
+                    confirmed: !!target?.confirmed,
+                  }).eligible,
+                  onSelect: () => {
+                    if (!target || !Number.isFinite(target.segId)) return;
+                    removeOutliers({ source: 'instance', id: target.segId });
+                  },
+                },
+```
+
+- [ ] **Step 5: Verify build**
 
 Run (from `frontend/`): `npx vitest run`
-Expected: PASS
+Expected: PASS (whole suite green; existing `sam-segment-list.jsdom.test.jsx` / `context-menu.test.jsx` still pass)
 
-- [ ] **Step 5: Browser-verify** — REQUIRED SUB-SKILL: `browser-verification`
+- [ ] **Step 6: Browser-verify** — REQUIRED SUB-SKILL: `browser-verification`
 
-Throwaway session; restart backend first. Create a SAM candidate (or use an existing one) with visible edge-strays, right-click its row → "Remove outliers" → confirm the strays drop from the candidate (screenshot before/after). Repeat on an unconfirmed instance. Zero console errors; `/api/segment/denoise-selection` returns 200. Confirm the menu item is **absent** on a confirmed instance and on a multi-selection of SAM candidates.
+Throwaway session; restart backend first. Create a SAM candidate (or use an existing one) with visible edge-strays, select exactly one, right-click its row → "Remove outliers" → confirm the strays drop from the candidate (screenshot before/after, per `feedback_verify_selection_visually`). Repeat on an unconfirmed instance. Zero console errors; `/api/segment/denoise-selection` returns 200. Confirm the item is **disabled** on a confirmed instance and when 0 or >1 SAM candidates are selected.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add frontend/src/mode-label.jsx
+git add frontend/src/segment-state.js frontend/src/sam-segment-list.jsx frontend/src/mode-label.jsx
 git commit -m "feat(frontend): Remove outliers context-menu item (Feature B)"
 ```
 
