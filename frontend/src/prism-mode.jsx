@@ -23,9 +23,14 @@ const ACCENT = 0x38bdf8;     // sky-400 — footprint + extrusion preview
 // in the capture phase so it runs before mode-label.jsx's handler, which
 // early-returns while a sub-mode owns input.
 function PrismKeys({ prism, setPrism, classes, defaultClassId, onApply, onExit }) {
+  // Read the live prism through a ref so the listener depends only on stable
+  // callbacks — otherwise it's torn down/re-added on every corner placement.
+  const prismRef = useRef(prism);
+  prismRef.current = prism;
   useEffect(() => {
     const handler = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      const prism = prismRef.current;
       const canClose = prism.vertices.length >= 3 && !prism.closed;
       // Ctrl+Enter: close if still drawing, otherwise apply. Every other
       // Ctrl/Meta combo (Ctrl+S/Z…) passes through untouched.
@@ -91,6 +96,20 @@ function PrismOverlay({ viewerRef, prism, setPrism }) {
     layerRef.current = v.attachOverlayGroup();
     return () => { layerRef.current?.remove(); layerRef.current = null; };
   }, [viewerRef]);
+
+  // Orbit is disabled ONLY while actively placing corners, so a drag places a
+  // corner instead of spinning the camera. Deriving it declaratively (rather
+  // than toggling imperatively per click) guarantees every exit from the
+  // placing state — click-close, Enter-close, Escape, Backspace-to-empty,
+  // unmount — restores orbit, and orbit is available to inspect the extrusion
+  // once closed.
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!v?.setOrbitEnabled) return undefined;
+    const placing = prism.vertices.length > 0 && !prism.closed;
+    v.setOrbitEnabled(!placing);
+    return () => { v.setOrbitEnabled(true); };
+  }, [viewerRef, prism.vertices.length, prism.closed]);
 
   // Rebuild overlay children whenever the prism changes. The polygon is tiny
   // (a handful of corners) so dispose-and-rebuild beats bookkeeping.
@@ -182,7 +201,6 @@ function PrismOverlay({ viewerRef, prism, setPrism }) {
         const sy = (-first.y * 0.5 + 0.5) * rect.height;
         if (Math.hypot(sx - (evt.clientX - rect.left), sy - (evt.clientY - rect.top)) < CLOSE_PX) {
           setPrism((s) => ({ ...s, closed: true }));
-          v.setOrbitEnabled(true);
           evt.stopPropagation();
           return;
         }
@@ -195,9 +213,6 @@ function PrismOverlay({ viewerRef, prism, setPrism }) {
       const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -y0);
       if (!raycaster.ray.intersectPlane(plane, out)) return;
 
-      // Suppress orbit while drawing so a drag places corners instead of
-      // spinning the camera; re-enabled on close and on unmount.
-      v.setOrbitEnabled(false);
       setPrism((s) => ({
         ...s,
         y0: s.y0 == null ? y0 : s.y0,
@@ -213,9 +228,10 @@ function PrismOverlay({ viewerRef, prism, setPrism }) {
       if (!prismRef.current.closed) return;
       evt.preventDefault();
       evt.stopPropagation();
+      // Scroll-up grows the height — matches Beam's scroll-to-size convention.
       setPrism((s) => ({
         ...s,
-        height: Math.max(MIN_HEIGHT, s.height + Math.sign(evt.deltaY) * HEIGHT_STEP),
+        height: Math.max(MIN_HEIGHT, s.height - Math.sign(evt.deltaY) * HEIGHT_STEP),
       }));
     };
 
@@ -224,7 +240,6 @@ function PrismOverlay({ viewerRef, prism, setPrism }) {
     return () => {
       dom.removeEventListener('pointerdown', onPointerDown, true);
       wheelHost.removeEventListener('wheel', onWheel, { capture: true });
-      v.setOrbitEnabled(true);
     };
   }, [viewerRef, setPrism]);
 
@@ -272,7 +287,7 @@ function PrismPanel({ prism, setPrism, onClear, onApply }) {
 
 export default function PrismMode({
   viewerRef, classes, setSegState, onExit, defaultClassId,
-  onClassChange, onApplied, protectInstances = [],
+  onApplied, protectInstances = [],
 }) {
   const [prism, setPrism] = useState(EMPTY_PRISM);
   const prismRef = useRef(prism);
