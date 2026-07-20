@@ -151,10 +151,9 @@ function PrismKeys({ prism, setPrism, classes, pickerOpen, onApply, onOpenPicker
 
 // Dashed rubber-band from the last placed corner to the cursor, footprint phase
 // only. Driven imperatively (its own overlay group) so it never re-runs the
-// state-driven rebuild effect at pointermove rate, and so a per-move cloud
-// raycast is avoided — the band rides a camera-facing plane through the anchor,
-// which tracks the cursor at sub-ms cost (the snapped landing point is what the
-// click confirms). Same technique as the Measure tool's rubber-band.
+// state-driven rebuild effect at pointermove rate. The band rides the SAME
+// horizontal base plane the next corner will land on (y = baseY = anchor Y), so
+// the preview matches the actual landing point exactly.
 function PrismRubberBand({ viewerRef, prism }) {
   const anchor = prism.phase === 'footprint' && prism.corners.length > 0
     ? prism.corners[prism.corners.length - 1] : null;
@@ -176,15 +175,11 @@ function PrismRubberBand({ viewerRef, prism }) {
     band.visible = false;
     handle.group.add(band);
 
-    const anchorVec = new THREE.Vector3(...anchor);
-    const plane = new THREE.Plane();
-    const normal = new THREE.Vector3();
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -anchor[1]);  // horizontal base plane
     const raycaster = new THREE.Raycaster();
     const target = new THREE.Vector3();
     const onMove = (e) => {
       if (e.buttons !== 0) { band.visible = false; return; }   // camera drag, not aiming
-      camera.getWorldDirection(normal);
-      plane.setFromNormalAndCoplanarPoint(normal, anchorVec);
       raycaster.setFromCamera(evtToNdc(e, dom.getBoundingClientRect()), camera);
       if (!raycaster.ray.intersectPlane(plane, target)) return;
       const pos = band.geometry.getAttribute('position');
@@ -292,6 +287,16 @@ function PrismOverlay({ viewerRef, prism, setPrism, onClose }) {
       const t = new THREE.Vector3();
       return raycaster.ray.intersectPlane(edgePlane(p.heightEdge), t) ? t.y : null;
     };
+    // Ray ∩ the horizontal base plane at y = baseY. Every corner after the
+    // first lands here, so the footprint is coplanar and its XZ polygon can't
+    // self-intersect from per-corner surface-depth scramble (that produced a
+    // bowtie selection). Matches the Measure Volume tool's plane footprint.
+    const onBasePlane = (e, baseY) => {
+      raycaster.setFromCamera(evtToNdc(e, dom.getBoundingClientRect()), camera);
+      const t = new THREE.Vector3();
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -baseY);
+      return raycaster.ray.intersectPlane(plane, t) ? t : null;
+    };
 
     const onDown = (e) => {
       if (e.button !== 0 || e.ctrlKey || e.metaKey) return;
@@ -303,10 +308,21 @@ function PrismOverlay({ viewerRef, prism, setPrism, onClose }) {
       if (Math.hypot(e.clientX - x, e.clientY - y) > CLICK_PX) return;   // drag = orbit, not a click
       const p = prismRef.current;
       if (p.phase === 'footprint') {
-        const hit = v.firstHitUnderCursor?.(e);
-        if (!hit) return;                                                // clicked empty space
-        setPrism((s) => (s.phase === 'footprint'
-          ? { ...s, corners: [...s.corners, [hit.world.x, hit.world.y, hit.world.z]] } : s));
+        if (p.corners.length === 0) {
+          // First corner snaps to the surface — its Y fixes the base plane.
+          const hit = v.firstHitUnderCursor?.(e);
+          if (!hit) return;                                              // must start on the surface
+          const baseY = hit.world.y;
+          setPrism((s) => (s.phase === 'footprint'
+            ? { ...s, baseY, corners: [[hit.world.x, baseY, hit.world.z]] } : s));
+        } else {
+          // Later corners ride the horizontal base plane (can extend past the
+          // object / over empty space, unlike a surface-only pick).
+          const t = onBasePlane(e, p.baseY);
+          if (!t) return;
+          setPrism((s) => (s.phase === 'footprint'
+            ? { ...s, corners: [...s.corners, [t.x, s.baseY, t.z]] } : s));
+        }
       } else if (p.phase === 'height' && !p.committed) {
         // Commit the aimed height. topY sits at baseY right after close (and
         // during the closing dblclick's own clicks), so the height-0 guard
