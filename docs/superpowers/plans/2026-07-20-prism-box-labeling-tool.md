@@ -64,10 +64,13 @@ def _grid_xz(y_values):
 
 
 def test_prism_square_footprint_and_y_band():
-    # Square footprint covering x,z in [1,3]; band y in [0,1]. Two y-layers at
+    # Square footprint strictly enclosing the x,z in {1,2,3} block (edges at
+    # 0.5/3.5 so grid points are interior, NOT on the boundary — even-odd
+    # ray-cast excludes on-edge points); band y in [0,1]. Two y-layers at
     # y=0 (inside band) and y=5 (outside band).
     pts = _grid_xz([0.0, 5.0])
-    prism = {"polygon": [[1, 1], [3, 1], [3, 3], [1, 3]], "y0": 0.0, "height": 1.0}
+    prism = {"polygon": [[0.5, 0.5], [3.5, 0.5], [3.5, 3.5], [0.5, 3.5]],
+             "y0": 0.0, "height": 1.0}
     idx = prism_indices(pts, prism)
     got = set(idx.tolist())
     # Expect the 3x3 block x in {1,2,3}, z in {1,2,3} at y=0 only.
@@ -101,7 +104,7 @@ def test_prism_degenerate_polygon_selects_nothing():
 
 def test_shape_indices_dispatches_prism():
     pts = _grid_xz([0.0])
-    shape = {"type": "prism", "polygon": [[1, 1], [3, 1], [3, 3], [1, 3]],
+    shape = {"type": "prism", "polygon": [[0.5, 0.5], [3.5, 0.5], [3.5, 3.5], [0.5, 3.5]],
              "y0": 0.0, "height": 1.0}
     assert len(shape_indices(pts, shape)) == 9
 ```
@@ -314,7 +317,7 @@ Expected: FAIL — `collect_volumes` filters prism out; `replay_labels` raises "
 
 - [ ] **Step 3: Extend `collect_volumes`**
 
-Change the source filter and add the prism branch:
+Change the source filter and add the prism branch (also update the function's docstring, line ~26, to include `'prism'` in the source set):
 
 ```python
         if src not in ("box", "beam", "draw", "prism") or inst.get("segId") is None:
@@ -376,8 +379,10 @@ Create `frontend/src/prism-geom.test.js`:
 import { describe, it, expect } from 'vitest';
 import { pointsInsidePrism, pointInPolygonXZ } from './prism-geom.js';
 
-// Shared parity fixture — MUST match backend test_shapes.py exactly.
-const SQUARE = { polygon: [[1, 1], [3, 1], [3, 3], [1, 3]], y0: 0, height: 1 };
+// Shared parity fixture — MUST match backend test_shapes.py exactly. Edges at
+// 0.5/3.5 keep the x,z in {1,2,3} grid block strictly interior (on-edge points
+// are excluded by even-odd ray-cast, so a [1,3] square would give 4, not 9).
+const SQUARE = { polygon: [[0.5, 0.5], [3.5, 0.5], [3.5, 3.5], [0.5, 3.5]], y0: 0, height: 1 };
 
 function gridXZ(ys) {
   const out = [];
@@ -654,10 +659,10 @@ Mirror `BeamOverlay`. Three `useEffect`s:
    - when `closed`: the **top** polygon at `y0+height` and **vertical edges** (a `LineSegments`) — the extrusion preview.
    Guard against `y0 == null`.
 3. **Pointer + scroll:** on the viewer DOM element (`v.domElement()`):
-   - **click (button 0):** ray-cast to the horizontal plane `y = y0` (for the first click, intersect the plane at the first hit's Y — get the world point via a `THREE.Plane` at the clicked point, OR use `viewerRef.current.firstHitUnderCursor(evt)` to seed `y0` from the nearest cloud point, then a horizontal plane at that Y for subsequent vertices). Append `[x, z]`. If the click is near the first vertex (screen-space threshold) and `vertices.length >= 3`, set `closed`. Call `v.setOrbitEnabled(false)` on pointerdown over the overlay so drawing doesn't orbit; re-enable on tool exit.
+   - **click (button 0):** append a vertex `[x, z]` = the ray ∩ (horizontal plane at `y0`). If the click is near the first vertex (screen-space threshold) and `vertices.length >= 3`, set `closed`. Call `v.setOrbitEnabled(false)` on pointerdown over the overlay so drawing doesn't orbit; re-enable on tool exit.
    - **wheel (only when `closed`):** `setPrism((s) => ({ ...s, height: Math.max(MIN_HEIGHT, s.height + sign * step) }))`; `evt.preventDefault()` so it doesn't zoom.
 
-   For seeding `y0`: on the **first** click, use `viewerRef.current.firstHitUnderCursor(evt)` (returns `{ position }` — verify its return shape) to get the clicked point's world Y → `y0`. All vertices (including the first) are the ray∩(horizontal plane at `y0`). This gives a stable coplanar footprint.
+   For seeding `y0`: on the **first** click, call `viewerRef.current.firstHitUnderCursor(evt)`, which returns **`{ fullIndex, world }`** where `world` is a `THREE.Vector3` (see `viewer.jsx:1550`; usage in `beam-mode.jsx:255`). Read `hit.world.y` → `y0` (NOT `hit.position` — that field does not exist and would make `y0` undefined). Then build a `THREE.Plane` with normal `(0,1,0)` through `y = y0`; every vertex (including the first) is `raycaster.ray.intersectPlane(plane, out)` in the XZ of that plane. This gives a stable coplanar footprint.
 
 - [ ] **Step 5: Manual smoke (no automated test for the Three.js overlay)**
 
@@ -745,6 +750,8 @@ Around line 53–58:
   const subModeOwnsInput = drawMode || beamMode || prismMode;
 ```
 This makes `mode-label.jsx`'s key/click handlers early-return so `PrismKeys`/`PrismOverlay` own input (same as Beam/Draw).
+
+Also add `prism: false` to the `autoConfirm` state initializer (~line 66, alongside the other five tools) so `AutoConfirmToggle tool="prism"` reads/writes a real key (it defaults to `false` when missing, but keep it explicit for consistency).
 
 - [ ] **Step 2: Extend `onToolApplied` with a prism volume**
 
