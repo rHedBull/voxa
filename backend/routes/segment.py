@@ -129,6 +129,50 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     return body
 
 
+EXCLUDE_CLASS_ID = 6   # config/classes.yaml -> unknown, "Exclude / Review"
+
+
+def _denoise_core(seg, req: "DenoiseRequest") -> dict:
+    """Shared core for /denoise: run global statistical-outlier detection
+    over the whole cloud and materialize the flagged points as one
+    unconfirmed Exclude pointset (Feature C)."""
+    from labeling.outliers import statistical_outlier_indices
+    # Backend-owned re-run replacement: erase the prior denoise instance's
+    # points to unlabeled BEFORE recomputing (deleteInstance on the frontend
+    # only drops the row, never the working-array labels).
+    if req.replace_inst is not None:
+        old = np.flatnonzero(seg.instance_ids == int(req.replace_inst)).astype(np.int32)
+        if old.size:
+            seg.apply_reassign(old, target_inst=None, target_class=None)
+    all_idx = np.arange(seg.positions.shape[0], dtype=np.int64)
+    outliers = statistical_outlier_indices(
+        seg.positions, all_idx, k=int(req.k), std_ratio=float(req.std_ratio))
+    if outliers.size == 0:
+        return {"instance_id": None, "n_affected": 0, "n_protected": 0,
+                "scan_indices_b64": None, "dirty": bool(seg.dirty)}
+    out = seg.apply_reassign(
+        outliers.astype(np.int32), target_inst=-1, target_class=EXCLUDE_CLASS_ID,
+        protect_instances=req.protect_instances or None)
+    if out["n_affected"] == 0:            # everything caught was locked/confirmed
+        return {"instance_id": None, "n_affected": 0,
+                "n_protected": out.get("n_protected", 0),
+                "scan_indices_b64": None, "dirty": bool(seg.dirty)}
+    return {"instance_id": int(out["new_instance_id"]),
+            "n_affected": int(out["n_affected"]),
+            "n_protected": out.get("n_protected", 0),
+            "scan_indices_b64": _b64(out["indices"].astype(np.int32, copy=False)),
+            "dirty": bool(seg.dirty)}
+
+
+@router.post("/api/segment/denoise", response_model=DenoiseResponse)
+def denoise(req: DenoiseRequest):
+    """Global outlier detection: flag spatial outliers cloud-wide and
+    materialize them as one unconfirmed Exclude pointset (Feature C).
+    See docs/superpowers/specs/2026-07-20-outlier-detection-filtering-design.md."""
+    seg = _require_seg()
+    return _denoise_core(seg, req)
+
+
 @router.post("/api/segment/apply-shape")
 def apply_shape(req: ApplyShapeRequest):
     """Generic shape-based label apply: resolve `req.shape` (tube or obb) to
