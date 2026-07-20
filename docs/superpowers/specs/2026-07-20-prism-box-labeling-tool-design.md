@@ -106,10 +106,13 @@ any density). The prism persists the same way:
   new pointset row in `instances_gt.json` on apply — exactly how Box stamps its
   OBB. The instance stays `kind:'pointset'`, so all gizmo/cuboid-edge/auto-fit
   paths that gate on `kind !== 'pointset'` continue to skip it.
-- **Raw export** (`backend/labeling/materialize.py`): `_volumetric_instances`
-  emits `{kind:'prism', polygon, y0, height, instance_id, seq}` for
-  `source=='prism'`; the regime-B replay adds an `elif v['kind']=='prism'` branch
-  calling `prism_indices`. Prism boundaries are therefore **exact** in raw
+- **Raw export** (`backend/labeling/materialize.py`): `collect_volumes` (which
+  today filters `src not in ("box","beam","draw")` and reads `center/size`) adds
+  `"prism"` to its accepted sources and emits
+  `{kind:'prism', polygon, y0, height, instance_id, seq}` reading the instance's
+  persisted `prism` field; the regime-B `replay_labels` shape branch adds an
+  `elif v['kind']=='prism'` calling `prism_indices`. Prism boundaries are
+  therefore **exact** in raw
   exports and compete by apply-order `seq` like every other volume. This makes
   prism consistent with Box/Beam rather than the one geometric tool that
   degrades to NN boundaries at raw density.
@@ -129,7 +132,7 @@ any density). The prism persists the same way:
 - **`frontend/src/prism-geom.js`** (new) — `pointsInsidePrism(points, prism)` for
   the live in-viewport preview highlight, **mirroring** `prism_indices` so the
   applied label matches the on-screen selection exactly (the way
-  `pointsInsideOBBLabel` in `mode-label.jsx` mirrors `obb_indices`). Parity is
+  `pointsInsideOBB` in `mode-edit.jsx` mirrors `obb_indices`). Parity is
   locked by a shared fixture (see Testing).
 - **`frontend/src/tool-options.jsx`** — add `PrismOptions`: Draw / Clear buttons,
   a height metres field + scroll hint, and the shared `AutoConfirmToggle`.
