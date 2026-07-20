@@ -1,5 +1,35 @@
 import { describe, it, expect } from 'vitest';
-import { pointsInsidePrism, pointInPolygonXZ } from './prism-geom.js';
+import { pointsInsidePrism, pointInPolygonXZ, prismShapeFromCorners, footprintBaseY } from './prism-geom.js';
+
+describe('prismShapeFromCorners (v2 surface-snap → emitted shape)', () => {
+  // Corners snapped to a roughly-flat surface at y≈0, forming a unit square.
+  const flat = [[0, 0.0, 0], [1, 0.1, 0], [1, 0.0, 1], [0, 0.2, 1]];
+
+  it('projects corners to XZ and bases y0 at the lowest corner', () => {
+    const s = prismShapeFromCorners(flat, 3.0);
+    expect(s.polygon).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+    expect(s.y0).toBe(0.0);           // min corner Y
+    expect(s.height).toBeCloseTo(3.0); // topY - baseY
+  });
+
+  it('normalizes an aim BELOW the base to a positive downward extrusion', () => {
+    // base = min corner Y = 0.0; aim to -2 → prism spans [-2, 0], height 2.
+    const s = prismShapeFromCorners(flat, -2.0);
+    expect(s.y0).toBe(-2.0);
+    expect(s.height).toBeCloseTo(2.0);
+  });
+
+  it('rejects a degenerate footprint or near-zero aim', () => {
+    expect(prismShapeFromCorners([[0, 0, 0], [1, 0, 0]], 3)).toBeNull();   // <3 corners
+    expect(prismShapeFromCorners(flat, 0.01)).toBeNull();                  // aim ~= base
+    expect(prismShapeFromCorners(flat, NaN)).toBeNull();
+  });
+
+  it('footprintBaseY is the minimum corner Y', () => {
+    expect(footprintBaseY(flat)).toBe(0.0);
+    expect(footprintBaseY([[0, 5, 0], [1, 2, 0], [0, 3, 1]])).toBe(2);
+  });
+});
 
 // Shared parity fixture — MUST match backend test_shapes.py exactly. Edges at
 // 0.5/3.5 keep the x,z in {1,2,3} grid block strictly interior (on-edge points
