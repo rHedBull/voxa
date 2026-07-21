@@ -1203,6 +1203,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // group can't linger.
   const [pendingGroup, setPendingGroup] = useStateLabel(null);
   useEffectLabel(() => { setPendingGroup(null); }, [activeTool]);
+  // Legacy (frozen) class-list section: collapsed by default.
+  const [showLegacy, setShowLegacy] = useStateLabel(false);
 
   // Hotkeys: class chords apply/label the active selection, ⌫ delete, F frame,
   // G/R/Y transform the box, ⌘S save. In walk mode the viewer owns WASD/QE.
@@ -1385,21 +1387,49 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <span className="badge-soft">{instances.length}</span>
         </div>
         <div className="class-list">
-          {classes.map((c) => {
-            const hidden = hiddenClasses.has(c.id);
-            return (
-              <div key={c.id}
-                className={'class-row' + (activeClass === c.id ? ' active' : '') + (hidden ? ' hidden' : '')}
-                onClick={() => setActiveClass(c.id)}>
-                <span className="class-swatch" style={{ background: c.color }} />
-                <span className="class-name">{c.label}</span>
-                <span className="class-count">{counts[c.id] || 0}</span>
-                <button className="class-eye" onClick={(e) => { e.stopPropagation(); toggleClass(c.id); }}
-                  title={hidden ? 'Show' : 'Hide'}>{hidden ? '◌' : '●'}</button>
-                <span className="class-hk">{c.hotkey}</span>
-              </div>
-            );
-          })}
+          {(() => {
+            // Grouped render: chord groups in order, then a trailing section
+            // for any class with an unknown/absent group (defaults path).
+            // Legacy is collapsed by default; frozen rows are display-only
+            // (visibility + counts work, activation doesn't).
+            const known = new Set(CLASS_GROUPS.map((g) => g.id));
+            const ungrouped = classes.filter((c) => !known.has(c.group));
+            const sections = CLASS_GROUPS
+              .map((g) => ({ g, members: classes.filter((c) => c.group === g.id) }))
+              .filter(({ members }) => members.length > 0);
+            if (ungrouped.length) sections.push({ g: { id: '_other', key: null, label: 'Ungrouped' }, members: ungrouped });
+            const row = (c) => {
+              const hidden = hiddenClasses.has(c.id);
+              return (
+                <div key={c.id}
+                  className={'class-row' + (activeClass === c.id ? ' active' : '') + (hidden ? ' hidden' : '') + (c.frozen ? ' frozen' : '')}
+                  onClick={() => { if (!c.frozen) setActiveClass(c.id); }}
+                  title={c.frozen ? 'Legacy class — display-only, no new labels' : undefined}>
+                  <span className="class-swatch" style={{ background: c.color }} />
+                  <span className="class-name">{c.label}</span>
+                  <span className="class-count">{counts[c.id] || 0}</span>
+                  <button className="class-eye" onClick={(e) => { e.stopPropagation(); toggleClass(c.id); }}
+                    title={hidden ? 'Show' : 'Hide'}>{hidden ? '◌' : '●'}</button>
+                  <span className="class-hk">{c.frozen ? '—' : c.hotkey}</span>
+                </div>
+              );
+            };
+            return sections.map(({ g, members }) => (
+              g.id === 'legacy' ? (
+                <div key={g.id}>
+                  <div className="class-group-hd legacy" onClick={() => setShowLegacy((v) => !v)}>
+                    {showLegacy ? '▾' : '▸'} {g.label}
+                  </div>
+                  {showLegacy && members.map(row)}
+                </div>
+              ) : (
+                <div key={g.id}>
+                  <div className="class-group-hd">{g.key ? `${g.key} · ` : ''}{g.label}</div>
+                  {members.map(row)}
+                </div>
+              )
+            ));
+          })()}
         </div>
 
         <ToolOptions
@@ -1674,7 +1704,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                     <div className="ins-row">
                       <label>Class</label>
                       <div className="class-pills">
-                        {classes.map((c) => (
+                        {/* Assignable only — re-classing to a frozen legacy
+                            class is impossible (backend would 422 anyway). */}
+                        {classes.filter((c) => !c.frozen).map((c) => (
                           <button key={c.id}
                             className={'class-pill' + (c.id === inst.cls ? ' active' : '')}
                             disabled={inst.confirmed}
