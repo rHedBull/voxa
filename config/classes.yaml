@@ -1,7 +1,8 @@
 # Voxa class definitions for industrial plant scans.
 # Aligned with the canonical IDs in engine/data/lidar/classes.json.
-# Strategy: broad classes. Primary focus is `pipe`; secondary classes are
-# labeled opportunistically in the same pass. Ambiguous segments stay unlabeled.
+# Strategy: primitive-level vocabulary (eval-labeling phase 0, spec
+# 2026-07-21) — 34 assignable primitives in 8 chord groups; the old broad
+# classes are frozen legacy (display-only). Ambiguous segments stay unlabeled.
 #
 # id:    canonical numeric class id (MUST match engine/data/lidar/classes.json).
 #        Without it, ids fall back to yaml position — reordering then corrupts labels.
