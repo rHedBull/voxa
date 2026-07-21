@@ -20,6 +20,8 @@ import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
 import { ClassPickerModal } from './class-picker.jsx';
+import { chordStep, CLASS_GROUPS } from './class-chords.js';
+import { ChordOverlay } from './chord-overlay.jsx';
 import { cutEligibility } from './cut-eligibility.js';
 import { removeOutliersEligibility } from './outlier-eligibility.js';
 import { fitEligibility } from './fit-eligibility.js';
@@ -779,9 +781,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       ],
     },
     {
-      title: 'Class assignment',
+      title: 'Class assignment (two-stroke chords)',
       items: classes.length
-        ? classes.map((c) => ({ keys: [c.hotkey], desc: c.label }))
+        ? CLASS_GROUPS.filter((g) => g.key).map((g) => (
+            { keys: [g.key, '…'], desc: `${g.label} (then member key)` }))
         : [{ keys: ['—'], desc: 'No classes configured' }],
     },
     {
@@ -1195,7 +1198,13 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     setSelBox((b) => (b ? { ...b, center: fitted.center, size: fitted.size } : b));
   }, [selBox, activeClass, activeClassDef]);
 
-  // Hotkeys: class key applies/labels the active selection, ⌫ delete, F frame,
+  // Two-stroke class chord state: null | a CLASS_GROUPS entry picked by the
+  // first stroke (class-chords.js). Reset on tool switch so a stale pending
+  // group can't linger.
+  const [pendingGroup, setPendingGroup] = useStateLabel(null);
+  useEffectLabel(() => { setPendingGroup(null); }, [activeTool]);
+
+  // Hotkeys: class chords apply/label the active selection, ⌫ delete, F frame,
   // G/R/Y transform the box, ⌘S save. In walk mode the viewer owns WASD/QE.
   useEffectLabel(() => {
     const onKey = (e) => {
@@ -1225,27 +1234,31 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       // In walk mode the viewer owns WASD/QE — bail on those keys so we don't
       // double-fire (several classes also bind w/e/r/q as hotkeys).
       if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
-      // Class hotkey. Runs before the Box-only gate so it works for a preseg
-      // selection in any tool. With an active tool selection it applies+labels
-      // (honoring auto-confirm inside confirmSegmentSelection / applyBox);
-      // with no selection it just sets the active class.
-      const cls = classes.find((c) => c.hotkey === e.key);
-      if (cls) {
+      // Two-stroke class chord (class-chords.js). Runs before the Box-only
+      // gate so it works for a preseg selection in any tool. The second
+      // stroke applies+labels through the same dispatch the old single-key
+      // hotkeys used (honoring auto-confirm inside confirmSegmentSelection /
+      // applyBox); with no selection it just sets the active class.
+      const step = chordStep(pendingGroup, e.key, classes);
+      if (step.type === 'group') { e.preventDefault(); setPendingGroup(step.group); return; }
+      if (step.type === 'cancel') { e.preventDefault(); setPendingGroup(null); return; }
+      if (step.type === 'class') {
+        e.preventDefault();
+        setPendingGroup(null);
+        const cls = step.cls;
         if ((activeTool === 'sam' || activeTool === 'presegment')
           && segState && segState.samSelection.size > 0) {
-          e.preventDefault();
           confirmSamSelection(cls);
         } else if (segState && segState.selection.size > 0) {
-          e.preventDefault();
           confirmSegmentSelection(cls);
         } else if (activeTool === 'box' && selBox) {
-          e.preventDefault();
           applyBox(cls);
         } else {
           setActiveClass(cls.id);
         }
         return;
       }
+      // step.type === 'pass' → fall through to the non-class hotkeys below.
       // Frame + delete work on any selected instance, in any tool (the help
       // text advertises them as tool-agnostic).
       if (e.key === 'f' || e.key === 'F') {
@@ -1269,7 +1282,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, confirmSamSelection, applyBox, fastMode, subModeOwnsInput]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, confirmSamSelection, applyBox, fastMode, subModeOwnsInput, pendingGroup]);
 
   return (
     <div className="mode-root label">
@@ -1283,6 +1296,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       {fastMode && (
         <FastLabelHUD queue={fastQueue} pos={fastIdx} classes={classes} />
       )}
+      <ChordOverlay group={pendingGroup} classes={classes} />
       {fastPendingCls && fastSeg && (
         <FastConfirmModal
           seg={fastSeg}

@@ -4,7 +4,9 @@
 // can be unit-tested; the components are thin views over mode-label's state.
 // See docs/superpowers/specs/2026-06-04-fast-labeling-design.md.
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { chordStep } from './class-chords.js';
+import { ChordOverlay } from './chord-overlay.jsx';
 
 // Orange — distinct from the yellow click-selection overlay.
 export const FAST_HIGHLIGHT_COLOR = 0xffa500;
@@ -38,29 +40,39 @@ const PREV_KEYS = new Set(['ArrowLeft', 'ArrowUp', 'a', 'A', 'w', 'W']);
 // LabelMode global keydown). Inert while the confirm modal is open — the
 // modal owns the keyboard then.
 export function FastLabelKeys({ active, classes, onStep, onPickClass, onExit }) {
+  // Two-stroke chord state (class-chords.js). Escape with a pending group
+  // cancels the chord, NOT rapid mode — so the chord check runs before the
+  // exit branch.
+  const [pendingGroup, setPendingGroup] = useState(null);
   useEffect(() => {
-    if (!active) return undefined;
+    if (!active) { setPendingGroup(null); return undefined; }
     const onKey = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;   // leave Ctrl+S/Z alone
-      if (NEXT_KEYS.has(e.key)) {
+      const step = chordStep(pendingGroup, e.key, classes);
+      if (step.type === 'group') {
+        setPendingGroup(step.group);
+      } else if (step.type === 'class') {
+        setPendingGroup(null);
+        onPickClass(step.cls);
+      } else if (pendingGroup) {          // cancel: Esc/invalid second key
+        setPendingGroup(null);
+      } else if (NEXT_KEYS.has(e.key)) {
         onStep(1);
       } else if (PREV_KEYS.has(e.key)) {
         onStep(-1);
       } else if (e.key === 'Escape') {
         onExit();
       } else {
-        const cls = classes.find((c) => c.hotkey === e.key);
-        if (!cls) return;
-        onPickClass(cls);
+        return;
       }
       e.preventDefault();
       e.stopPropagation();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [active, classes, onStep, onPickClass, onExit]);
-  return null;
+  }, [active, classes, onStep, onPickClass, onExit, pendingGroup]);
+  return pendingGroup ? <ChordOverlay group={pendingGroup} classes={classes} /> : null;
 }
 
 // Bottom-center status strip while fast mode is active.
