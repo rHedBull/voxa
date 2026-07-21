@@ -272,7 +272,7 @@ git commit -m "feat: /api/config carries class group + frozen flags"
 
 - [ ] **Step 1: Write the failing tests**
 
-Model the fixture on an existing endpoint test that builds an annotated scene + session (see `backend/tests/test_export_labels.py::client_with_annotated_scene` or the segment tests' fixtures — reuse, don't reinvent). Cases:
+Model the fixture on an existing endpoint test that builds an annotated scene + session (the `client_with_annotated_scene` fixture lives in `backend/tests/conftest.py` — reuse, don't reinvent). Cases:
 
 ```python
 FROZEN_ID = 0   # legacy `pipe`
@@ -391,6 +391,13 @@ def test_unknown_flag_rejected():
     with pytest.raises(ValidationError):
         _base(flags=["completely_made_up"])
 ```
+
+Plus one end-to-end round-trip through the annotations store (catches a save
+path that drops unknown fields — spec §6 asks for "round-trip through
+instances_gt.json"): PUT an `AnnotationDoc` containing an instance with all
+four metadata fields via the annotations endpoint (`/api/annotations/...` with
+`?session_id=` — copy the request shape from an existing annotations test),
+GET it back, assert the fields survive.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -614,14 +621,16 @@ Update the shortcuts help (~:784): replace the per-class listing with the 8 grou
 
 Same pattern inside the modal's keydown effect: local `pendingGroup` state, `chordStep(pendingGroup, e.key, classes)`; `class` → `onPick(cls)`, `group` → set pending + render the group's members highlighted (or simply filter the list to that group until Esc). Render grouped sections using `CLASS_GROUPS`/`groupMembers`; frozen classes are omitted entirely (pass `assignable(classes)` — but simplest is for the modal itself to filter, so call sites stay unchanged). Update the hint line: "Group key, then class key · Esc to cancel".
 
-- [ ] **Step 4: Rewire `FastLabelKeys`** (rapid mode) identically: local pending state, chordStep, `onPickClass(cls)` on `class`. `FastLabelHUD` can render the pending group name for feedback (optional, one line).
+- [ ] **Step 4: Rewire `FastLabelKeys`** (rapid mode) identically: local pending state, chordStep, `onPickClass(cls)` on `class`. **Ordering caveat:** `fast-label.jsx:~50` handles `Escape → onExit()` *before* the class lookup — gate that exit branch on `!pendingGroup` (or run `chordStep` first), else Escape during a pending chord exits rapid mode instead of canceling the chord. `FastLabelHUD` can render the pending group name for feedback (optional, one line).
 
-- [ ] **Step 5: Run frontend suite** — `npm run test:frontend`. Expected: all pass (chords module tests + untouched suites; if `context-menu`/picker jsdom tests assert flat class lists, update them for grouping/filtering).
+- [ ] **Step 5: Add a jsdom test for the modal** — `frontend/src/class-picker.jsdom.test.jsx` (`@vitest-environment jsdom` pragma, model on `sam-segment-list.jsdom.test.jsx`): render `ClassPickerModal` with a mixed frozen/assignable class list; assert frozen classes are absent, group headers render, and a two-stroke key sequence (`'1'` then a member key) calls `onPick` with the right class.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Run frontend suite** — `npm run test:frontend`. Expected: all pass (chords module tests + the new jsdom test + untouched suites; if `context-menu`/picker jsdom tests assert flat class lists, update them for grouping/filtering).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add frontend/src/class-chords.js frontend/src/chord-overlay.jsx frontend/src/mode-label.jsx frontend/src/class-picker.jsx frontend/src/fast-label.jsx frontend/src/app.css
+git add frontend/src/class-chords.js frontend/src/chord-overlay.jsx frontend/src/mode-label.jsx frontend/src/class-picker.jsx frontend/src/class-picker.jsdom.test.jsx frontend/src/fast-label.jsx frontend/src/app.css
 git commit -m "feat: two-stroke class chords in global hotkeys, picker modal, rapid mode"
 ```
 
