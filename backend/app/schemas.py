@@ -121,6 +121,8 @@ class ClassDef(BaseModel):
     # engine/data/lidar/classes.json). The frontend uses this — never the
     # array position — to map numeric class ids to palette entries.
     class_id: int = -1
+    group: str = ""          # chord group (spec 2026-07-21); "" for defaults path
+    frozen: bool = False     # display-only legacy — never assignable
 
 class ConfigResponse(BaseModel):
     classes: list[ClassDef]

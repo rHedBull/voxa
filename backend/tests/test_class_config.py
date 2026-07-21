@@ -58,3 +58,14 @@ def test_yaml_matches_canonical_classes_json():
     # Every canonical id is represented in the yaml (nothing silently dropped).
     yaml_ids = {b["id"] for b in _yaml_classes().values()}
     assert yaml_ids == set(canon_by_id)
+
+
+def test_api_config_carries_group_and_frozen(client):
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    classes = r.json()["classes"]
+    by_id = {c["id"]: c for c in classes}
+    assert by_id["elbow"]["group"] == "pipe-network"
+    assert by_id["elbow"]["frozen"] is False
+    assert by_id["pipe"]["group"] == "legacy"
+    assert by_id["pipe"]["frozen"] is True
