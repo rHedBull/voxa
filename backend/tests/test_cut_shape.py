@@ -55,10 +55,13 @@ def test_cut_shape_partitions_two_presegments(client_with_loaded_annotated_scene
 
 
 def test_cut_shape_instance_source_inherits_class(client_with_loaded_annotated_scene):
+    # instance 1 (points {3,4}, class 1/"tank") rather than instance 0 —
+    # instance 0 carries frozen legacy class 0/"pipe" and is rejected by the
+    # frozen-class write-guard (see test_frozen_guard.py::test_cut_instance_frozen_422).
     import main
     client = client_with_loaded_annotated_scene
     seg = main._state["seg"]
-    src_inst_id = 0
+    src_inst_id = 1
     src_class = int(seg.class_ids[np.flatnonzero(seg.instance_ids == src_inst_id)[0]])
 
     r = client.post("/api/segment/cut-shape", json={
@@ -86,12 +89,14 @@ def test_cut_shape_instance_source_protect_instances_blocks_self(
     instance-source path: protecting the very instance being cut from means
     every candidate point is dropped, so nothing gets materialized. This is
     the confirmed-source case in the real UI: the presegment you're cutting
-    from was already promoted+confirmed as instance 0, and the cut must not
-    silently steal its points."""
+    from was already promoted+confirmed as instance 1, and the cut must not
+    silently steal its points. Uses instance 1 (class 1/"tank"), not
+    instance 0 — instance 0 carries frozen legacy class 0/"pipe" and is
+    rejected outright by the frozen-class write-guard."""
     import main
     client = client_with_loaded_annotated_scene
     seg = main._state["seg"]
-    src_inst_id = 0
+    src_inst_id = 1
     n_src_points = int((seg.instance_ids == src_inst_id).sum())
     assert n_src_points > 0
 

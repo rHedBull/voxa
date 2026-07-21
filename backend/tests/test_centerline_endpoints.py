@@ -8,7 +8,7 @@ def _apply_body(**over):
     body = {
         "paths": [{"points": [[-1e5, -1e5, -1e5], [1e5, 1e5, 1e5]],
                    "radius": 1e6, "smooth": False}],   # tube swallows the whole cloud
-        "target_class": "pipe",
+        "target_class": "elbow",
         "target_inst": -1,
         "merged_from": [],
     }
