@@ -44,9 +44,11 @@ def client():
     return TestClient(main.app)
 
 
-def write_scene_ply(path: Path, n: int = 8) -> None:
-    rng = np.random.default_rng(0)
-    pts = rng.standard_normal((n, 3)).astype(np.float32)
+def write_scene_ply(path: Path, n: int = 8, pts: np.ndarray | None = None) -> None:
+    if pts is None:
+        rng = np.random.default_rng(0)
+        pts = rng.standard_normal((n, 3)).astype(np.float32)
+    n = len(pts)
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
              ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     arr = np.zeros(n, dtype=dtype)
@@ -56,16 +58,21 @@ def write_scene_ply(path: Path, n: int = 8) -> None:
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(str(path))
 
 
-def build_annotated_root(tmp_path: Path) -> tuple[Path, str]:
+def build_annotated_root(tmp_path: Path, pts: np.ndarray | None = None) -> tuple[Path, str]:
     """Build a synthesized lidar root with one annotated/demo scene (scan-schema
     v2: a registered preseg result + one session seeded from it). Returns
     (root, session_id). Lives in conftest (not tests/test_lidar_io) so multiple
-    test files can use it without cross-module helper imports."""
+    test files can use it without cross-module helper imports.
+
+    ``pts`` (default None) lets a caller supply a custom point cloud (e.g. a
+    dense grid for the eval-grade gate) — everything else about the fixture
+    (n=8 random points, the 4-segment preseg) is unchanged when omitted."""
     root = tmp_path / "lidar"
     scan_dir = root / "annotated" / "demo"
-    write_scene_ply(scan_dir / "source" / "scan.ply", n=8)
+    write_scene_ply(scan_dir / "source" / "scan.ply", n=8, pts=pts)
+    n_points = len(pts) if pts is not None else 8
     (scan_dir / "meta.json").write_text(json.dumps({
-        "scan_name": "demo", "n_points": 8, "coords": "world", "units": "meters",
+        "scan_name": "demo", "n_points": n_points, "coords": "world", "units": "meters",
         "schema_version": "2.0", "class_map_version": 1, "source_mesh": "mesh.glb",
     }))
     (root / "classes.json").write_text(json.dumps({
@@ -80,20 +87,32 @@ def build_annotated_root(tmp_path: Path) -> tuple[Path, str]:
     from labeling.session_store import create_session
     from scan_schema.fingerprint import array_fingerprint as compute_fingerprint
     from scan_schema.layout import ScanLayout
-    from plyfile import PlyData
     lay = ScanLayout(scan_dir)
-    inst = np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32)
+    if pts is None:
+        inst = np.array([-1, 0, 0, 1, 1, 2, -1, 3], dtype=np.int32)
+        summary = {"segments": [{"id": 0, "class_id": 0},
+                                 {"id": 1, "class_id": 1},
+                                 {"id": 2, "class_id": 2},
+                                 {"id": 3, "class_id": 2}]}
+    else:
+        inst = np.full(n_points, -1, dtype=np.int32)
+        inst[:2] = 0
+        summary = {"segments": [{"id": 0, "class_id": 0}]}
     register_preseg(lay, "ransac", inst,
-                    summary={"segments": [{"id": 0, "class_id": 0},
-                                          {"id": 1, "class_id": 1},
-                                          {"id": 2, "class_id": 2},
-                                          {"id": 3, "class_id": 2}]},
+                    summary=summary,
                     generator="ransac", params={})
-    ply = PlyData.read(str(scan_dir / "source" / "scan.ply"))["vertex"]
-    pts = np.stack([ply["x"], ply["y"], ply["z"]], axis=1).astype(np.float32)
-    source_fp = compute_fingerprint(pts)
+    # /api/load fingerprints the cloud AFTER load_ply + _recenter (app/core.py)
+    # — go through the exact same helpers here (rather than re-deriving the
+    # points/centroid by hand) since np.vstack(...).T vs np.stack(axis=1)
+    # order-of-summation differences shift the float32 mean by enough to
+    # change the fingerprint hash even though the geometry is identical.
+    from scenes.point_cloud import load_ply
+    from app.core import _recenter
+    scan_pc, _ = load_ply(scan_dir / "source" / "scan.ply")
+    scan_pc, _offset = _recenter(scan_pc)
+    source_fp = compute_fingerprint(scan_pc.points.astype(np.float32))
     sess = create_session(lay, name="demo session", preseg_id="ransac",
-                          n_points=8, source_fp=source_fp)
+                          n_points=n_points, source_fp=source_fp)
     return root, sess.session_id
 
 
@@ -131,3 +150,27 @@ def scan_dir_for_loaded_scene(client_with_loaded_annotated_scene, tmp_path):
     """
     del client_with_loaded_annotated_scene
     return tmp_path / "lidar" / "annotated" / "demo"
+
+
+def dense_grid_pts(spacing=0.005, n=20, offset=(0.0, 0.0, 0.0)):
+    """n×n XZ grid at the given spacing (nn distance == spacing), optionally
+    translated — offsets > 1e3 trigger the load-time auto-recenter."""
+    g = np.arange(n, dtype=np.float32) * spacing
+    xs, zs = np.meshgrid(g, g)
+    pts = np.stack([xs.ravel(), np.zeros(n * n, dtype=np.float32), zs.ravel()], axis=1)
+    return (pts + np.asarray(offset, dtype=np.float32)).astype(np.float32)
+
+
+@pytest.fixture
+def client_with_dense_annotated_scene(monkeypatch, tmp_path):
+    """Loaded annotated scene whose 400 points sit on a 5 mm grid — dense
+    enough to pass the eval-grade gate (p90 = 5 mm <= 10 mm)."""
+    import main
+    from fastapi.testclient import TestClient
+
+    root, _sid = build_annotated_root(tmp_path, pts=dense_grid_pts())
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    r = client.post("/api/load", json={"name": "annotated/demo", "max_points": 100})
+    assert r.status_code == 200
+    return client

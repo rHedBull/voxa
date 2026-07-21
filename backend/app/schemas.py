@@ -360,4 +360,18 @@ class ExportLabelsRequest(BaseModel):
     remap: list[RemapRule] = []
     drop_unlabeled: bool = False
 
+class RegionPrism(BaseModel):
+    polygon: list[tuple[float, float]]
+    y0: float
+    height: float
+
+class CreateRegionRequest(BaseModel):
+    prism: RegionPrism
+    name: Optional[str] = None
+
+class PatchRegionRequest(BaseModel):
+    name: Optional[str] = None
+    prism: Optional[RegionPrism] = None
+    status: Optional[str] = None   # 'draft' | 'eval_grade' (validated in labeling.regions)
+
 __all__ = [n for n in list(globals()) if not n.startswith("__")]
