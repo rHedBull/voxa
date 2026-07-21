@@ -115,8 +115,8 @@ constant (`label-tools.js` or a new `class-groups.js`), not per-entry config. `/
 through additively — Inspect/Compare and legacy readers see a superset and are
 unaffected. Colors are assigned in per-group hue families (pipe-network greens,
 duct teals, electrical yellows, plant-units blues/reds, attachments purples,
-structure oranges, stuff muted greys, legacy desaturated) so the viewport stays
-legible at ~30 active classes.
+structure oranges, other white/neutral, stuff muted greys, legacy desaturated)
+so the viewport stays legible at 34 active classes.
 
 ### 3. Picker UI + chord hotkeys
 
