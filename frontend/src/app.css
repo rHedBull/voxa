@@ -969,12 +969,24 @@ kbd {
   font-size: 11px; color: var(--text-dim, #8a8f99); text-align: center;
 }
 .class-picker-row.group .class-picker-label { font-weight: 600; }
-.class-picker-row.back {
-  color: var(--text-dim, #8a8f99);
-  border-bottom: 1px solid var(--border, #2a2d34);
-  margin-bottom: 4px;
-}
 .class-picker-chevron { color: var(--text-dim, #8a8f99); font-size: 13px; }
+
+/* Two-column master–detail: groups left, selected group's classes right. */
+.class-picker-cols {
+  display: grid; grid-template-columns: 230px 1fr; gap: 12px;
+  min-height: 0;   /* let the two lists scroll inside the 80vh card */
+}
+.class-picker-cols .groups {
+  border-right: 1px solid var(--border, #2a2d34);
+  padding-right: 12px;
+}
+.class-picker-row.group.active {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border, #2a2d34);
+}
+.class-picker-row.group.armed {
+  border-color: var(--accent, #5b8def);
+}
 
 /* Two-stroke chord overlay: transient member list after the first stroke. */
 .chord-overlay {

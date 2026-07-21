@@ -3,33 +3,36 @@
 // prism-mode after the height is committed). Extracted from mode-label.jsx so
 // both can use it without a circular import.
 //
-// Two-level drill-down over the assignable vocabulary (frozen legacy classes
-// are omitted entirely — display-only): level 1 lists the chord groups, click
-// a group (or press its key) to open its member list, pick a member by click
-// or its key. Esc backs out one level, then closes. Mirrors the two-stroke
-// chords of the global handler.
+// Two-column master–detail over the assignable vocabulary (frozen legacy
+// classes are omitted entirely — display-only): the left column lists the
+// chord groups, the right column shows the selected group's classes, both
+// visible at once. Mouse: click a group, then a class. Keyboard: the same
+// two strokes as the global handler — a group key "arms" the group, then a
+// member key picks; Esc disarms first, then closes.
 
 import { useEffect, useState } from 'react';
 import { CLASS_GROUPS, groupMembers, chordStep } from './class-chords.js';
 
 export function ClassPickerModal({ classes, counts = {}, onPick, onClose }) {
-  const [pendingGroup, setPendingGroup] = useState(null);
+  // null = unarmed (next digit is a group key); a group = armed (next digit
+  // picks a member). The right column always shows a group: the armed one,
+  // else the first.
+  const [armedGroup, setArmedGroup] = useState(null);
 
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        // First Esc backs out of an open group, second closes the modal.
-        if (pendingGroup) setPendingGroup(null);
+        if (armedGroup) setArmedGroup(null);
         else onClose();
         return;
       }
-      const step = chordStep(pendingGroup, e.key, classes);
+      const step = chordStep(armedGroup, e.key, classes);
       if (step.type === 'group') {
         e.preventDefault();
         e.stopPropagation();
-        setPendingGroup(step.group);
+        setArmedGroup(step.group);
       } else if (step.type === 'class') {
         e.preventDefault();
         e.stopPropagation();
@@ -37,7 +40,7 @@ export function ClassPickerModal({ classes, counts = {}, onPick, onClose }) {
       } else if (step.type === 'cancel') {
         e.preventDefault();
         e.stopPropagation();
-        setPendingGroup(null);
+        setArmedGroup(null);
       }
     };
     // Capture phase so we beat any global keydown that would otherwise also
@@ -45,58 +48,54 @@ export function ClassPickerModal({ classes, counts = {}, onPick, onClose }) {
     // PrismKeys' own handler).
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [classes, onPick, onClose, pendingGroup]);
+  }, [classes, onPick, onClose, armedGroup]);
 
   const groups = CLASS_GROUPS
     .filter((g) => g.key)
     .map((g) => ({ group: g, members: groupMembers(g.id, classes) }))
     .filter(({ members }) => members.length > 0);
 
-  const openMembers = pendingGroup ? groupMembers(pendingGroup.id, classes) : null;
+  const shownGroup = armedGroup || groups[0]?.group || null;
+  const shownMembers = shownGroup ? groupMembers(shownGroup.id, classes) : [];
 
   return (
     <div className="class-picker-overlay" onClick={onClose}>
       <div className="class-picker-card" onClick={(e) => e.stopPropagation()}>
         <div className="class-picker-title">Pick class for new instance</div>
-        <div className="class-picker-list">
-          {pendingGroup == null ? (
-            groups.map(({ group, members }) => (
+        <div className="class-picker-cols">
+          <div className="class-picker-list groups">
+            {groups.map(({ group, members }) => (
               <button key={group.id}
-                className="class-picker-row group"
-                onClick={() => setPendingGroup(group)}
+                className={'class-picker-row group'
+                  + (shownGroup?.id === group.id ? ' active' : '')
+                  + (armedGroup?.id === group.id ? ' armed' : '')}
+                onClick={() => setArmedGroup(group)}
                 title={`Press ${group.key}`}>
                 <span className="class-picker-hk">{group.key}</span>
                 <span className="class-picker-label">{group.label}</span>
                 <span className="class-picker-count">{members.length}</span>
                 <span className="class-picker-chevron">›</span>
               </button>
-            ))
-          ) : (
-            <>
-              <button className="class-picker-row back"
-                onClick={() => setPendingGroup(null)}
-                title="Back to groups (Esc)">
-                <span className="class-picker-chevron">‹</span>
-                <span className="class-picker-label">{pendingGroup.label}</span>
+            ))}
+          </div>
+          <div className="class-picker-list members">
+            {shownMembers.map((c) => (
+              <button key={c.id}
+                className="class-picker-row"
+                onClick={() => onPick(c)}
+                title={`Press ${shownGroup.key} then ${c.hotkey || '–'}`}>
+                <span className="class-swatch" style={{ background: c.color }} />
+                <span className="class-picker-label">{c.label}</span>
+                <span className="class-picker-count">{counts[c.id] || 0}</span>
+                <span className="class-picker-hk">{c.hotkey || '–'}</span>
               </button>
-              {openMembers.map((c) => (
-                <button key={c.id}
-                  className="class-picker-row"
-                  onClick={() => onPick(c)}
-                  title={`Press ${c.hotkey || '–'}`}>
-                  <span className="class-swatch" style={{ background: c.color }} />
-                  <span className="class-picker-label">{c.label}</span>
-                  <span className="class-picker-count">{counts[c.id] || 0}</span>
-                  <span className="class-picker-hk">{c.hotkey || '–'}</span>
-                </button>
-              ))}
-            </>
-          )}
+            ))}
+          </div>
         </div>
         <div className="class-picker-hint">
-          {pendingGroup
-            ? 'Press a class key or click · Esc back'
-            : 'Press a group key or click · Esc cancel'}
+          {armedGroup
+            ? `${armedGroup.label}: press a class key or click · Esc back`
+            : 'Group key then class key, or click · Esc cancel'}
         </div>
       </div>
     </div>
