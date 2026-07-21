@@ -915,11 +915,12 @@ kbd {
   display: flex; align-items: center; justify-content: center;
 }
 .class-picker-card {
-  min-width: 320px; max-width: 420px;
+  min-width: 520px; max-width: 680px;
+  max-height: 80vh; display: flex; flex-direction: column;
   background: var(--panel, #15171c);
   border: 1px solid var(--border, #2a2d34);
   border-radius: 10px;
-  padding: 14px 14px 10px;
+  padding: 16px 16px 12px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   color: var(--text, #d8dadf);
 }
@@ -928,7 +929,10 @@ kbd {
   text-transform: uppercase; color: var(--text-dim, #8a8f99);
   margin-bottom: 10px;
 }
-.class-picker-list { display: flex; flex-direction: column; gap: 4px; }
+.class-picker-list {
+  display: flex; flex-direction: column; gap: 4px;
+  overflow-y: auto;
+}
 .class-picker-row {
   display: grid;
   grid-template-columns: 14px 1fr auto auto;
