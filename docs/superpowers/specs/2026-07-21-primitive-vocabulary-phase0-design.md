@@ -1,7 +1,8 @@
 # Primitive Vocabulary (Eval-Labeling Phase 0) — Design
 
 **Date:** 2026-07-21
-**Status:** Approved (user-reviewed design; spec pending review)
+**Status:** Implemented (2026-07-21, branch `feat/primitive-vocab-phase0`; merge
+guard added beyond plan after security review)
 **Branch:** `feat/primitive-vocab-phase0`
 
 ## Problem
