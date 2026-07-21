@@ -7,8 +7,11 @@
 // their selections aren't kept symmetric across tool switches).
 //
 // list: 'preseg' | 'sam' — eligible iff selectionSize > 0.
-// list: 'instance'       — eligible iff isSelected && !confirmed
-//   (confirmed instances are locked — see "Confirmed = locked" in CLAUDE.md).
+// list: 'instance'       — eligible iff isSelected && !confirmed &&
+//   !classFrozen (confirmed instances are locked — see "Confirmed = locked"
+//   in CLAUDE.md; a frozen legacy class can't be newly assigned, and an
+//   instance-cut inherits the source's class, so cutting a legacy-class
+//   instance would 422 server-side — re-label it with a primitive first).
 export function cutEligibility(params) {
   const { list } = params;
   if (list === 'preseg' || list === 'sam') {
@@ -17,9 +20,10 @@ export function cutEligibility(params) {
     return { eligible: false, reason: 'empty' };
   }
   if (list === 'instance') {
-    const { isSelected, confirmed } = params;
+    const { isSelected, confirmed, classFrozen } = params;
     if (!isSelected) return { eligible: false, reason: 'not-selected' };
     if (confirmed) return { eligible: false, reason: 'confirmed' };
+    if (classFrozen) return { eligible: false, reason: 'frozen-class' };
     return { eligible: true };
   }
   throw new Error(`cutEligibility: unknown list "${list}"`);

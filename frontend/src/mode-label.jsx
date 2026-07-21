@@ -1718,6 +1718,48 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                         ))}
                       </div>
                     </div>
+                    {/* Eval-labeling phase-0 instance metadata (spec §4):
+                        inert pass-through persisted via the normal
+                        annotation autosave (updateInstance). */}
+                    <div className="ins-row">
+                      <label>Flags</label>
+                      <div className="ins-flags">
+                        {['boundary_uncertain', 'incomplete'].map((f) => (
+                          <label key={f} className="ins-check">
+                            <input type="checkbox"
+                              checked={(inst.flags || []).includes(f)}
+                              disabled={inst.confirmed}
+                              onChange={(e) => {
+                                const cur = new Set(inst.flags || []);
+                                if (e.target.checked) cur.add(f); else cur.delete(f);
+                                updateInstance(inst.id, { flags: [...cur] });
+                              }} />
+                            {f.replace('_', ' ')}
+                          </label>
+                        ))}
+                        <label className="ins-check">
+                          <input type="checkbox"
+                            checked={inst.insulated === true}
+                            disabled={inst.confirmed}
+                            onChange={(e) => updateInstance(inst.id, { insulated: e.target.checked })} />
+                          insulated
+                        </label>
+                      </div>
+                    </div>
+                    <div className="ins-row">
+                      <label>Subtype</label>
+                      <input className="ins-input" placeholder="e.g. ball valve"
+                        value={inst.subtype || ''}
+                        disabled={inst.confirmed}
+                        onChange={(e) => updateInstance(inst.id, { subtype: e.target.value || null })} />
+                    </div>
+                    <div className="ins-row">
+                      <label>Note</label>
+                      <textarea className="ins-input ins-note" rows={2}
+                        value={inst.note || ''}
+                        disabled={inst.confirmed}
+                        onChange={(e) => updateInstance(inst.id, { note: e.target.value })} />
+                    </div>
                     <div className="ins-actions">
                       <button className="ghost-btn" onClick={() => focusInstance(inst)}>◎ Focus</button>
                       {!inst.confirmed && inst.kind !== 'pointset' && (
@@ -1750,6 +1792,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             list: 'instance',
             isSelected: instCutMenu.instId === selectedId,
             confirmed: !!target?.confirmed,
+            classFrozen: !!classes.find((c) => c.id === target?.cls)?.frozen,
           });
           return (
             <ContextMenu
@@ -1759,7 +1802,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               items={[{
                 label: elig.reason === 'confirmed'
                   ? 'Edit selection… (un-confirm first)'
-                  : 'Edit selection…',
+                  : elig.reason === 'frozen-class'
+                    ? 'Edit selection… (legacy class — re-label with a primitive first)'
+                    : 'Edit selection…',
                 disabled: !elig.eligible,
                 onSelect: () => {
                   if (!target || !Number.isFinite(target.segId)) return;

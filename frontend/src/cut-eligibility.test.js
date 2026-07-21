@@ -44,6 +44,18 @@ describe('cutEligibility', () => {
       .toEqual({ eligible: false, reason: 'not-selected' });
   });
 
+  it('frozen-class instance is not eligible (cut inherits the class)', () => {
+    expect(cutEligibility({
+      list: 'instance', isSelected: true, confirmed: false, classFrozen: true,
+    })).toEqual({ eligible: false, reason: 'frozen-class' });
+  });
+
+  it('live-class instance stays eligible with classFrozen false', () => {
+    expect(cutEligibility({
+      list: 'instance', isSelected: true, confirmed: false, classFrozen: false,
+    })).toEqual({ eligible: true });
+  });
+
   it('throws on an unknown list', () => {
     expect(() => cutEligibility({ list: 'bogus' })).toThrow();
   });

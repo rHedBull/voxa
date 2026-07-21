@@ -1003,6 +1003,14 @@ kbd {
 .class-group-hd.legacy { cursor: pointer; user-select: none; }
 .class-row.frozen { opacity: 0.45; cursor: default; }
 
+/* Instance metadata inputs (phase 0). */
+.ins-flags { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.ins-check {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--text, #d8dadf); cursor: pointer;
+}
+.ins-note { resize: vertical; min-height: 36px; }
+
 .context-menu {
   position: fixed; z-index: 70;
   min-width: 160px;
