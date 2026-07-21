@@ -1028,6 +1028,11 @@ kbd {
 .class-group-hd .class-swatch.hd-active { width: 8px; height: 8px; }
 .class-row.frozen { opacity: 0.45; cursor: default; }
 
+.ins-class-current {
+  display: flex; align-items: center; gap: 8px; font-size: 12px;
+}
+.ins-class-current .ghost-btn { margin-left: auto; }
+
 /* Instance metadata inputs (phase 0). */
 .ins-flags { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .ins-check {

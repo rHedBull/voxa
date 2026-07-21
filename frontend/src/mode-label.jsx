@@ -839,6 +839,39 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const updateInstance = (id, patch) => {
     onChange(instances.map((i) => i.id === id ? { ...i, ...patch } : i));
   };
+  // Relabel an unconfirmed instance in place. For pointsets the points are
+  // reassigned server-side (same segId, so identity/undo survive) — unlike
+  // the old class-pills path, which changed only the row metadata and left
+  // the working arrays on the old class. Legacy cuboids (no per-point
+  // membership) update metadata only; they are display-only.
+  const relabelInstance = async (inst, clsDef) => {
+    if (!inst || inst.confirmed || !clsDef) return;
+    if (inst.kind === 'pointset' && Number.isFinite(inst.segId) && segState) {
+      const instArr = segState.instanceFull;
+      const idx = [];
+      for (let p = 0; p < instArr.length; p++) {
+        if (instArr[p] === inst.segId) idx.push(p);
+      }
+      if (idx.length) {
+        let r;
+        try {
+          r = await VoxaAPI.segApply('reassign', {
+            indices: new Int32Array(idx),
+            payload: { target_inst: inst.segId, target_class: clsDef.id },
+          });
+        } catch (err) {
+          console.error('relabel reassign failed:', err);
+          return;
+        }
+        setSegState((s) => s ? applyDelta(s, {
+          indices: r.indices,
+          after_class: r.afterClass,
+          after_instance: r.afterInstance,
+        }) : s);
+      }
+    }
+    updateInstance(inst.id, { cls: clsDef.id, color: clsDef.color });
+  };
   const deleteInstance = (id) => {
     onChange(instances.filter((i) => i.id !== id));
     if (selectedId === id) setSelectedId(null);
@@ -907,6 +940,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // to a class choice instead of using activeClass; pressing the class
   // hotkey picks that class and creates the (unconfirmed) pointset.
   const [classPickerOpen, setClassPickerOpen] = useStateLabel(false);
+  // Instance id whose class is being re-picked via the same modal (the
+  // Instances-panel "Relabel" affordance). null = closed.
+  const [relabelTarget, setRelabelTarget] = useStateLabel(null);
 
   const confirmSegmentSelection = useCallbackLabel(async (clsDef, opts) => {
     const targetCls = clsDef || activeClassDef;
@@ -1334,6 +1370,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onClose={() => setClassPickerOpen(false)}
         />
       )}
+      {relabelTarget && (() => {
+        const inst = instances.find((i) => i.id === relabelTarget);
+        if (!inst) return null;
+        return (
+          <ClassPickerModal
+            classes={classes}
+            counts={counts}
+            onPick={(cls) => { setRelabelTarget(null); relabelInstance(inst, cls); }}
+            onClose={() => setRelabelTarget(null)}
+          />
+        );
+      })()}
       {exportOpen && cloud && (
         <ExportWizard
           scene={cloud.scene}
@@ -1694,6 +1742,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                       focusInstance(inst);
                     }}
                     title="Focus camera on this instance">◎</button>
+                  {!inst.confirmed && (
+                    <button className="inst-edit-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedId(inst.id);
+                        setRelabelTarget(inst.id);
+                      }}
+                      title="Relabel (pick a new class)">⇄</button>
+                  )}
                   <button className="inst-edit-btn"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1721,19 +1778,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                     </div>
                     <div className="ins-row">
                       <label>Class</label>
-                      <div className="class-pills">
-                        {/* Assignable only — re-classing to a frozen legacy
-                            class is impossible (backend would 422 anyway). */}
-                        {classes.filter((c) => !c.frozen).map((c) => (
-                          <button key={c.id}
-                            className={'class-pill' + (c.id === inst.cls ? ' active' : '')}
-                            disabled={inst.confirmed}
-                            onClick={() => updateInstance(inst.id, { cls: c.id, color: c.color })}
-                            title={`${c.label}${c.hotkey ? `  (${c.hotkey})` : ''}`}>
-                            <span className="class-swatch" style={{ background: c.color }} />
-                            <span>{c.label}</span>
-                          </button>
-                        ))}
+                      {/* Current class + the shared grouped picker — 34
+                          inline pills don't scale, and the popup path also
+                          reassigns the points server-side (relabelInstance),
+                          which the old pills never did. */}
+                      <div className="ins-class-current">
+                        <span className="class-swatch" style={{ background: inst.color }} />
+                        <span>{classes.find((c) => c.id === inst.cls)?.label || inst.cls}</span>
+                        <button className="ghost-btn"
+                          disabled={inst.confirmed}
+                          onClick={() => setRelabelTarget(inst.id)}>
+                          ⇄ Relabel…
+                        </button>
                       </div>
                     </div>
                     {/* Eval-labeling phase-0 instance metadata (spec §4):
