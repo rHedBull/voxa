@@ -112,7 +112,11 @@ Written atomically via the `scan_schema` durable-write helpers.
   out/in. For current annotated scans the offset is `[0,0,0]` (UTM offsets
   were already removed at scan level), but this keeps the file a portable
   benchmark artifact — phase 3's manifest generator reads it without a voxa
-  load.
+  load. One caveat: for z-up scans voxa's load applies the z-up → y-up
+  rotation *before* recentering, so "stored frame" there means the y-up
+  display frame plus offset — deterministic and consistent within voxa, but
+  the phase-3 manifest generator must replay the same rotation for those
+  scans (a vertical prism can't be expressed in the z-up frame anyway).
 
 ### 2. Backend: `backend/routes/regions.py`
 

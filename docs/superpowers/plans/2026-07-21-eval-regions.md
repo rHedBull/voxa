@@ -267,7 +267,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'labeling.regions'` (co
 ``eval_regions.json`` lives at the SCAN root — scan-level truth shared by
 every session on the scan. Geometry in the file is in the scan's STORED
 frame; the routes convert to/from the runtime (recentered) frame via
-``shift_prism`` + the load-time ``recenter_offset``. The backend owns the
+``shift_prism`` + the load-time ``recenter_offset``. Caveat for z-up scans:
+load also applies the z-up -> y-up rotation BEFORE recentering, so for those
+scans "stored frame" means the y-up display frame plus offset, not literal
+scan.ply coordinates — consistent within voxa (load is deterministic), but
+the phase-3 manifest generator must replay the same rotation to read it. The backend owns the
 eval-grade gate (p90 <= 10 mm over the region's full-res points) and the
 geometry lock — same server-side-invariant philosophy as
 ``reject_frozen_class``. See
@@ -623,16 +627,7 @@ def test_frame_roundtrip_with_recenter(monkeypatch, tmp_path):
     must hold stored-frame geometry while the API speaks the runtime frame."""
     import main
     from fastapi.testclient import TestClient
-    from tests_helpers_shim import noop  # NOT REAL — see note below; use conftest helpers
-```
-
-**Note for the implementer on the last test:** write it inside the same file using the conftest helpers (they're plain module-level functions; import them with `from conftest import build_annotated_root, dense_grid_pts` — pytest's default `importmode=prepend` puts `backend/tests` on `sys.path`, verify with a quick run). Body:
-
-```python
-def test_frame_roundtrip_with_recenter(monkeypatch, tmp_path):
-    import main
-    from fastapi.testclient import TestClient
-    from conftest import build_annotated_root, dense_grid_pts
+    from tests.conftest import build_annotated_root, dense_grid_pts
 
     off = (5000.0, 0.0, 3000.0)
     root, _sid = build_annotated_root(tmp_path, pts=dense_grid_pts(offset=off))
@@ -1281,11 +1276,9 @@ Import `RegionMode` at the top; add before the dispatcher:
 
 ```jsx
 function RegionOptions({ viewerRef, onExit, onRegionCreated }) {
-  return (
-    <div className="tool-options tool-options-region">
-      <RegionMode viewerRef={viewerRef} onExit={onExit} onCreated={onRegionCreated} />
-    </div>
-  );
+  // No wrapper div: RegionMode's RegionDrawPanel already renders the
+  // `tool-options` container (same as PrismMode's PrismPanel).
+  return <RegionMode viewerRef={viewerRef} onExit={onExit} onCreated={onRegionCreated} />;
 }
 ```
 
@@ -1486,24 +1479,26 @@ export default function RegionPanel({
                   onClick={(e) => { e.stopPropagation(); onDelete(region.id); }}>×</button>
               )}
             </div>
+            {/* Flip actions are ALWAYS visible (not behind expansion) — the
+                jsdom test clicks them on two different rows in one test. */}
+            <div className="region-actions">
+              {evalGrade ? (
+                <button className="ghost-btn" onClick={() => onFlipStatus(region.id, 'draft')}>Back to draft</button>
+              ) : (
+                <button className="ghost-btn" onClick={() => {
+                  setFlipError(null);
+                  Promise.resolve(onFlipStatus(region.id, 'eval_grade'))
+                    .catch((err) => setFlipError({ id: region.id, message: err.detail || err.message }));
+                }}>Mark eval-grade</button>
+              )}
+              {flipError?.id === region.id && <p className="tool-opt-hint danger">{flipError.message}</p>}
+            </div>
             {isOpen && (
               <div className="region-detail">
-                {evalGrade ? (
-                  <>
-                    <p className="tool-opt-hint">
-                      p50 {(region.accuracy.p50 * 1000).toFixed(1)} mm · p90 {(region.accuracy.p90 * 1000).toFixed(1)} mm · {region.accuracy.loa} — geometry locked
-                    </p>
-                    <button className="ghost-btn" onClick={() => onFlipStatus(region.id, 'draft')}>Back to draft</button>
-                  </>
-                ) : (
-                  <>
-                    <button className="ghost-btn" onClick={() => {
-                      setFlipError(null);
-                      Promise.resolve(onFlipStatus(region.id, 'eval_grade'))
-                        .catch((err) => setFlipError({ id: region.id, message: err.detail || err.message }));
-                    }}>Mark eval-grade</button>
-                    {flipError?.id === region.id && <p className="tool-opt-hint danger">{flipError.message}</p>}
-                  </>
+                {evalGrade && (
+                  <p className="tool-opt-hint">
+                    p50 {(region.accuracy.p50 * 1000).toFixed(1)} mm · p90 {(region.accuracy.p90 * 1000).toFixed(1)} mm · {region.accuracy.loa} — geometry locked
+                  </p>
                 )}
                 <div className="region-members">
                   {members.length === 0 && <p className="tool-opt-hint">No confirmed instance is majority-inside this region.</p>}
