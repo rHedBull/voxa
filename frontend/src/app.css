@@ -1000,7 +1000,14 @@ kbd {
   margin: 8px 0 2px; font-size: 10px; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--text-dim, #8a8f99);
 }
-.class-group-hd.legacy { cursor: pointer; user-select: none; }
+.class-group-hd.toggle {
+  cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 5px;
+}
+.class-group-hd .class-group-n {
+  margin-left: auto; font-size: 9px; opacity: 0.7;
+}
+.class-group-hd .class-swatch.hd-active { width: 8px; height: 8px; }
 .class-row.frozen { opacity: 0.45; cursor: default; }
 
 /* Instance metadata inputs (phase 0). */

@@ -1210,8 +1210,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // group can't linger.
   const [pendingGroup, setPendingGroup] = useStateLabel(null);
   useEffectLabel(() => { setPendingGroup(null); }, [activeTool]);
-  // Legacy (frozen) class-list section: collapsed by default.
-  const [showLegacy, setShowLegacy] = useStateLabel(false);
+  // Class-rail groups are collapsed by default; clicking a header toggles
+  // its member list open. (Set of open group ids; legacy included.)
+  const [openGroups, setOpenGroups] = useStateLabel(() => new Set());
+  const toggleGroup = (gid) => setOpenGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(gid)) next.delete(gid); else next.add(gid);
+    return next;
+  });
 
   // Hotkeys: class chords apply/label the active selection, ⌫ delete, F frame,
   // G/R/Y transform the box, ⌘S save. In walk mode the viewer owns WASD/QE.
@@ -1421,21 +1427,26 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 </div>
               );
             };
-            return sections.map(({ g, members }) => (
-              g.id === 'legacy' ? (
+            return sections.map(({ g, members }) => {
+              const open = openGroups.has(g.id);
+              const hasActive = members.some((c) => c.id === activeClass);
+              return (
                 <div key={g.id}>
-                  <div className="class-group-hd legacy" onClick={() => setShowLegacy((v) => !v)}>
-                    {showLegacy ? '▾' : '▸'} {g.label}
+                  <div className={'class-group-hd toggle' + (g.id === 'legacy' ? ' legacy' : '')}
+                    onClick={() => toggleGroup(g.id)}>
+                    {open ? '▾' : '▸'} {g.key ? `${g.key} · ` : ''}{g.label}
+                    {/* Active-class swatch stays visible while the group is
+                        collapsed, so the current class is never invisible. */}
+                    {!open && hasActive && (
+                      <span className="class-swatch hd-active"
+                        style={{ background: members.find((c) => c.id === activeClass)?.color }} />
+                    )}
+                    <span className="class-group-n">{members.length}</span>
                   </div>
-                  {showLegacy && members.map(row)}
+                  {open && members.map(row)}
                 </div>
-              ) : (
-                <div key={g.id}>
-                  <div className="class-group-hd">{g.key ? `${g.key} · ` : ''}{g.label}</div>
-                  {members.map(row)}
-                </div>
-              )
-            ));
+              );
+            });
           })()}
         </div>
 
