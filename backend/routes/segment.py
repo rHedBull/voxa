@@ -16,18 +16,31 @@ def segment_apply(req: ApplyRequest):
     try:
         if req.op == "set_class":
             idx = _decode_indices_or_400(req)
-            out = seg.apply_set_class(idx, class_id=_coerce_class_id(req.payload["class_id"]))
+            class_id = _coerce_class_id(req.payload["class_id"])
+            reject_frozen_class(class_id)
+            out = seg.apply_set_class(idx, class_id=class_id)
         elif req.op == "merge":
+            target_inst = int(req.payload["target_inst"])
+            # Merge assigns the target's class to the source's points
+            # (segment_state.apply_merge) — the same "newly assign" rule as
+            # cut-inherit applies, so a frozen-class target is rejected.
+            tgt_mask = seg.instance_ids == target_inst
+            if tgt_mask.any():
+                reject_frozen_class(
+                    int(seg.class_ids[np.flatnonzero(tgt_mask)[0]]),
+                    context="merge")
             out = seg.apply_merge(
                 source_inst=int(req.payload["source_inst"]),
-                target_inst=int(req.payload["target_inst"]),
+                target_inst=target_inst,
             )
         elif req.op == "reassign":
             idx = _decode_indices_or_400(req)
+            target_class = _coerce_class_id(req.payload.get("target_class"))
+            reject_frozen_class(target_class)
             out = seg.apply_reassign(
                 idx,
                 target_inst=req.payload.get("target_inst"),
-                target_class=_coerce_class_id(req.payload.get("target_class")),
+                target_class=target_class,
             )
         else:
             raise HTTPException(400, f"unknown op: {req.op}")
@@ -219,6 +232,7 @@ def apply_shape(req: ApplyShapeRequest):
         target_class = _coerce_class_id(req.target_class)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    reject_frozen_class(target_class)
     try:
         return _apply_shape_core(seg, req.shape, req.target_inst,
                                  target_class, req.merged_from,
@@ -239,6 +253,7 @@ def centerline_apply(req: CenterlineApplyRequest):
         target_class = _coerce_class_id(req.target_class)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    reject_frozen_class(target_class)
     paths = [p.model_dump() for p in req.paths]
     shape = {"type": "tube", "paths": paths}
     return _apply_shape_core(seg, shape, req.target_inst, target_class,
@@ -295,6 +310,7 @@ def _cut_shape_core(seg, shape: dict, sources: list, protect_instances: list[int
                                  "scan_indices_b64": _b64(out["indices"].astype(np.int32, copy=False))})
         else:  # instance
             src_class = int(seg.class_ids[np.flatnonzero(membership)[0]])
+            reject_frozen_class(src_class, context="cut")
             out = seg.apply_reassign(partition, target_inst=-1, target_class=src_class,
                                      protect_instances=protect_instances)
             n_protected += out.get("n_protected", 0)

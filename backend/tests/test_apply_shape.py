@@ -6,7 +6,7 @@ def _obb_body(**over):
     body = {
         "shape": {"type": "obb", "center": [0.0, 0.0, 0.0],
                   "size": [1e7, 1e7, 1e7], "rotation": [0.0, 0.0, 0.0]},
-        "target_class": "pipe", "target_inst": -1, "merged_from": [],
+        "target_class": "elbow", "target_inst": -1, "merged_from": [],
     }
     body.update(over)
     return body
@@ -36,11 +36,11 @@ def test_apply_shape_tube_parity_with_centerline_apply(client_with_loaded_annota
               "radius": 1e6, "smooth": False}]
     r1 = client.post("/api/segment/apply-shape",
                      json={"shape": {"type": "tube", "paths": paths},
-                           "target_class": "pipe", "target_inst": -1,
+                           "target_class": "elbow", "target_inst": -1,
                            "merged_from": []})
     client.post("/api/segment/undo")  # revert before the second apply
     r2 = client.post("/api/segment/centerline-apply",
-                     json={"paths": paths, "target_class": "pipe",
+                     json={"paths": paths, "target_class": "elbow",
                            "target_inst": -1, "merged_from": []})
     assert r1.json()["n_affected"] == r2.json()["n_affected"]
 
@@ -75,7 +75,7 @@ def test_apply_shape_prism_labels_enclosed_points(client_with_loaded_annotated_s
     polygon = [[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
     r = client.post("/api/segment/apply-shape", json={
         "shape": {"type": "prism", "polygon": polygon, "y0": -1.0, "height": 1.5},
-        "target_class": "pipe", "target_inst": -1, "merged_from": [],
+        "target_class": "elbow", "target_inst": -1, "merged_from": [],
         "protect_instances": [],
     })
     assert r.status_code == 200
@@ -91,5 +91,5 @@ def test_apply_shape_prism_labels_enclosed_points(client_with_loaded_annotated_s
 def test_apply_shape_unknown_type_400(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
     r = client.post("/api/segment/apply-shape",
-                    json={"shape": {"type": "blob"}, "target_class": "pipe"})
+                    json={"shape": {"type": "blob"}, "target_class": "elbow"})
     assert r.status_code == 400

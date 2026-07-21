@@ -296,6 +296,34 @@ def _decode_indices_or_400(req: "ApplyRequest") -> np.ndarray:
         raise HTTPException(400, f"op '{req.op}' requires 'indices' (b64 Int32)")
     return np.frombuffer(base64.b64decode(req.indices), dtype=np.int32)
 
+def frozen_class_ids() -> set[int]:
+    """Class ids marked `frozen: true` in classes.yaml (display-only legacy)."""
+    if not CONFIG_PATH.exists():
+        return set()
+    with CONFIG_PATH.open() as f:
+        raw = yaml.safe_load(f) or {}
+    return {int(b["id"]) for b in (raw.get("classes") or {}).values()
+            if b.get("frozen") and "id" in b}
+
+
+def reject_frozen_class(class_id, context="assign"):
+    """422 on any attempt to newly assign a frozen (legacy) class.
+
+    Deliberately NOT called by the denoise route's internal id-6 materialize —
+    that path is exempt until phase 2 rewires it to the artifact category
+    (spec 2026-07-21 §Decisions).
+    """
+    if class_id is None:
+        return
+    cid = int(class_id)
+    if cid in frozen_class_ids():
+        raise HTTPException(422, (
+            f"class id {cid} is frozen (legacy, display-only) — "
+            f"label with a primitive class instead"
+            + ("; re-label the source instance with a primitive class first"
+               if context in ("cut", "merge") else "")))
+
+
 def _coerce_class_id(v):
     """Accept either int class id or string class name from the frontend.
     The labels palette uses string ids ('pipe', 'beam', ...); the seg

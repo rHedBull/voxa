@@ -590,15 +590,15 @@ def test_export_labels_remap_merges_classes(client_with_annotated_scene):
     r = client.post("/api/labels/export", json={
         "scene": scene_id, "session_id": session_id,
         "resolution": {"kind": "scan"},
-        "remap": [{"from": [1, 2], "to": {"id": 20, "label": "merged", "color": "#abcabc"}}],
+        "remap": [{"from": [1, 2], "to": {"id": 200, "label": "merged", "color": "#abcabc"}}],
     })
     assert r.status_code == 200, r.text
     ply_bytes, manifest = _unzip_export(r.content)
     _, rec = _parse_labeled_ply(ply_bytes)
     present = set(int(c) for c in rec["class_id"])
     assert 1 not in present and 2 not in present
-    assert 20 in present
-    assert manifest["classes"]["20"] == {"label": "merged", "color": "#abcabc"}
+    assert 200 in present
+    assert manifest["classes"]["200"] == {"label": "merged", "color": "#abcabc"}
 
 
 def test_export_labels_confirmed_only_zeros_unconfirmed(client_with_annotated_scene):

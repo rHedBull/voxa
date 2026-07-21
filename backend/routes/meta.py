@@ -50,6 +50,8 @@ def get_config():
             color=color,
             hotkey=str(body.get("key", body.get("hotkey", str(i + 1)))),
             class_id=name_to_id.get(str(cid).lower(), i),
+            group=str(body.get("group", "")),
+            frozen=bool(body.get("frozen", False)),
         ))
     return ConfigResponse(classes=classes)
 

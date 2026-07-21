@@ -1,81 +1,62 @@
 # Voxa class definitions for industrial plant scans.
 # Aligned with the canonical IDs in engine/data/lidar/classes.json.
-# Strategy: broad classes. Primary focus is `pipe`; secondary classes are
-# labeled opportunistically in the same pass. Ambiguous segments stay unlabeled.
+# Strategy: primitive-level vocabulary (eval-labeling phase 0, spec
+# 2026-07-21) — 34 assignable primitives in 8 chord groups; the old broad
+# classes are frozen legacy (display-only). Ambiguous segments stay unlabeled.
 #
 # id:    canonical numeric class id (MUST match engine/data/lidar/classes.json).
 #        Without it, ids fall back to yaml position — reordering then corrupts labels.
 # color: hex string OR [r, g, b] floats 0-1.
 # key:   keyboard shortcut for fast class assignment.
+# group: chord group (spec 2026-07-21); frozen: display-only legacy — never assignable.
 
 classes:
-  pipe:
-    id: 0
-    label: Pipe
-    color: "#22c55e"
-    key: "1"
-  fitting:
-    id: 5
-    label: Fitting
-    color: "#d4a017"
-    key: "2"
-  tank:
-    id: 1
-    label: Tank
-    color: "#ef4444"
-    key: "3"
-  equipment:
-    id: 2
-    label: Equipment
-    color: "#5b8def"
-    key: "4"
-  structural:
-    id: 3
-    label: Structural
-    color: "#f5a524"
-    key: "5"
-  unknown:
-    id: 6
-    label: Exclude / Review
-    color: "#6b7280"
-    key: "0"
-  wall:
-    id: 7
-    label: Wall
-    color: "#8b5cf6"
-    key: "6"
-  floor:
-    id: 8
-    label: Floor
-    color: "#06b6d4"
-    key: "7"
-  ceiling:
-    id: 9
-    label: Ceiling
-    color: "#ec4899"
-    key: "8"
-  beam:
-    id: 10
-    label: Beam
-    color: "#78716c"
-    key: "9"
-  pillar:
-    id: 11
-    label: Pillar
-    color: "#fbbf24"
-    key: "q"
-  stair:
-    id: 12
-    label: Stair
-    color: "#14b8a6"
-    key: "w"
-  cable:
-    id: 13
-    label: Cable
-    color: "#facc15"
-    key: "e"
-  other:
-    id: 14
-    label: Other
-    color: "#94a3b8"
-    key: "r"
+  # ── pipe-network (chord group 1) ─────────────────────────────
+  pipe-straight:   { id: 15, label: Pipe straight,   color: "#22c55e", key: "1", group: pipe-network }
+  elbow:           { id: 16, label: Elbow,           color: "#16a34a", key: "2", group: pipe-network }
+  tee:             { id: 17, label: Tee,             color: "#4ade80", key: "3", group: pipe-network }
+  reducer:         { id: 18, label: Reducer,         color: "#86efac", key: "4", group: pipe-network }
+  flange:          { id: 19, label: Flange,          color: "#15803d", key: "5", group: pipe-network }
+  valve:           { id: 20, label: Valve,           color: "#34d399", key: "6", group: pipe-network }
+  cap:             { id: 21, label: Cap,             color: "#a7f3d0", key: "7", group: pipe-network }
+  # ── duct (chord group 2) ─────────────────────────────────────
+  duct-straight:   { id: 22, label: Duct straight,   color: "#14b8a6", key: "1", group: duct }
+  duct-fitting:    { id: 23, label: Duct fitting,    color: "#0d9488", key: "2", group: duct }
+  diffuser:        { id: 24, label: Diffuser,        color: "#5eead4", key: "3", group: duct }
+  # ── electrical (chord group 3) ───────────────────────────────
+  cable-tray:      { id: 25, label: Cable tray,      color: "#facc15", key: "1", group: electrical }
+  conduit:         { id: 26, label: Conduit,         color: "#eab308", key: "2", group: electrical }
+  cable-bundle:    { id: 27, label: Cable bundle,    color: "#fde047", key: "3", group: electrical }
+  # ── plant-units (chord group 4) ──────────────────────────────
+  tank:            { id: 1,  label: Tank,            color: "#ef4444", key: "1", group: plant-units }
+  equipment:       { id: 2,  label: Equipment,       color: "#5b8def", key: "2", group: plant-units }
+  pump:            { id: 28, label: Pump,            color: "#dc2626", key: "3", group: plant-units }
+  motor:           { id: 29, label: Motor,           color: "#f87171", key: "4", group: plant-units }
+  vessel:          { id: 30, label: Vessel,          color: "#b91c1c", key: "5", group: plant-units }
+  heat-exchanger:  { id: 31, label: Heat exchanger,  color: "#fb7185", key: "6", group: plant-units }
+  cabinet:         { id: 32, label: Cabinet,         color: "#60a5fa", key: "7", group: plant-units }
+  # ── attachments (chord group 5) ──────────────────────────────
+  support:         { id: 33, label: Support,         color: "#a855f7", key: "1", group: attachments }
+  instrument:      { id: 34, label: Instrument,      color: "#c084fc", key: "2", group: attachments }
+  # ── structure (chord group 6) ────────────────────────────────
+  beam:            { id: 10, label: Beam,            color: "#f5a524", key: "1", group: structure }
+  pillar:          { id: 11, label: Pillar,          color: "#fb923c", key: "2", group: structure }
+  stair:           { id: 12, label: Stair flight,    color: "#fdba74", key: "3", group: structure }
+  railing:         { id: 35, label: Railing,         color: "#f97316", key: "4", group: structure }
+  door:            { id: 36, label: Door,            color: "#c2410c", key: "5", group: structure }
+  # ── other (chord group 7) ────────────────────────────────────
+  other:           { id: 14, label: Other thing,     color: "#e2e8f0", key: "1", group: other }
+  # ── stuff (chord group 8) ────────────────────────────────────
+  wall:            { id: 7,  label: Wall,            color: "#64748b", key: "1", group: stuff }
+  floor:           { id: 8,  label: Floor,           color: "#475569", key: "2", group: stuff }
+  ceiling:         { id: 9,  label: Ceiling,         color: "#94a3b8", key: "3", group: stuff }
+  structure-region: { id: 37, label: Structure region, color: "#6b7280", key: "4", group: stuff }
+  mep-region:      { id: 38, label: MEP region,      color: "#71717a", key: "5", group: stuff }
+  clutter:         { id: 39, label: Clutter,         color: "#57534e", key: "6", group: stuff }
+  # ── legacy (frozen, display-only — no chord) ─────────────────
+  pipe:            { id: 0,  label: Pipe (legacy),       color: "#4d7c5f", key: "", group: legacy, frozen: true }
+  structural:      { id: 3,  label: Structural (legacy), color: "#8a6d3b", key: "", group: legacy, frozen: true }
+  double:          { id: 4,  label: Double (archived),   color: "#6b7280", key: "", group: legacy, frozen: true }
+  fitting:         { id: 5,  label: Fitting (legacy),    color: "#8a7a4a", key: "", group: legacy, frozen: true }
+  unknown:         { id: 6,  label: "Exclude / Review (legacy)", color: "#6b7280", key: "", group: legacy, frozen: true }
+  cable:           { id: 13, label: Cable (legacy),      color: "#8a833b", key: "", group: legacy, frozen: true }

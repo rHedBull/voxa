@@ -20,6 +20,8 @@ import ToolRail from './tool-rail.jsx';
 import ToolOptions from './tool-options.jsx';
 import { ContextMenu } from './context-menu.jsx';
 import { ClassPickerModal } from './class-picker.jsx';
+import { chordStep, CLASS_GROUPS } from './class-chords.js';
+import { ChordOverlay } from './chord-overlay.jsx';
 import { cutEligibility } from './cut-eligibility.js';
 import { removeOutliersEligibility } from './outlier-eligibility.js';
 import { fitEligibility } from './fit-eligibility.js';
@@ -42,7 +44,10 @@ const SAM_SELECTED_COLOR = new THREE.Color(0xfacc15).toArray();
 
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession, sessionLoading }) {
   const meshPopupRef = useRefLabel(null);
-  const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
+  // Default to the first ASSIGNABLE class — 'unknown' (the old fallback) is
+  // frozen now, and a frozen default would 422 on the first apply.
+  const [activeClass, setActiveClass] = useStateLabel(
+    classes.find((c) => !c.frozen)?.id || classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [instCutMenu, setInstCutMenu] = useStateLabel(null); // {x, y, instId} | null
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -134,10 +139,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     );
   }, [showDiff, segState, prelabelRef]);
 
-  // Keep activeClass valid as the class list streams in.
+  // Keep activeClass valid as the class list streams in — and never let it
+  // rest on a frozen legacy class (the pre-config fallback 'unknown' is
+  // frozen now; a frozen active class would 422 on the first apply).
   useEffectLabel(() => {
-    if (classes.length && !classes.find((c) => c.id === activeClass)) {
-      setActiveClass(classes[0].id);
+    if (!classes.length) return;
+    const cur = classes.find((c) => c.id === activeClass);
+    if (!cur || cur.frozen) {
+      setActiveClass((classes.find((c) => !c.frozen) || classes[0]).id);
     }
   }, [classes, activeClass]);
 
@@ -779,9 +788,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       ],
     },
     {
-      title: 'Class assignment',
+      title: 'Class assignment (two-stroke chords)',
       items: classes.length
-        ? classes.map((c) => ({ keys: [c.hotkey], desc: c.label }))
+        ? CLASS_GROUPS.filter((g) => g.key).map((g) => (
+            { keys: [g.key, '…'], desc: `${g.label} (then member key)` }))
         : [{ keys: ['—'], desc: 'No classes configured' }],
     },
     {
@@ -828,6 +838,39 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const updateInstance = (id, patch) => {
     onChange(instances.map((i) => i.id === id ? { ...i, ...patch } : i));
+  };
+  // Relabel an unconfirmed instance in place. For pointsets the points are
+  // reassigned server-side (same segId, so identity/undo survive) — unlike
+  // the old class-pills path, which changed only the row metadata and left
+  // the working arrays on the old class. Legacy cuboids (no per-point
+  // membership) update metadata only; they are display-only.
+  const relabelInstance = async (inst, clsDef) => {
+    if (!inst || inst.confirmed || !clsDef) return;
+    if (inst.kind === 'pointset' && Number.isFinite(inst.segId) && segState) {
+      const instArr = segState.instanceFull;
+      const idx = [];
+      for (let p = 0; p < instArr.length; p++) {
+        if (instArr[p] === inst.segId) idx.push(p);
+      }
+      if (idx.length) {
+        let r;
+        try {
+          r = await VoxaAPI.segApply('reassign', {
+            indices: new Int32Array(idx),
+            payload: { target_inst: inst.segId, target_class: clsDef.id },
+          });
+        } catch (err) {
+          console.error('relabel reassign failed:', err);
+          return;
+        }
+        setSegState((s) => s ? applyDelta(s, {
+          indices: r.indices,
+          after_class: r.afterClass,
+          after_instance: r.afterInstance,
+        }) : s);
+      }
+    }
+    updateInstance(inst.id, { cls: clsDef.id, color: clsDef.color });
   };
   const deleteInstance = (id) => {
     onChange(instances.filter((i) => i.id !== id));
@@ -897,6 +940,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // to a class choice instead of using activeClass; pressing the class
   // hotkey picks that class and creates the (unconfirmed) pointset.
   const [classPickerOpen, setClassPickerOpen] = useStateLabel(false);
+  // Instance id whose class is being re-picked via the same modal (the
+  // Instances-panel "Relabel" affordance). null = closed.
+  const [relabelTarget, setRelabelTarget] = useStateLabel(null);
 
   const confirmSegmentSelection = useCallbackLabel(async (clsDef, opts) => {
     const targetCls = clsDef || activeClassDef;
@@ -1195,7 +1241,21 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     setSelBox((b) => (b ? { ...b, center: fitted.center, size: fitted.size } : b));
   }, [selBox, activeClass, activeClassDef]);
 
-  // Hotkeys: class key applies/labels the active selection, ⌫ delete, F frame,
+  // Two-stroke class chord state: null | a CLASS_GROUPS entry picked by the
+  // first stroke (class-chords.js). Reset on tool switch so a stale pending
+  // group can't linger.
+  const [pendingGroup, setPendingGroup] = useStateLabel(null);
+  useEffectLabel(() => { setPendingGroup(null); }, [activeTool]);
+  // Class-rail groups are collapsed by default; clicking a header toggles
+  // its member list open. (Set of open group ids; legacy included.)
+  const [openGroups, setOpenGroups] = useStateLabel(() => new Set());
+  const toggleGroup = (gid) => setOpenGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(gid)) next.delete(gid); else next.add(gid);
+    return next;
+  });
+
+  // Hotkeys: class chords apply/label the active selection, ⌫ delete, F frame,
   // G/R/Y transform the box, ⌘S save. In walk mode the viewer owns WASD/QE.
   useEffectLabel(() => {
     const onKey = (e) => {
@@ -1225,27 +1285,31 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       // In walk mode the viewer owns WASD/QE — bail on those keys so we don't
       // double-fire (several classes also bind w/e/r/q as hotkeys).
       if (navMode === 'walk' && /^[wasdqeWASDQE]$/.test(e.key)) return;
-      // Class hotkey. Runs before the Box-only gate so it works for a preseg
-      // selection in any tool. With an active tool selection it applies+labels
-      // (honoring auto-confirm inside confirmSegmentSelection / applyBox);
-      // with no selection it just sets the active class.
-      const cls = classes.find((c) => c.hotkey === e.key);
-      if (cls) {
+      // Two-stroke class chord (class-chords.js). Runs before the Box-only
+      // gate so it works for a preseg selection in any tool. The second
+      // stroke applies+labels through the same dispatch the old single-key
+      // hotkeys used (honoring auto-confirm inside confirmSegmentSelection /
+      // applyBox); with no selection it just sets the active class.
+      const step = chordStep(pendingGroup, e.key, classes);
+      if (step.type === 'group') { e.preventDefault(); setPendingGroup(step.group); return; }
+      if (step.type === 'cancel') { e.preventDefault(); setPendingGroup(null); return; }
+      if (step.type === 'class') {
+        e.preventDefault();
+        setPendingGroup(null);
+        const cls = step.cls;
         if ((activeTool === 'sam' || activeTool === 'presegment')
           && segState && segState.samSelection.size > 0) {
-          e.preventDefault();
           confirmSamSelection(cls);
         } else if (segState && segState.selection.size > 0) {
-          e.preventDefault();
           confirmSegmentSelection(cls);
         } else if (activeTool === 'box' && selBox) {
-          e.preventDefault();
           applyBox(cls);
         } else {
           setActiveClass(cls.id);
         }
         return;
       }
+      // step.type === 'pass' → fall through to the non-class hotkeys below.
       // Frame + delete work on any selected instance, in any tool (the help
       // text advertises them as tool-agnostic).
       if (e.key === 'f' || e.key === 'F') {
@@ -1269,7 +1333,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line
-  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, confirmSamSelection, applyBox, fastMode, subModeOwnsInput]);
+  }, [classes, selected, isLocked, instances, activeTool, navMode, segState, selBox, confirmSegmentSelection, confirmSamSelection, applyBox, fastMode, subModeOwnsInput, pendingGroup]);
 
   return (
     <div className="mode-root label">
@@ -1283,6 +1347,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       {fastMode && (
         <FastLabelHUD queue={fastQueue} pos={fastIdx} classes={classes} />
       )}
+      <ChordOverlay group={pendingGroup} classes={classes} />
       {fastPendingCls && fastSeg && (
         <FastConfirmModal
           seg={fastSeg}
@@ -1305,6 +1370,18 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onClose={() => setClassPickerOpen(false)}
         />
       )}
+      {relabelTarget && (() => {
+        const inst = instances.find((i) => i.id === relabelTarget);
+        if (!inst) return null;
+        return (
+          <ClassPickerModal
+            classes={classes}
+            counts={counts}
+            onPick={(cls) => { setRelabelTarget(null); relabelInstance(inst, cls); }}
+            onClose={() => setRelabelTarget(null)}
+          />
+        );
+      })()}
       {exportOpen && cloud && (
         <ExportWizard
           scene={cloud.scene}
@@ -1371,21 +1448,54 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <span className="badge-soft">{instances.length}</span>
         </div>
         <div className="class-list">
-          {classes.map((c) => {
-            const hidden = hiddenClasses.has(c.id);
-            return (
-              <div key={c.id}
-                className={'class-row' + (activeClass === c.id ? ' active' : '') + (hidden ? ' hidden' : '')}
-                onClick={() => setActiveClass(c.id)}>
-                <span className="class-swatch" style={{ background: c.color }} />
-                <span className="class-name">{c.label}</span>
-                <span className="class-count">{counts[c.id] || 0}</span>
-                <button className="class-eye" onClick={(e) => { e.stopPropagation(); toggleClass(c.id); }}
-                  title={hidden ? 'Show' : 'Hide'}>{hidden ? '◌' : '●'}</button>
-                <span className="class-hk">{c.hotkey}</span>
-              </div>
-            );
-          })}
+          {(() => {
+            // Grouped render: chord groups in order, then a trailing section
+            // for any class with an unknown/absent group (defaults path).
+            // Legacy is collapsed by default; frozen rows are display-only
+            // (visibility + counts work, activation doesn't).
+            const known = new Set(CLASS_GROUPS.map((g) => g.id));
+            const ungrouped = classes.filter((c) => !known.has(c.group));
+            const sections = CLASS_GROUPS
+              .map((g) => ({ g, members: classes.filter((c) => c.group === g.id) }))
+              .filter(({ members }) => members.length > 0);
+            if (ungrouped.length) sections.push({ g: { id: '_other', key: null, label: 'Ungrouped' }, members: ungrouped });
+            const row = (c) => {
+              const hidden = hiddenClasses.has(c.id);
+              return (
+                <div key={c.id}
+                  className={'class-row' + (activeClass === c.id ? ' active' : '') + (hidden ? ' hidden' : '') + (c.frozen ? ' frozen' : '')}
+                  onClick={() => { if (!c.frozen) setActiveClass(c.id); }}
+                  title={c.frozen ? 'Legacy class — display-only, no new labels' : undefined}>
+                  <span className="class-swatch" style={{ background: c.color }} />
+                  <span className="class-name">{c.label}</span>
+                  <span className="class-count">{counts[c.id] || 0}</span>
+                  <button className="class-eye" onClick={(e) => { e.stopPropagation(); toggleClass(c.id); }}
+                    title={hidden ? 'Show' : 'Hide'}>{hidden ? '◌' : '●'}</button>
+                  <span className="class-hk">{c.frozen ? '—' : c.hotkey}</span>
+                </div>
+              );
+            };
+            return sections.map(({ g, members }) => {
+              const open = openGroups.has(g.id);
+              const hasActive = members.some((c) => c.id === activeClass);
+              return (
+                <div key={g.id}>
+                  <div className={'class-group-hd toggle' + (g.id === 'legacy' ? ' legacy' : '')}
+                    onClick={() => toggleGroup(g.id)}>
+                    {open ? '▾' : '▸'} {g.key ? `${g.key} · ` : ''}{g.label}
+                    {/* Active-class swatch stays visible while the group is
+                        collapsed, so the current class is never invisible. */}
+                    {!open && hasActive && (
+                      <span className="class-swatch hd-active"
+                        style={{ background: members.find((c) => c.id === activeClass)?.color }} />
+                    )}
+                    <span className="class-group-n">{members.length}</span>
+                  </div>
+                  {open && members.map(row)}
+                </div>
+              );
+            });
+          })()}
         </div>
 
         <ToolOptions
@@ -1659,18 +1769,61 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                     </div>
                     <div className="ins-row">
                       <label>Class</label>
-                      <div className="class-pills">
-                        {classes.map((c) => (
-                          <button key={c.id}
-                            className={'class-pill' + (c.id === inst.cls ? ' active' : '')}
-                            disabled={inst.confirmed}
-                            onClick={() => updateInstance(inst.id, { cls: c.id, color: c.color })}
-                            title={`${c.label}${c.hotkey ? `  (${c.hotkey})` : ''}`}>
-                            <span className="class-swatch" style={{ background: c.color }} />
-                            <span>{c.label}</span>
-                          </button>
-                        ))}
+                      {/* Current class + the shared grouped picker — 34
+                          inline pills don't scale, and the popup path also
+                          reassigns the points server-side (relabelInstance),
+                          which the old pills never did. */}
+                      <div className="ins-class-current">
+                        <span className="class-swatch" style={{ background: inst.color }} />
+                        <span>{classes.find((c) => c.id === inst.cls)?.label || inst.cls}</span>
+                        <button className="ghost-btn"
+                          disabled={inst.confirmed}
+                          onClick={() => setRelabelTarget(inst.id)}>
+                          ⇄ Relabel…
+                        </button>
                       </div>
+                    </div>
+                    {/* Eval-labeling phase-0 instance metadata (spec §4):
+                        inert pass-through persisted via the normal
+                        annotation autosave (updateInstance). */}
+                    <div className="ins-row">
+                      <label>Flags</label>
+                      <div className="ins-flags">
+                        {['boundary_uncertain', 'incomplete'].map((f) => (
+                          <label key={f} className="ins-check">
+                            <input type="checkbox"
+                              checked={(inst.flags || []).includes(f)}
+                              disabled={inst.confirmed}
+                              onChange={(e) => {
+                                const cur = new Set(inst.flags || []);
+                                if (e.target.checked) cur.add(f); else cur.delete(f);
+                                updateInstance(inst.id, { flags: [...cur] });
+                              }} />
+                            {f.replace('_', ' ')}
+                          </label>
+                        ))}
+                        <label className="ins-check">
+                          <input type="checkbox"
+                            checked={inst.insulated === true}
+                            disabled={inst.confirmed}
+                            onChange={(e) => updateInstance(inst.id, { insulated: e.target.checked })} />
+                          insulated
+                        </label>
+                      </div>
+                    </div>
+                    <div className="ins-row">
+                      <label>Subtype</label>
+                      <input className="ins-input" placeholder="e.g. ball valve"
+                        value={inst.subtype || ''}
+                        disabled={inst.confirmed}
+                        onChange={(e) => updateInstance(inst.id, { subtype: e.target.value || null })} />
+                    </div>
+                    <div className="ins-row">
+                      <label>Note</label>
+                      <textarea className="ins-input ins-note" rows={2}
+                        value={inst.note || ''}
+                        disabled={inst.confirmed}
+                        onChange={(e) => updateInstance(inst.id, { note: e.target.value })} />
                     </div>
                     <div className="ins-actions">
                       <button className="ghost-btn" onClick={() => focusInstance(inst)}>◎ Focus</button>
@@ -1704,6 +1857,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             list: 'instance',
             isSelected: instCutMenu.instId === selectedId,
             confirmed: !!target?.confirmed,
+            classFrozen: !!classes.find((c) => c.id === target?.cls)?.frozen,
           });
           return (
             <ContextMenu
@@ -1713,7 +1867,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               items={[{
                 label: elig.reason === 'confirmed'
                   ? 'Edit selection… (un-confirm first)'
-                  : 'Edit selection…',
+                  : elig.reason === 'frozen-class'
+                    ? 'Edit selection… (legacy class — re-label with a primitive first)'
+                    : 'Edit selection…',
                 disabled: !elig.eligible,
                 onSelect: () => {
                   if (!target || !Number.isFinite(target.segId)) return;

@@ -8,6 +8,8 @@ import * as THREE from 'three';
 import { evtToNdc } from './viewer.jsx';
 import { VoxaAPI } from './api.js';
 import { applyDelta } from './segment-state.js';
+import { chordStep } from './class-chords.js';
+import { ChordOverlay } from './chord-overlay.jsx';
 import {
   initDrawState, addPoint, movePoint, removeLastPoint, endActive,
   selectPath, clearSelection, selectPoint, extendFromPoint, deleteSelectedPoint,
@@ -19,14 +21,19 @@ import {
 // LabelMode global keydown). Class identity travels as the canonical
 // numeric class_id (classes.yaml `id:`), never the array position.
 export function DrawKeys({ active, classes, onKey }) {
+  // Two-stroke chord state (class-chords.js). A pending group makes Esc
+  // cancel the chord, not the draw gesture — so chordStep runs first.
+  const [pendingGroup, setPendingGroup] = useState(null);
   useEffect(() => {
-    if (!active) return undefined;
+    if (!active) { setPendingGroup(null); return undefined; }
     const handler = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;   // leave Ctrl+S/Z/click alone
-      const cls = classes.find((c) => c.hotkey === e.key);
+      const step = chordStep(pendingGroup, e.key, classes);
       let handled = true;
-      if (cls) onKey({ type: 'class', classId: cls.class_id });
+      if (step.type === 'group') setPendingGroup(step.group);
+      else if (step.type === 'class') { setPendingGroup(null); onKey({ type: 'class', classId: step.cls.class_id }); }
+      else if (pendingGroup) setPendingGroup(null);   // cancel: Esc/invalid second key
       else if (e.key === 'Enter') onKey({ type: 'apply' });
       else if (e.key === 'Escape') onKey({ type: 'escape' });
       else if (e.key === 'Backspace' || e.key === 'Delete') onKey({ type: 'backspace' });
@@ -39,8 +46,8 @@ export function DrawKeys({ active, classes, onKey }) {
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [active, classes, onKey]);
-  return null;
+  }, [active, classes, onKey, pendingGroup]);
+  return pendingGroup ? <ChordOverlay group={pendingGroup} classes={classes} /> : null;
 }
 
 function DrawHUD({ state, toast }) {
