@@ -158,6 +158,8 @@ this by disabling the contradiction (§1 step 2).
     "sample_spacing_p50_m": 0.021,
     "sample_spacing_p90_m": 0.058,
     "semantic_boundary_uncertainty_m": 0.058,
+    "loa": "LOA10",
+    "method": { "sample_spacing": "d_i = min_{j != i} ||x_i - x_j||_2 ...", "percentiles": "...", "boundary_uncertainty": "...", "loa": "..." },
     "note": "Semantic (preseg/legacy) boundaries are accurate to ~one labeling-cloud sample spacing (reported as p90 to reflect non-uniform LiDAR sampling) and are set by labeling density, NOT the export resolution. Box/pipe (volumetric) boundaries are exact at any density."
   },
   "source": { "scan": "smart_ais_navvis", "session": "<id>", "exported_at": "<iso8601>" },
@@ -172,11 +174,23 @@ The reported accuracy is a property of the **labeling** cloud (`scan.ply`), not
 the export resolution — surfaced both in the wizard Review step and in
 `manifest.json::accuracy`.
 
-- **Metric:** nearest-neighbor distance among `scan.ply` points (its true
-  sampling pitch). Report **both p50 and p90** and use **p90** as
+- **Metric (exact):** per-point nearest-neighbor spacing
+  `d_i = min_{j != i} ||x_i - x_j||_2` over the `scan.ply` positions;
+  `p50`/`p90` are the 50th/90th percentiles of `{d_i}` (`numpy.percentile`,
+  linear interpolation) over a deterministic random subsample of
+  `min(N, 100000)` query points (`default_rng(0)`), with the KD-tree built
+  over all `N` points. Report **both p50 and p90** and use **p90** as
   `semantic_boundary_uncertainty_m` — walkthrough LiDAR (NavVis/Matterport) is
   non-uniformly sampled (dense near the path, sparse far away), so a p50-only
-  figure understates worst-case boundary trust in sparse regions.
+  figure understates worst-case boundary trust in sparse regions. A drawn
+  boundary snaps to the nearest sample, so its position error is at most ~one
+  sample spacing.
+- **LOA band:** `accuracy.loa` is the finest USIBD LOA Spec v3.0 band whose
+  upper tolerance is ≥ p90 (LOA50 ≤ 1 mm < LOA40 ≤ 5 mm < LOA30 ≤ 15 mm <
+  LOA20 ≤ 50 mm < LOA10) — the standard AEC vocabulary for the same claim,
+  computed by `labeling.materialize.loa_band`. The full computation is
+  embedded machine-readably in `accuracy.method` so the manifest is
+  self-describing.
 - **Compute:** a `cKDTree(scan.ply)` query for the nearest non-self neighbor over
   a bounded random subsample (e.g. 100k points) for speed. **Build it (and cache
   per-scan) independently of regime** — regime A ("scan"/"subsample") builds no
@@ -186,10 +200,11 @@ the export resolution — surfaced both in the wizard Review step and in
 - **Framing (must be exact in the copy):** this uncertainty applies to
   **semantic (preseg/legacy) labels only**; **box/pipe (volumetric) labels are
   exact** at any density; and export resolution does **not** improve it. The
-  wizard line: *"Semantic boundary accuracy ±~2 cm (set by labeling density;
-  unchanged by export resolution). Box/pipe boundaries: exact."* — the "±~2 cm"
-  is **illustrative**; render the actual computed p90 for the loaded scan, never a
-  hardcoded literal.
+  wizard line: *"Semantic boundary accuracy LOA30 — ±~2 cm (p90 sample
+  spacing; p50 0.9 cm; set by labeling density, unchanged by export
+  resolution). Box/pipe boundaries: exact."* — the LOA band and "±~2 cm"
+  are **illustrative**; render the actual computed values for the loaded
+  scan, never hardcoded literals.
 
 ### 5. Zip streaming + large-file safety
 

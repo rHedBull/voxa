@@ -280,7 +280,8 @@ def materialize(ctx: MaterializeCtx, resolution: dict):
         raise ValueError(f"unknown resolution kind: {kind!r}")
 
     p50, p90 = raw_sample_spacing(ctx.scan_pos)
-    meta = {"accuracy": {"p50": p50, "p90": p90}, "points": len(positions)}
+    meta = {"accuracy": {"p50": p50, "p90": p90, "loa": loa_band(p90)},
+            "points": len(positions)}
     return positions, colors, class_ids, instance_ids, meta
 
 
@@ -297,3 +298,18 @@ def raw_sample_spacing(scan_pos, sample=100_000, seed=0):
     d, _ = cKDTree(scan_pos).query(q, k=2)      # k=2: nearest non-self
     nn = d[:, 1]
     return float(np.percentile(nn, 50)), float(np.percentile(nn, 90))
+
+
+# USIBD LOA Spec v3.0 accuracy bands: (name, upper tolerance in meters),
+# finest first, boundaries inclusive.
+LOA_BANDS = (("LOA50", 0.001), ("LOA40", 0.005), ("LOA30", 0.015), ("LOA20", 0.05))
+
+
+def loa_band(spacing_m):
+    """USIBD LOA band whose tolerance range contains `spacing_m`. Banded on the
+    p90 sample spacing: a drawn boundary is off by at most ~one spacing, and
+    p90 covers the sparse areas where boundaries are worst."""
+    for name, upper in LOA_BANDS:
+        if spacing_m <= upper:
+            return name
+    return "LOA10"

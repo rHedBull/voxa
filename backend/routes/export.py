@@ -22,6 +22,7 @@ from labeling.materialize import (
     materialize_downsample,
     materialize_raw,
     raw_sample_spacing,
+    loa_band,
 )
 from labeling.centerline import load_centerlines
 from labeling.export_pipeline import (
@@ -179,7 +180,7 @@ def labels_accuracy(scene: str, session_id: str) -> dict:
     if pc is None:
         raise HTTPException(409, "no scene loaded")
     p50, p90 = raw_sample_spacing(pc.points)
-    return {"p50": p50, "p90": p90}
+    return {"p50": p50, "p90": p90, "loa": loa_band(p90)}
 
 
 @router.post("/api/labels/export")
