@@ -44,7 +44,9 @@ def test_validation_and_404(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
     bad = {"polygon": [[0, 0], [1, 0]], "y0": 0.0, "height": 1.0}
     assert client.post("/api/regions", json={"prism": bad}).status_code == 422
-    assert client.patch("/api/regions/99", json={"name": "x"}).status_code == 404
+    r404 = client.patch("/api/regions/99", json={"name": "x"})
+    assert r404.status_code == 404
+    assert r404.json()["detail"] == "no region with id 99"   # no repr-quoting
     assert client.delete("/api/regions/99").status_code == 404
     client.post("/api/regions", json={"prism": PRISM})
     assert client.patch("/api/regions/1", json={}).status_code == 422   # empty patch

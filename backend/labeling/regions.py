@@ -34,8 +34,10 @@ class RegionError(ValueError):
     """Invalid input or a locked/gated operation — routes map this to 422."""
 
 
-class RegionNotFound(KeyError):
-    """Unknown region id — routes map this to 404."""
+class RegionNotFound(Exception):
+    """Unknown region id — routes map this to 404. (Not a KeyError:
+    KeyError.__str__ repr-quotes the message, which would leak literal
+    quotes into the HTTP detail.)"""
 
 
 def empty_doc() -> dict:
