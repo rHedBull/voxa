@@ -9,9 +9,10 @@
 The eval-grade labeling spec
 (`engine/research/fable/docs/superpowers/specs/2026-07-20-eval-labeling-design.md`,
 "Tooling delta — Voxa", phase 0) requires labeling at the **primitive level**:
-~30 fine-grained classes organized in groups (pipe network, duct, electrical,
-plant units, attachments, structure, stuff), plus per-instance metadata
-(`flags[]`, `subtype`, `insulated`, `note`). Voxa today has 15 broad classes
+fine-grained classes organized in groups (pipe network, duct, electrical,
+plant units, attachments, structure, catch-all, stuff), plus per-instance
+metadata (`flags[]`, `subtype`, `insulated`, `note`) — **34 assignable
+classes** in total (25 new + 9 reused). Voxa today has 15 broad classes
 (v6), single-key hotkeys, and no instance metadata beyond label/class/confirmed.
 
 Phase 0 is deliberately the smallest slice: it unblocks labeling in the new
@@ -34,6 +35,12 @@ separate efforts.
 
 ## Non-goals
 
+- **Canonical labeling-cloud import is split out as phase 0b** (decided
+  2026-07-21). The parent spec's phase-0 bullet also includes scene import
+  producing the canonical labeling cloud (dense areas capped at 5 mm spacing,
+  sparse kept native, ~100M-point clouds possible) plus the session-scale
+  performance check. That gets its own spec→plan cycle; this effort ships
+  vocabulary + metadata + freeze on existing scan.ply clouds.
 - No point-category axis, no eval regions, no invariants/manifest (phases 1–3).
 - No viewport rendering of flags/insulated (metadata is inspector-only).
 - No migration of existing GT — old labels keep their ids; `collapse()` back
@@ -84,20 +91,27 @@ classes in phase 0 — region semantics arrive with phases 1–2.
 
 The updated `classes.json` is committed in `engine/data/lidar` (data repo);
 voxa's `config/classes.yaml` is rewritten to mirror it. A backend test loads
-both and asserts id/name agreement so they cannot drift.
+both and asserts id/name agreement so they cannot drift; it **skips with an
+explicit reason** when the lidar root is absent (CI / other checkouts), since
+the canonical file lives outside the voxa repo.
 
 ### 2. Config format + `/api/config`
 
 Each `classes.yaml` entry gains two optional fields:
 
 - `group:` one of `pipe-network | duct | electrical | plant-units |
-  attachments | structure | stuff | legacy`.
+  attachments | structure | other | stuff | legacy`. The reused `other`
+  (id 14, the parent spec's "catch-all thing" group) is the sole member of
+  `other`. **Every frozen class carries `group: legacy`** — including
+  `unknown` (6) and `double` (4), which are frozen-by-decision rather than
+  superseded.
 - `frozen: true` — display-only (render + counts + visibility toggles, never
   assignable).
 
 `key:` becomes the **within-group** chord key. Group order and group chord
-keys (`1`–`7`) are fixed in one frontend constant (`label-tools.js` or a new
-`class-groups.js`), not per-entry config. `/api/config` passes `group`/`frozen`
+keys (`1`–`8`: pipe-network, duct, electrical, plant-units, attachments,
+structure, other, stuff; legacy has no chord) are fixed in one frontend
+constant (`label-tools.js` or a new `class-groups.js`), not per-entry config. `/api/config` passes `group`/`frozen`
 through additively — Inspect/Compare and legacy readers see a superset and are
 unaffected. Colors are assigned in per-group hue families (pipe-network greens,
 duct teals, electrical yellows, plant-units blues/reds, attachments purples,
@@ -109,7 +123,7 @@ legible at ~30 active classes.
 - **Left-rail class list** renders grouped under collapsible headers. The
   **Legacy** group is collapsed by default, entries greyed with a `frozen`
   affordance; their visibility toggles and per-class counts still work.
-- **Chords:** first keystroke `1`–`7` selects a group and shows a transient
+- **Chords:** first keystroke `1`–`8` selects a group and shows a transient
   overlay listing the group's members with their second keys; the second
   keystroke classifies through the exact same shared apply pipeline the
   current single-key hotkeys use (so rapid-preseg classify = two keystrokes).
@@ -139,14 +153,26 @@ is untouched).
 ### 5. Enforcement (write-side freeze)
 
 Frontend omission alone cannot guarantee "no new legacy labels", so the
-backend validates: every class-assignment endpoint — `apply-shape`,
-`reassign`, `centerline-apply`, the cut-confirm and SAM-confirm paths —
-rejects a frozen `class_id` with **422** and a message naming the class and
-pointing at the primitive replacement group. The frozen set is derived from
-the config (`frozen: true`), not hardcoded. This implements the eval-labeling
-spec's loader-invariant 4 ("no new GT contains ids 4 or 6") at the write side,
-plus the broader phase-0 freeze. The denoise route's internal id-6 materialize
-is deliberately outside the guard (see Decisions).
+backend validates at the class-carrying request models: any request that
+assigns a `class_id` (`ApplyShapeRequest`, the reassign path,
+`CenterlineApplyRequest`, and the instance-cut partition's inherited class —
+the implementation plan verifies the actual entry points; SAM-confirm and
+cut-confirm classify through these shared paths, they are not separate
+endpoints) rejects a frozen `class_id` with **422** and a message naming the
+class and pointing at the primitive replacement group. The frozen set is
+derived from the config (`frozen: true`), not hardcoded. This implements the
+eval-labeling spec's loader-invariant 4 ("no new GT contains ids 4 or 6") at
+the write side, plus the broader phase-0 freeze. The denoise route's internal
+id-6 materialize is deliberately outside the guard (see Decisions).
+
+**Freeze × existing legacy instances:** operations that would *newly assign*
+a frozen class to points are blocked even when the class comes from an
+existing instance — cutting a legacy-class instance (cut auto-inherits the
+source class) and re-applying a legacy-class box both hit the 422; the
+context-menu items are additionally disabled client-side with a tooltip
+("legacy class — re-label with a primitive first"). This is deliberate strict
+behavior, not a bug: the escape hatch is re-labeling the instance with a
+primitive class first.
 
 ### 6. Testing
 
