@@ -1742,15 +1742,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                       focusInstance(inst);
                     }}
                     title="Focus camera on this instance">◎</button>
-                  {!inst.confirmed && (
-                    <button className="inst-edit-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedId(inst.id);
-                        setRelabelTarget(inst.id);
-                      }}
-                      title="Relabel (pick a new class)">⇄</button>
-                  )}
                   <button className="inst-edit-btn"
                     onClick={(e) => {
                       e.stopPropagation();
