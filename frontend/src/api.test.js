@@ -450,6 +450,27 @@ describe('centerline API', () => {
   });
 });
 
+describe('VoxaAPI regions', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('regionPatch surfaces the backend detail on 422', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ detail: 'measured p90 spacing 23.0 mm exceeds the 10 mm eval-grade bar' }),
+      { status: 422 },
+    )));
+    await expect(VoxaAPI.regionPatch(1, { status: 'eval_grade' }))
+      .rejects.toMatchObject({ status: 422, detail: expect.stringContaining('p90') });
+  });
+
+  it('regionsList unwraps the regions array', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ regions: [{ id: 1, name: 'Region 1', status: 'draft' }] }),
+      { status: 200 },
+    )));
+    expect(await VoxaAPI.regionsList()).toEqual([{ id: 1, name: 'Region 1', status: 'draft' }]);
+  });
+});
+
 describe('VoxaAPI.segApply wire shape', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
