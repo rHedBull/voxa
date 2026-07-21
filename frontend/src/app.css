@@ -964,11 +964,13 @@ kbd {
   border-top: 1px solid var(--border, #2a2d34);
   font-size: 11px; color: var(--text-dim, #8a8f99); text-align: center;
 }
-.class-picker-group {
-  margin: 8px 0 2px; font-size: 10px; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--text-dim, #8a8f99);
+.class-picker-row.group .class-picker-label { font-weight: 600; }
+.class-picker-row.back {
+  color: var(--text-dim, #8a8f99);
+  border-bottom: 1px solid var(--border, #2a2d34);
+  margin-bottom: 4px;
 }
-.class-picker-group .class-picker-hk { margin-right: 6px; }
+.class-picker-chevron { color: var(--text-dim, #8a8f99); font-size: 13px; }
 
 /* Two-stroke chord overlay: transient member list after the first stroke. */
 .chord-overlay {
