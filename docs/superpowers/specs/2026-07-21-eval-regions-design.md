@@ -65,7 +65,12 @@ loader invariants, and manifest are phases 2–3.
 - No box/OBB region shape, no full-height shortcut, no multi-prism regions.
 - No region support on legacy-tier scenes.
 - No eval-regions entry in the `scan_schema` layout contract yet (phase 3
-  adds it alongside the manifest); phase 1 just writes the file.
+  adds it alongside the manifest); phase 1 just writes the file. Known
+  consequence, accepted: `scan_schema`'s validator flags scan-root entries
+  outside `ALLOWED_TOPLEVEL` as an "unexpected top-level entry" **warning**
+  (warn-level only, nothing breaks). Allowing it now would mean a
+  cross-repo `scan-schema` release for one line; phase 3 touches that
+  contract anyway.
 
 ## Design
 
@@ -83,7 +88,7 @@ Written atomically via the `scan_schema` durable-write helpers.
     {
       "id": 1,
       "name": "pump skid A",
-      "status": "draft",
+      "status": "eval_grade",
       "prism": { "polygon": [[x, z], ...], "y0": 2.1, "height": 3.4 },
       "created_at": "2026-07-21T18:00:00Z",
       "accuracy": {
@@ -114,7 +119,10 @@ Written atomically via the `scan_schema` durable-write helpers.
 New route module, registered like the existing ones in `main.py`. All
 endpoints require the active scene to be an annotated-tier scan whose
 directory is resolvable (else 409, mirroring the segment routes' pinning
-style); stats additionally require an active `SegmentSession`. Pure helpers
+style); stats **and the eval-grade flip** additionally require an active
+`SegmentSession` — both need full-res positions, and the session's
+`positions` array is the full-res cloud (`app.core._state`'s loaded cloud
+is subsampled to `VOXA_MAX_POINTS` and would inflate the measured p90). Pure helpers
 (region resolution, membership counting) live in
 `backend/labeling/regions.py` so routes stay thin, matching the
 `shapes.py`/`outliers.py` pattern.
@@ -122,8 +130,11 @@ style); stats additionally require an active `SegmentSession`. Pure helpers
 - `GET /api/regions` — full region list, prism geometry converted to the
   runtime (recentered) frame.
 - `POST /api/regions` `{name?, prism}` — create as `draft`. Server assigns
-  `id` and a default name (`Region <id>`). Prism is validated exactly like
-  `apply-shape` validates it (≥ 3 vertices, height > 0) — 422 otherwise.
+  `id` and a default name (`Region <id>`). The prism must satisfy the same
+  constraints `prism_indices` enforces (≥ 3 vertices, height > 0), but with
+  an explicit 422 instead of `prism_indices`'s silent empty selection —
+  `apply-shape` itself has no such validation, so there is nothing to
+  mirror there.
 - `PATCH /api/regions/{id}` `{name? | prism? | status?}` — partial update.
   **The backend owns the locks** (same philosophy as
   `reject_frozen_class`):
@@ -132,8 +143,10 @@ style); stats additionally require an active `SegmentSession`. Pure helpers
   - `status: "eval_grade"` runs the gate: resolve the region's full-res
     point indices via the existing `shapes.py::prism_indices`, then compute
     `labeling.materialize.raw_sample_spacing` over those positions. Refuse
-    with 422 if the region holds fewer points than the spacing sampler
-    needs for a meaningful estimate, or if p90 > 0.010 m. On success,
+    with 422 if the region holds fewer than **100 points** or if
+    p90 > 0.010 m. The floor is load-bearing, not cosmetic:
+    `raw_sample_spacing` returns `(0.0, 0.0)` for n < 2, which would
+    otherwise *pass* the p90 check on a near-empty region. On success,
     record `accuracy` and lock.
   - `status: "draft"` unlocks and drops `accuracy`.
   - `name` changes are always allowed — a name is not geometry.
