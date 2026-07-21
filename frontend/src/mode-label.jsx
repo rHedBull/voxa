@@ -44,7 +44,10 @@ const SAM_SELECTED_COLOR = new THREE.Color(0xfacc15).toArray();
 
 export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChange, cloudBBox, navMode, onNavModeChange, segState, setSegState, prelabelRef, onCameraChange, hasMesh, isAnnotated, sessions, activeSessionId, presegs, onSelectSession, onCreateSession, onRenameSession, onDeleteSession, sessionLoading }) {
   const meshPopupRef = useRefLabel(null);
-  const [activeClass, setActiveClass] = useStateLabel(classes[0]?.id || 'unknown');
+  // Default to the first ASSIGNABLE class — 'unknown' (the old fallback) is
+  // frozen now, and a frozen default would 422 on the first apply.
+  const [activeClass, setActiveClass] = useStateLabel(
+    classes.find((c) => !c.frozen)?.id || classes[0]?.id || 'unknown');
   const [selectedId, setSelectedId] = useStateLabel(null);
   const [instCutMenu, setInstCutMenu] = useStateLabel(null); // {x, y, instId} | null
   const [hiddenClasses, setHiddenClasses] = useStateLabel(new Set());
@@ -136,10 +139,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     );
   }, [showDiff, segState, prelabelRef]);
 
-  // Keep activeClass valid as the class list streams in.
+  // Keep activeClass valid as the class list streams in — and never let it
+  // rest on a frozen legacy class (the pre-config fallback 'unknown' is
+  // frozen now; a frozen active class would 422 on the first apply).
   useEffectLabel(() => {
-    if (classes.length && !classes.find((c) => c.id === activeClass)) {
-      setActiveClass(classes[0].id);
+    if (!classes.length) return;
+    const cur = classes.find((c) => c.id === activeClass);
+    if (!cur || cur.frozen) {
+      setActiveClass((classes.find((c) => !c.frozen) || classes[0]).id);
     }
   }, [classes, activeClass]);
 

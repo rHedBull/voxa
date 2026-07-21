@@ -22,6 +22,8 @@ import { VoxaAPI } from './api.js';
 import { applyDelta } from './segment-state.js';
 import { prismShapeFromCorners, footprintBaseY } from './prism-geom.js';
 import { ClassPickerModal } from './class-picker.jsx';
+import { chordStep } from './class-chords.js';
+import { ChordOverlay } from './chord-overlay.jsx';
 
 // phase 'footprint': placing snapped corners. phase 'height': footprint closed;
 // `committed` false = aiming the height live, true = height locked, awaiting a
@@ -105,6 +107,9 @@ function markerRadius(corners) {
 function PrismKeys({ prism, setPrism, classes, pickerOpen, onApply, onOpenPicker, onExit, onClose, onBackToFootprint }) {
   const prismRef = useRef(prism);
   prismRef.current = prism;
+  // Two-stroke chord state (class-chords.js); chording engages only once the
+  // volume is ready (height committed) — digits stay inert before that.
+  const [pendingGroup, setPendingGroup] = useState(null);
   useEffect(() => {
     const handler = (e) => {
       // While the class picker is open it owns the keyboard (hotkey → pick,
@@ -128,7 +133,8 @@ function PrismKeys({ prism, setPrism, classes, pickerOpen, onApply, onOpenPicker
         else if (canClose) onClose();
         else handled = false;
       } else if (e.key === 'Escape') {
-        if (p.corners.length > 0) setPrism(EMPTY_PRISM);
+        if (pendingGroup) setPendingGroup(null);   // cancel the chord first
+        else if (p.corners.length > 0) setPrism(EMPTY_PRISM);
         else onExit();
       } else if (e.key === 'Backspace' || e.key === 'Delete') {
         if (p.phase === 'height' && p.committed) setPrism((s) => ({ ...s, committed: false }));  // re-aim
@@ -136,17 +142,19 @@ function PrismKeys({ prism, setPrism, classes, pickerOpen, onApply, onOpenPicker
         else if (p.corners.length > 0) setPrism((s) => ({ ...s, corners: s.corners.slice(0, -1) }));
         else handled = false;
       } else {
-        // Class hotkey applies only once the height is committed.
-        const cls = ready ? classes.find((c) => c.hotkey === e.key) : null;
-        if (cls) onApply(cls.class_id);
+        // Class chord applies only once the height is committed.
+        const step = ready ? chordStep(pendingGroup, e.key, classes) : { type: 'pass' };
+        if (step.type === 'group') setPendingGroup(step.group);
+        else if (step.type === 'class') { setPendingGroup(null); onApply(step.cls.class_id); }
+        else if (step.type === 'cancel') setPendingGroup(null);
         else handled = false;
       }
       if (handled) { e.preventDefault(); e.stopPropagation(); }
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [classes, pickerOpen, onApply, onOpenPicker, onExit, onClose, onBackToFootprint, setPrism]);
-  return null;
+  }, [classes, pickerOpen, onApply, onOpenPicker, onExit, onClose, onBackToFootprint, setPrism, pendingGroup]);
+  return pendingGroup ? <ChordOverlay group={pendingGroup} classes={classes} /> : null;
 }
 
 // Dashed rubber-band from the last placed corner to the cursor, footprint phase

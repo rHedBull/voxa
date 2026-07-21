@@ -9,6 +9,8 @@ import * as THREE from 'three';
 import { evtToNdc } from './viewer.jsx';
 import { VoxaAPI } from './api.js';
 import { applyDelta } from './segment-state.js';
+import { chordStep } from './class-chords.js';
+import { ChordOverlay } from './chord-overlay.jsx';
 import {
   initBeamState, addNode, clickNode, selectNode, selectEdge, clearSelection,
   moveNode, deleteSelected, setWidth, nudgeWidth, setClass,
@@ -18,8 +20,11 @@ import {
 
 // Capture-phase keyboard driver (same trick as DrawKeys / FastLabelKeys).
 export function BeamKeys({ active, classes, onKey }) {
+  // Two-stroke chord state (class-chords.js). Esc with a pending group
+  // cancels the chord, not the beam gesture — chordStep runs first.
+  const [pendingGroup, setPendingGroup] = useState(null);
   useEffect(() => {
-    if (!active) return undefined;
+    if (!active) { setPendingGroup(null); return undefined; }
     const handler = (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       // Ctrl+Enter commits the batch; every other Ctrl/Meta/Alt combo
@@ -30,9 +35,11 @@ export function BeamKeys({ active, classes, onKey }) {
         return;
       }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const cls = classes.find((c) => c.hotkey === e.key);
+      const step = chordStep(pendingGroup, e.key, classes);
       let handled = true;
-      if (cls) onKey({ type: 'class', classId: cls.class_id });
+      if (step.type === 'group') setPendingGroup(step.group);
+      else if (step.type === 'class') { setPendingGroup(null); onKey({ type: 'class', classId: step.cls.class_id }); }
+      else if (pendingGroup) setPendingGroup(null);   // cancel: Esc/invalid second key
       else if (e.key === 'Enter') onKey({ type: 'apply' });
       else if (e.key === 'Escape') onKey({ type: 'escape' });
       else if (e.key === 'Backspace' || e.key === 'Delete') onKey({ type: 'delete' });
@@ -43,8 +50,8 @@ export function BeamKeys({ active, classes, onKey }) {
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [active, classes, onKey]);
-  return null;
+  }, [active, classes, onKey, pendingGroup]);
+  return pendingGroup ? <ChordOverlay group={pendingGroup} classes={classes} /> : null;
 }
 
 function BeamHUD({ state, toast }) {

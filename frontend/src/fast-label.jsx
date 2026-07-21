@@ -97,7 +97,7 @@ export function FastLabelHUD({ queue, pos, classes }) {
           <span>seg {seg.id} · {seg.nPoints.toLocaleString()} pts
             {presegCls ? ` · preseg: ${presegCls.label}` : ''}</span>
           <span style={{ opacity: 0.65 }}>
-            ←/→ · WASD move &nbsp;·&nbsp; 1–9 class &nbsp;·&nbsp; Esc exit
+            ←/→ · WASD move &nbsp;·&nbsp; group + key class chord &nbsp;·&nbsp; Esc exit
           </span>
         </>
       )}
