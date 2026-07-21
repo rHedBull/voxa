@@ -102,6 +102,20 @@ class Cuboid(BaseModel):
     kind: str = "cuboid"     # 'cuboid' | 'pointset'
     segId: Optional[int] = None  # set for pointset (and preseg-promoted) instances; per-point membership key in segState.instanceFull
     seq: Optional[int] = None  # monotonic apply-order rank; stamped on save (resolution-independent-labels spec §2)
+    # Eval-labeling phase-0 metadata (spec 2026-07-21 §4). Inert pass-through:
+    # rides instances_gt.json, no effect on apply/export/compare.
+    flags: list[str] = []            # ⊆ {boundary_uncertain, incomplete}
+    subtype: Optional[str] = None    # free text (gate vs. ball valve, pump model)
+    insulated: Optional[bool] = None
+    note: str = ""
+
+    @field_validator("flags")
+    @classmethod
+    def _flags_known(cls, v):
+        bad = set(v) - {"boundary_uncertain", "incomplete"}
+        if bad:
+            raise ValueError(f"unknown instance flags: {sorted(bad)}")
+        return v
 
 class AnnotationDoc(BaseModel):
     scene: str
