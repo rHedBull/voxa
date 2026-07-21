@@ -299,8 +299,9 @@ export default function ExportWizard({
                 {accuracyErr
                   ? <span className="ew-warn">Accuracy unavailable: {accuracyErr}</span>
                   : accuracy
-                    ? <>Semantic boundary accuracy ±~{(accuracy.p90 * 100).toFixed(1)} cm
-                        (p90; set by labeling density, unchanged by export resolution).
+                    ? <>Semantic boundary accuracy {accuracy.loa} — ±~{(accuracy.p90 * 100).toFixed(1)} cm
+                        (p90 sample spacing; p50 {(accuracy.p50 * 100).toFixed(1)} cm; set by
+                        labeling density, unchanged by export resolution).
                         Box/pipe boundaries: exact.</>
                     : <span className="ew-faint">Computing accuracy…</span>}
               </div>

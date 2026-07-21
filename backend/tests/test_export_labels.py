@@ -381,6 +381,38 @@ def test_build_manifest_labeling_points_optional():
     json.dumps(manifest)
 
 
+def test_build_manifest_loa_and_method():
+    """accuracy carries the USIBD LOA band (banded on p90) plus the exact
+    computation as a machine-readable method block."""
+    taxonomy = {0: {"label": "x", "color": "#000"}}
+    manifest = build_manifest(
+        taxonomy=taxonomy,
+        p50=0.004,
+        p90=0.012,
+        scan="s",
+        session="x",
+        resolution={"kind": "scan"},
+        points=1000,
+        confirmed_only=False,
+        include_classes=None,
+        drop_unlabeled=False,
+        absent_count=0,
+        exported_at="2026-07-21T00:00:00Z",
+        labeling_points=1000,
+    )
+    acc = manifest["accuracy"]
+    assert acc["loa"] == "LOA30"   # 5 mm < 12 mm <= 15 mm
+    method = acc["method"]
+    # The equations, not prose: spacing definition, percentile definition,
+    # p90-as-uncertainty rationale, and the LOA banding rule.
+    assert "min_{j != i} ||x_i - x_j||_2" in method["sample_spacing"]
+    assert "100000" in method["sample_spacing"]
+    assert "percentile" in method["percentiles"]
+    assert "p90" in method["boundary_uncertainty"]
+    assert "USIBD" in method["loa"] and "p90" in method["loa"]
+    json.dumps(manifest)
+
+
 def test_build_manifest_p50_p90_rounding():
     """Verify p50 and p90 are rounded to 4 decimals."""
     taxonomy = {0: {"label": "x", "color": "#000"}}
@@ -688,6 +720,7 @@ def test_labels_accuracy_returns_p50_p90(client_with_annotated_scene):
     assert r.status_code == 200
     d = r.json()
     assert d["p90"] >= d["p50"] >= 0
+    assert d["loa"].startswith("LOA")
 
 
 def test_labels_accuracy_scene_mismatch_409(client_with_annotated_scene):

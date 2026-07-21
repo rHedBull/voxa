@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from app.schemas import ExportLabelsRequest, RemapTarget
+from labeling.materialize import loa_band
 
 
 def validate_export_request(
@@ -219,6 +220,31 @@ def build_manifest(
             "sample_spacing_p50_m": float(round(p50, 4)),
             "sample_spacing_p90_m": float(round(p90, 4)),
             "semantic_boundary_uncertainty_m": float(round(p90, 4)),
+            "loa": loa_band(p90),
+            "method": {
+                "sample_spacing": (
+                    "d_i = min_{j != i} ||x_i - x_j||_2 over the labeling "
+                    "cloud's (scan.ply) positions; nearest neighbors from a "
+                    "KD-tree over all N points, queried for a deterministic "
+                    "random subsample of min(N, 100000) points "
+                    "(numpy default_rng(0))."
+                ),
+                "percentiles": (
+                    "sample_spacing_p50_m / _p90_m = 50th / 90th percentile "
+                    "of {d_i} (numpy.percentile, linear interpolation)."
+                ),
+                "boundary_uncertainty": (
+                    "semantic_boundary_uncertainty_m = p90: a drawn boundary "
+                    "snaps to the nearest sample, so its position error is at "
+                    "most ~one sample spacing; p90 (not p50) covers "
+                    "non-uniform LiDAR density."
+                ),
+                "loa": (
+                    "finest USIBD LOA Spec v3.0 band whose upper tolerance "
+                    ">= p90: LOA50 <= 1 mm < LOA40 <= 5 mm < LOA30 <= 15 mm "
+                    "< LOA20 <= 50 mm < LOA10."
+                ),
+            },
             "note": (
                 "Semantic (preseg/legacy) boundaries are accurate to ~one "
                 "labeling-cloud sample spacing (reported as p90 to reflect non-"

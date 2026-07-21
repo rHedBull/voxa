@@ -6,6 +6,7 @@ from labeling.materialize import (
     replay_labels,
     materialize_raw,
     raw_sample_spacing,
+    loa_band,
     materialize,
     MaterializeCtx,
 )
@@ -352,6 +353,19 @@ def test_sample_spacing_matches_direct_nn():
 def test_sample_spacing_tiny_cloud():
     p50, p90 = raw_sample_spacing(np.zeros((1, 3), dtype=np.float32))
     assert p50 == 0.0 and p90 == 0.0
+
+
+def test_loa_band_thresholds():
+    # USIBD LOA Spec v3.0 upper tolerances (meters), inclusive at the boundary.
+    assert loa_band(0.0) == "LOA50"
+    assert loa_band(0.001) == "LOA50"
+    assert loa_band(0.0011) == "LOA40"
+    assert loa_band(0.005) == "LOA40"
+    assert loa_band(0.012) == "LOA30"
+    assert loa_band(0.015) == "LOA30"
+    assert loa_band(0.05) == "LOA20"
+    assert loa_band(0.051) == "LOA10"
+    assert loa_band(1.0) == "LOA10"
 
 
 # ---------------------------------------------------------------------------
