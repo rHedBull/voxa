@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 
-import numpy as np
 import pytest
 
 PRISM = {"polygon": [[-0.01, -0.01], [0.2, -0.01], [0.2, 0.2], [-0.01, 0.2]],
