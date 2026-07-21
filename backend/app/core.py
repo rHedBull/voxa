@@ -321,7 +321,7 @@ def reject_frozen_class(class_id, context="assign"):
             f"class id {cid} is frozen (legacy, display-only) — "
             f"label with a primitive class instead"
             + ("; re-label the source instance with a primitive class first"
-               if context == "cut" else "")))
+               if context in ("cut", "merge") else "")))
 
 
 def _coerce_class_id(v):

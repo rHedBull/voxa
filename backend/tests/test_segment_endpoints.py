@@ -34,7 +34,10 @@ def test_apply_set_class_changes_state(client_with_loaded_annotated_scene):
 
 def test_apply_merge_routes_to_session(client_with_loaded_annotated_scene):
     client = client_with_loaded_annotated_scene
-    body = {"op": "merge", "payload": {"source_inst": 2, "target_inst": 0}}
+    # Target instance 1 (class 1/"tank", live) — instance 0 carries frozen
+    # legacy class 0/"pipe" and merging into it is now rejected (see
+    # test_frozen_guard.py::test_merge_into_frozen_instance_422).
+    body = {"op": "merge", "payload": {"source_inst": 2, "target_inst": 1}}
     r = client.post("/api/segment/apply", json=body)
     assert r.status_code == 200
 

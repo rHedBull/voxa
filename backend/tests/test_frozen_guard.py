@@ -88,6 +88,30 @@ def test_frozen_class_by_name_422(client_with_loaded_annotated_scene):
     assert "frozen" in r.json()["detail"].lower()
 
 
+def test_merge_into_frozen_instance_422(client_with_loaded_annotated_scene):
+    # Merge assigns the TARGET's class to the source's points; fixture
+    # instance 0 carries frozen class 0, so merging into it is a new
+    # assignment of a frozen class and must reject.
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/apply", json={
+        "op": "merge",
+        "payload": {"source_inst": 1, "target_inst": 0},
+    })
+    assert r.status_code == 422
+    assert "frozen" in r.json()["detail"].lower()
+
+
+def test_merge_into_live_instance_ok(client_with_loaded_annotated_scene):
+    # The reverse direction is fine: source points LOSE their frozen class
+    # (re-labeling away from legacy is always allowed).
+    client = client_with_loaded_annotated_scene
+    r = client.post("/api/segment/apply", json={
+        "op": "merge",
+        "payload": {"source_inst": 0, "target_inst": 1},
+    })
+    assert r.status_code == 200
+
+
 def test_cut_instance_frozen_422(client_with_loaded_annotated_scene):
     # Fixture instance 0 (points {1,2}) already carries class 0 ("pipe",
     # frozen) — seeded directly from the preseg summary in

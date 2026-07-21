@@ -20,9 +20,18 @@ def segment_apply(req: ApplyRequest):
             reject_frozen_class(class_id)
             out = seg.apply_set_class(idx, class_id=class_id)
         elif req.op == "merge":
+            target_inst = int(req.payload["target_inst"])
+            # Merge assigns the target's class to the source's points
+            # (segment_state.apply_merge) — the same "newly assign" rule as
+            # cut-inherit applies, so a frozen-class target is rejected.
+            tgt_mask = seg.instance_ids == target_inst
+            if tgt_mask.any():
+                reject_frozen_class(
+                    int(seg.class_ids[np.flatnonzero(tgt_mask)[0]]),
+                    context="merge")
             out = seg.apply_merge(
                 source_inst=int(req.payload["source_inst"]),
-                target_inst=int(req.payload["target_inst"]),
+                target_inst=target_inst,
             )
         elif req.op == "reassign":
             idx = _decode_indices_or_400(req)
