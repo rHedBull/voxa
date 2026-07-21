@@ -21,9 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from scan_schema import atomic_write_json
-
 from labeling.materialize import loa_band, raw_sample_spacing
+from labeling.segment_io import atomic_write_json
 from labeling.shapes import prism_indices
 
 REGIONS_FILE = "eval_regions.json"
