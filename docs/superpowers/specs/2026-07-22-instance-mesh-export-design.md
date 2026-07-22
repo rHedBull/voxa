@@ -140,8 +140,8 @@ shown before download).
 ### Cleanup
 
 - Delete `scripts/build_instance_meshes.py` (untracked, so a plain file
-  removal — no git history to preserve).
-- Remove its entry from `scripts/README.md`.
+  removal — no git history to preserve). It's not listed in
+  `scripts/README.md`'s tool tables, so no doc edit is needed there.
 
 ## Testing
 
@@ -149,14 +149,20 @@ shown before download).
   (≥100 non-coplanar points → non-empty glb bytes, correct id set) and skip
   cases (`<100` points, and a coplanar/collinear point set at ≥100 points
   triggering `QhullError` → skipped with a reason, absent from `glbs`).
-- Extend `tests/test_export_labels.py`: `include_meshes=True` produces a zip
-  containing `meshes/<id>.glb` for confirmed/included instances only, and a
-  `meshes` block in `manifest.json`; `include_meshes=False` (default) has
-  neither — exact parity with pre-change exports. The default fixture scene
-  (`conftest.py`'s `build_annotated_root`) only has 8 points across 4
-  instances (max 2 points/instance) — every instance there is far below the
-  `100`-point bar and would just get skipped, never exercising a real hull.
-  Use the fixture's `pts` override to supply ≥100 non-coplanar points for at
-  least one surviving instance so the happy path (an actual `.glb` written)
-  is covered, alongside a small (e.g. 2-point) instance to confirm it's
-  skipped and reported in `manifest["meshes"]["skipped"]`.
+- Extend `tests/test_export_labels.py` at the wiring level only — the happy
+  path (a real hull → real glb bytes) is already covered at the unit level
+  above, and `conftest.py`'s `build_annotated_root` can't easily produce a
+  ≥100-point instance: its `pts` override (used by the unrelated dense-grid
+  fixture at line ~171) still hardcodes `inst[:2] = 0` regardless of point
+  count, so only 2 points ever carry an instance id no matter how large
+  `pts` is. Forcing a 100+-point instance through it would mean reaching
+  past its documented purpose. Instead, using the default 8-point/4-instance
+  fixture (every instance `<100` points, so all skipped):
+  - `include_meshes=False` (default): zip has no `meshes/` entries, no
+    `meshes` key in `manifest.json` — exact parity with pre-change exports.
+  - `include_meshes=True`: zip still has no `meshes/*.glb` (all instances
+    are below the point-count bar), but `manifest["meshes"]` is present with
+    `written: 0` and every confirmed/included instance id listed in
+    `skipped` with a reason — confirms the endpoint wiring, filter
+    respect (`confirmed_only`/`include_classes` change which ids appear),
+    and manifest shape, without needing the fixture to produce a real hull.
