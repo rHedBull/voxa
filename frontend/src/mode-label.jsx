@@ -26,6 +26,7 @@ import { cutEligibility } from './cut-eligibility.js';
 import { removeOutliersEligibility } from './outlier-eligibility.js';
 import { fitEligibility } from './fit-eligibility.js';
 import CutModal from './cut-mode.jsx';
+import { RegionsOverlay } from './region-mode.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -61,10 +62,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const drawMode = activeTool === 'draw';
   const beamMode = activeTool === 'beam';
   const prismMode = activeTool === 'prism';
+  const regionMode = activeTool === 'region';
   // Sub-modes whose overlay owns viewport input (capture-phase keys +
   // pointer): global pick/hotkey handlers stand down. A future 5th tool
   // adds one term here instead of touching every gate.
-  const subModeOwnsInput = drawMode || beamMode || prismMode;
+  const subModeOwnsInput = drawMode || beamMode || prismMode || regionMode;
   // Presegmentation is a way to *select* points; its segments (hulls, boxes,
   // per-segment hue coloring) only show while the Presegment tool is active.
   // Every other tool works on the raw RGB cloud.
@@ -120,6 +122,26 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // into segState.selection. Same UX as the box in Edit mode.
   const [selBox, setSelBox] = useStateLabel(null);
   const showSegHulls = false;
+  // Eval regions (scan-level; phase 1). regions = runtime-frame list from
+  // GET /api/regions; regionStats keyed by region id; regionEyes = per-region
+  // overlay visibility while OTHER tools are active (UI-local, not persisted).
+  const [regions, setRegions] = useStateLabel([]);
+  const [regionStats, setRegionStats] = useStateLabel({});
+  const [regionEyes, setRegionEyes] = useStateLabel(() => new Set());
+  useEffectLabel(() => {
+    if (!segState || !isAnnotated) { setRegions([]); setRegionStats({}); return undefined; }
+    let dead = false;
+    VoxaAPI.regionsList()
+      .then((rs) => { if (!dead) setRegions(rs); })
+      .catch((err) => console.error('regions load failed:', err));
+    return () => { dead = true; };
+  }, [!!segState, isAnnotated, activeSessionId]);
+  // The overlay's rebuild effect keys on `visibleIds` identity — building the
+  // Set inline in the JSX would dispose-and-rebuild every region volume on
+  // every LabelMode render.
+  const regionVisibleIds = useMemoLabel(
+    () => (activeTool === 'region' ? new Set(regions.map((r) => r.id)) : regionEyes),
+    [activeTool, regions, regionEyes]);
   const [sideRCollapsed, setSideRCollapsed] = useStateLabel(() => {
     try { return localStorage.getItem('voxa.label.sideRCollapsed') === '1'; }
     catch { return false; }
@@ -1515,7 +1537,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onApply={() => setClassPickerOpen(true)}
           onEditSelection={openCutModal}
           onRemoveOutliers={removeOutliers}
-          onFitBox={fitBoxToSelection} />
+          onFitBox={fitBoxToSelection}
+          onRegionCreated={(region) => setRegions((rs) => [...rs, region])} />
       </aside>
 
       {/* Center: viewport */}
@@ -1552,6 +1575,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             : null}
           showSegHulls={showSegHulls}
         />
+
+        <RegionsOverlay viewerRef={viewerRef} regions={regions} visibleIds={regionVisibleIds} />
 
         <div className="vp-hud-top">
           <div className="hud-group">

@@ -3,6 +3,7 @@ import DrawMode from './draw-mode.jsx';
 import BeamMode from './beam-mode.jsx';
 import PrismMode from './prism-mode.jsx';
 import SamMode from './sam-mode.jsx';
+import RegionMode from './region-mode.jsx';
 import { SamSegmentList } from './sam-segment-list.jsx';
 
 function AutoConfirmToggle({
@@ -195,6 +196,12 @@ function BoxOptions({
   );
 }
 
+function RegionOptions({ viewerRef, onExit, onRegionCreated }) {
+  // No wrapper div: RegionMode's RegionDrawPanel already renders the
+  // `tool-options` container (same as PrismMode's PrismPanel).
+  return <RegionMode viewerRef={viewerRef} onExit={onExit} onCreated={onRegionCreated} />;
+}
+
 export default function ToolOptions(props) {
   const { activeTool } = props;
   if (activeTool === 'presegment') return <PresegOptions {...props} />;
@@ -203,5 +210,6 @@ export default function ToolOptions(props) {
   if (activeTool === 'prism') return <PrismOptions {...props} />;
   if (activeTool === 'sam') return <SamOptions {...props} />;
   if (activeTool === 'box') return <BoxOptions {...props} />;
+  if (activeTool === 'region') return <RegionOptions {...props} />;
   return null;
 }
