@@ -101,7 +101,7 @@ regeneration for auditing).
 | 5 | Every point with an instance id has a component id and vice versa | `gt_segment_ids.npy` × `gt_point_component_ids.npy` |
 | 6 | Manifest regenerated and consistent (drift is a hard error) | freshly computed `manifest.build_manifest(...)` vs. what's about to be written — this is inherently satisfied by construction (the gate always writes what it just computed) and exists as a check for callers that pass in a stale manifest to compare against, e.g. a future harness re-deriving one independently |
 | 7 | Instance ids never reused or renumbered across saves | the union of current `instances_gt.json` ids **and** current `review_blobs` ids, vs. that same union from the previous save (read from the prior `gt_segment_metadata.json`, which carries both `segments`-equivalent instance metadata and `review_blobs`) — only flags ids that vanished-and-reappeared-differently or were renumbered; new ids, and a blob id that later gains a real class and moves from `review_blobs` into ordinary instance metadata, are both fine as long as the id itself is stable |
-| 8 | An eval-grade region's declared accuracy is consistent with its measured p90 (≤10mm) | region's stored `accuracy.p90` (measured at phase-1 gate time) re-checked into the manifest; re-measured via the existing `labeling.materialize.raw_sample_spacing` if the region's points changed since that measurement |
+| 8 | An eval-grade region's declared accuracy is consistent with its measured p90 (≤10mm) | region's stored `accuracy.p90` (measured at phase-1 gate time) re-checked against the ceiling on every save. **Scoped down during planning**: this phase checks the stored value only, not live re-measurement via `raw_sample_spacing` for drift since that value was recorded — full staleness detection needs `positions` threaded into the invariants module and is deferred |
 | 9 (discovered in scoping) | A `confirmed` instance's points carry no non-`none` category, and a `confirmed` instance is never a review blob (review blobs have no real class by definition) | `instances_gt.json::confirmed` × `gt_point_category.npy` × `gt_class_ids.npy` |
 
 All 9 are hard failures at save time — no warn-only mode for new saves. (See
@@ -216,11 +216,16 @@ preservation, before running it against the real scan.
   post-phase-3 save has nothing to diff — it trivially passes (no prior ids to
   have lost). This is correct but worth stating: the check only bites starting
   the *second* save after this phase ships.
-- **Invariant 8's re-measurement cost.** Re-running `raw_sample_spacing` on
-  every save if a region's points changed is a full nearest-neighbour pass;
-  acceptable at today's ~3M-point test scans, revisit at phase 0b's ~100M
-  canonical clouds (already flagged as a general phase-0b concern, not new
-  here).
+- **Invariant 8 doesn't re-measure, only checks the stored value.** As noted
+  in the table above, live drift detection (re-running `raw_sample_spacing` if
+  a region's points changed since the recorded measurement) was scoped out
+  during planning — it needs `positions` threaded into a currently-pure
+  invariants module. An eval-grade region whose points are edited after the
+  gate without re-measuring keeps its stale `accuracy.p90` until the next
+  explicit re-gate. Worth revisiting once there's a concrete case of this
+  happening, rather than paying the full nearest-neighbour re-measurement
+  cost on every save speculatively (which would also need revisiting at phase
+  0b's ~100M canonical clouds).
 - **`instances_gt.json` as a save-time input, not just a display doc.** The
   backend save gate now has a correctness dependency on a frontend-owned file
   being present and current for the session being saved. If it's ever missing

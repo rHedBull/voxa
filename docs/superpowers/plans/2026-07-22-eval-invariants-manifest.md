@@ -28,7 +28,7 @@
 - Create: `backend/labeling/instances_doc.py` — thin loader for `instances_gt.json` (the file `backend/routes/compare.py` already reads/writes at a known path; `segment_io` needs its own read-only loader since it must not depend on FastAPI route code).
 - Modify: `backend/routes/segment.py` — `segment_save()` loads `instances_gt.json` + `eval_regions.json` and the prior save's `gt_segment_metadata.json`, passes them to `save_labels`, and translates a new `EvalInvariantError` into a structured 422.
 - Create: `scripts/migrate_eval_invariants.py` — one-off migration for the three precious scans.
-- Modify: `requirements.txt` — pin bump (final task, after the scan_schema branch merges).
+- Modify: `backend/requirements.txt` — pin bump (final task, after the scan_schema branch merges).
 - Modify: `docs/scan-schema.md` — note the pin-bump discipline.
 
 ---
@@ -376,6 +376,16 @@ git commit -m "feat: eval-invariant 7 (instance-id lineage across saves)"
 
 ## Task 6: scan_schema — invariant 8 (eval-grade accuracy band consistency)
 
+**Scope note:** this task checks the *stored* `accuracy.p90` against the
+10mm ceiling only — it does not re-run `labeling.materialize.raw_sample_spacing`
+to detect drift if a region's points changed since that measurement. Full
+staleness re-measurement needs `positions` threaded into `eval_invariants`
+(currently pure over dicts/small arrays) and is deferred; this task's check
+still catches the case the spec cares about most (an eval-grade region whose
+recorded accuracy never supported the bar in the first place, or was hand-edited
+incorrectly), just not silent drift from later re-labeling. Flag this
+explicitly rather than silently narrowing the spec's invariant 8 description.
+
 **Files:**
 - Modify: `src/scan_schema/eval_invariants.py`
 - Test: `tests/test_eval_invariants.py`
@@ -631,12 +641,15 @@ def build_manifest(
             },
             "accuracy": r.get("accuracy"),
         })
-        n_in_region += int(mask.sum())
+        n_in_region += int((mask & labeled).sum())  # labeled points only — the
+        # metric is "labeled points inside any eval region ÷ total labeled",
+        # not raw region coverage (which would double-count unlabeled points)
 
     n_labeled = int(labeled.sum())
-    in_region_fraction = (
-        min(1.0, n_in_region / n_labeled) if n_labeled else 0.0
-    )
+    in_region_fraction = (n_in_region / n_labeled) if n_labeled else 0.0
+    # No clamp: n_in_region <= n_labeled always holds once the mask is
+    # intersected with `labeled`, so a value > 1.0 would itself be a bug
+    # worth surfacing rather than silently clamping away.
 
     return {
         "class_histogram": class_histogram,
@@ -665,28 +678,57 @@ git commit -m "feat: scan-level manifest generator"
 
 ## Task 10: scan_schema — wire eval invariants + manifest into validate_archive
 
+**Design note on invariant 4 (frozen class ids) at load time:** `frozen_ids` comes
+from voxa's `config/classes.yaml` (`backend.app.core.frozen_class_ids()`), which
+`scan_schema` has no access to — the shared `<lidar_root>/classes.json` it *can*
+read has no `frozen` field today. This is not a new gap: `validate_archive`
+already calls `validate_invariants(cls_arr, inst_arr)` with no `registry`
+argument (line ~198), so the older invariants 5/6 (unknown class ids,
+`class_map_version` match) are *also* silently unchecked at load time today.
+Rather than inventing new cross-repo coupling in this task, `validate_archive`
+takes eval-invariant 4's `frozen_ids` the same optional way: a new
+`validate_archive(root, storage=None, frozen_ids=None)` parameter, skipped
+(not erroring) when `None` — consistent with the existing registry-optional
+pattern. Voxa's save-time gate (Task 15) is unaffected and always enforces it,
+since `routes/segment.py` always has real `frozen_ids` on hand. The load-time
+CLI gains a `--frozen-ids 0,3,4,5,6,13` flag (Task 10's `__main__.py` update)
+so a caller *can* supply it when auditing an archive it knows the frozen set
+for, but an archive-wide `scan_schema validate` with no flag skips invariant 4
+exactly as it already silently skips 5/6 — a disclosed, pre-existing-shaped
+gap, not a new one introduced by this phase.
+
 **Files:**
 - Modify: `src/scan_schema/validate.py` (inside the `sessions/<id>/` loop, after the existing `validate_invariants` call at line ~198)
+- Modify: `src/scan_schema/__main__.py` (`--frozen-ids` flag on the `validate` subcommand)
 - Test: `tests/test_validate.py` (check existing file name first: `ls tests/test_validate*.py`)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 def test_validate_archive_reports_eval_invariant_violation(tmp_path):
     # Build a minimal scan with a frozen class id 6 in gt_class_ids.npy and
-    # confirm validate_archive surfaces it as an error (not silently passing).
-    # (Full fixture construction: reuse the existing conftest helpers that
-    # build a minimal annotated/<scan>/ tree with meta.json + sessions/<id>/
-    # output/*.npy + eval_regions.json — see how other test_validate_archive_*
-    # tests in this file build their fixture and follow the same helper.)
+    # confirm validate_archive surfaces it as an error when frozen_ids IS
+    # supplied. (Full fixture construction: reuse the existing conftest
+    # helpers that build a minimal annotated/<scan>/ tree with meta.json +
+    # sessions/<id>/output/*.npy + eval_regions.json — see how other
+    # test_validate_archive_* tests in this file build their fixture.)
+    ...
+    report = validate_archive(tmp_path, frozen_ids={0, 3, 4, 5, 6, 13})
+    assert any("eval-invariant 4" in e for e in report["my_scan"]["errors"])
+
+
+def test_validate_archive_skips_invariant_4_without_frozen_ids(tmp_path):
+    # Same fixture (class id 6 present), but frozen_ids omitted — must not
+    # error on invariant 4, matching the existing silent-skip behavior for
+    # invariants 5/6 when no registry is supplied.
     ...
     report = validate_archive(tmp_path)
-    assert any("eval-invariant 4" in e for e in report["my_scan"]["errors"])
+    assert not any("eval-invariant 4" in e for e in report["my_scan"]["errors"])
 ```
 
 - [ ] **Step 2: Run, verify fail.**
 
-- [ ] **Step 3: Implement** — inside `validate_archive`'s per-session block, after the existing `validate_invariants(cls_arr, inst_arr)` call, load `gt_point_category.npy`, `gt_point_component_ids.npy` (via the new layout accessors), `instances_gt.json`, `eval_regions.json`, and the session's `gt_segment_metadata.json`, and run each `eval_invariants.check_*` function, appending failures to `errors` in the same `f"{session_dir.name}/output: {exc}"` style as the existing call. Missing optional inputs (e.g. no `eval_regions.json` — not every scan has eval regions) skip the invariants that need them rather than erroring — a pre-phase-1 scan is not itself invalid for lacking eval regions.
+- [ ] **Step 3: Implement** — inside `validate_archive`'s per-session block, after the existing `validate_invariants(cls_arr, inst_arr)` call, load `gt_point_category.npy`, `gt_point_component_ids.npy` (via the new layout accessors), `instances_gt.json`, `eval_regions.json`, and the session's `gt_segment_metadata.json`, and run each `eval_invariants.check_*` function, appending failures to `errors` in the same `f"{session_dir.name}/output: {exc}"` style as the existing call. Missing optional inputs (e.g. no `eval_regions.json` — not every scan has eval regions) skip the invariants that need them rather than erroring — a pre-phase-1 scan is not itself invalid for lacking eval regions. `check_no_frozen_classes` is skipped entirely when `frozen_ids` is `None` (the new `validate_archive` parameter, threaded through from the CLI's new `--frozen-ids` flag, comma-parsed to a `set[int]`).
 
 - [ ] **Step 4: Run, verify pass.**
 
@@ -799,7 +841,7 @@ cd /home/hendrik/coding/engine/tools/labeling/voxa
 .venv/bin/pip install -e /home/hendrik/coding/engine/tools/scan-schema
 ```
 
-This is a local dev-only step — do not commit a change to `requirements.txt` yet (Task 19 does the real pin bump, after Task 11's PR is merged upstream).
+This is a local dev-only step — do not commit a change to `backend/requirements.txt` yet (Task 19 does the real pin bump, after Task 11's PR is merged upstream).
 
 ## Task 14: voxa — eval_regions.json + prior metadata loaders for the gate
 
@@ -894,7 +936,7 @@ def test_save_labels_merges_manifest_fields(tmp_path):
 
 - [ ] **Step 2: Run, verify fail** — `TypeError: save_labels() got an unexpected keyword argument 'instances_doc'`.
 
-- [ ] **Step 3: Implement.** Add `instances_doc: Optional[dict] = None`, `eval_regions: Optional[list[dict]] = None`, `prior_segment_metadata: Optional[dict] = None` params to `save_labels`. After the existing `validate_invariants(...)` call and before writing any files, build the invariant inputs and call each `eval_invariants.check_*` function (import `scan_schema.eval_invariants` and `backend.app.core.frozen_class_ids` — note the layering: `segment_io` importing from `backend.app.core` is new; check for a circular-import risk since `app/core.py` may import `labeling.*` — if so, pass `frozen_ids` in as a parameter from the caller instead of importing `core` directly, keeping `segment_io` dependency-direction-clean). Compute `region masks` from `eval_regions` (each region's `prism` geometry needs `positions` — reuse whatever helper `regions.py::region_stats` already uses to build a region mask, imported locally to avoid a module-level cycle). On any `ValueError` from a check, let it propagate (the existing `except ValueError` in `routes/segment.py::segment_save` already turns this into a 400 — Task 17 upgrades that specific path to 422 with structured detail). On success, call `manifest.build_manifest(...)` and merge its dict into `meta` before writing `gt_segment_metadata.json`.
+- [ ] **Step 3: Implement.** Add `instances_doc: Optional[dict] = None`, `eval_regions: Optional[list[dict]] = None`, `prior_segment_metadata: Optional[dict] = None`, `frozen_ids: Optional[set[int]] = None` params to `save_labels`. `frozen_ids` is passed in by the caller (`routes/segment.py`, which already imports `backend.app.core` and can call `frozen_class_ids()` once) rather than imported inside `segment_io` — `app/core.py` only imports `labeling.*` inside function bodies today (no module-level cycle exists), but keeping `segment_io` free of any `app.*` import is still the right layering, since `segment_io` is meant to be pure I/O reusable outside a FastAPI request. After the existing `validate_invariants(...)` call and before writing any files, build the invariant inputs and call each `eval_invariants.check_*` function. Compute `region masks` from `eval_regions`: `regions.py` has no extracted, importable mask-building helper — both `flip_status` and `region_stats` inline the same two-line pattern (`shift_prism(...)` then `prism_indices(positions, runtime)`); either extract that pattern into a small `regions.py::region_mask(region, positions, offset)` helper (preferred — `region_stats` can then call it too, removing its own duplication) or duplicate the two lines locally in `segment_io`. On any `ValueError` from a check, let it propagate (the existing `except ValueError` in `routes/segment.py::segment_save` already turns this into a 400 — Task 16 upgrades that specific path to 422 with structured detail). On success, call `manifest.build_manifest(...)` and merge its dict into `meta` before writing `gt_segment_metadata.json`.
 
 - [ ] **Step 4: Run, verify pass.** Also run the full existing `test_segment_io.py` suite to confirm no regression: `.venv/bin/pytest backend/tests/test_segment_io.py -v`
 
@@ -1120,11 +1162,11 @@ git commit -m "feat: migration script for pre-phase-2 sessions (eval invariants)
 ## Task 19: voxa — bump the scan_schema pin
 
 **Files:**
-- Modify: `requirements.txt:19`
+- Modify: `backend/requirements.txt:19`
 - Modify: `docs/scan-schema.md`
 
-- [ ] **Step 1:** Replace `scan-schema @ git+https://github.com/rHedBull/scan_schema.git@main` with `scan-schema @ git+https://github.com/rHedBull/scan_schema.git@<merge-commit-sha-from-Task-11>`.
-- [ ] **Step 2:** Reinstall: `.venv/bin/pip install -r requirements.txt` (or `backend/requirements.txt`, whichever holds this line) and re-run the full backend test suite to confirm nothing changed behavior between the editable-install dev version and the pinned commit.
+- [ ] **Step 1:** Replace `scan-schema @ git+https://github.com/rHedBull/scan_schema.git@main` with `scan-schema @ git+https://github.com/rHedBull/scan_schema.git@<merge-commit-sha-from-Task-11>` in `backend/requirements.txt:19`.
+- [ ] **Step 2:** Reinstall: `.venv/bin/pip install -r backend/requirements.txt` and re-run the full backend test suite to confirm nothing changed behavior between the editable-install dev version and the pinned commit.
 - [ ] **Step 3:** Add a short note to `docs/scan-schema.md`: "voxa pins scan_schema to a commit SHA (not `@main`); bump it explicitly whenever scan_schema changes, as an ordinary dependency-bump PR."
 - [ ] **Step 4: Run full suite**
 
@@ -1134,7 +1176,7 @@ Expected: all pass
 - [ ] **Step 5: Commit**
 
 ```bash
-git add requirements.txt docs/scan-schema.md
+git add backend/requirements.txt docs/scan-schema.md
 git commit -m "chore: pin scan_schema to the eval-invariants merge commit"
 ```
 
@@ -1154,6 +1196,7 @@ git commit -m "docs: note eval-invariants phase 3 status in CLAUDE.md"
 ## Notes for the executing agent
 
 - Tasks 1-11 happen in the `scan-schema` repo/worktree; Tasks 12-20 happen in the `voxa` repo/worktree. Use `superpowers:using-git-worktrees` to set up both before starting, and keep them as separate branches/PRs (`feat/eval-invariants-manifest` in each repo).
-- Task 15 flags a possible circular-import risk (`segment_io` wanting `backend.app.core.frozen_class_ids`) — resolve by checking `backend/app/core.py`'s existing imports before deciding whether to import it directly or thread `frozen_ids` through as a parameter from the caller (`routes/segment.py` already imports both modules, so it can compute `frozen_class_ids()` once and pass it down).
+- Task 15: `segment_io` takes `frozen_ids` as a parameter rather than importing `backend.app.core` itself — not because of an actual import cycle (there isn't one; `app/core.py` only imports `labeling.*` inside function bodies), but to keep `segment_io` free of any `app.*` dependency, matching its existing "pure I/O, no FastAPI" module docstring. `routes/segment.py` already imports both modules and computes `frozen_class_ids()` once per save.
+- Task 15's region-mask step has no existing helper to import — `regions.py`'s `flip_status`/`region_stats` each inline the same `shift_prism` + `prism_indices` pair rather than sharing an extracted function. Extract one (and have `region_stats` adopt it) rather than assuming it already exists.
 - Task 17's inline TODO (cleaning up the `n_pts` double-load) must be fixed before Step 5's commit — it's called out deliberately in the plan as a first-draft rough edge, not a finished implementation.
 - Task 18 is the highest-risk step in the whole plan — it mutates on-disk data for the three precious labeled scans. Do not skip the copy-first diff verification even under time pressure.
