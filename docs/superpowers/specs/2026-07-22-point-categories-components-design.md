@@ -1,7 +1,7 @@
 # Point Categories + Components — Design (eval-labeling phase 2)
 
 **Date:** 2026-07-22
-**Status:** Draft
+**Status:** Implemented (branch `feat/point-categories`)
 **Upstream spec:** `engine/research/fable/docs/superpowers/specs/2026-07-20-eval-labeling-design.md`
 (§ "Non-object taxonomy", § "Instance flags" — fragments, § "Tooling delta — Voxa" item 2)
 **Predecessors:** phase 0 (primitive vocabulary, PR #43), phase 1 (eval regions, PR #44)
