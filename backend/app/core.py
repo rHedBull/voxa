@@ -224,7 +224,8 @@ def _resume_session(lay: ScanLayout, session_id: str, pc, source_fp: str):
     is read exactly once (for the snap-to layer); the pin check itself is a
     string compare against the preseg's meta.json."""
     from labeling.segment_state import SegmentSession
-    from labeling.segment_io import load_working_arrays, load_sam_ids, load_sam_segments
+    from labeling.segment_io import (load_categories, load_sam_ids,
+                                     load_sam_segments, load_working_arrays)
     from labeling.session_store import verify_pins
     from preseg.preseg_store import load_preseg
 
@@ -245,6 +246,12 @@ def _resume_session(lay: ScanLayout, session_id: str, pc, source_fp: str):
         seg.sam_ids = sam_ids
         seg.sam_segments = load_sam_segments(sp.dir)
         seg._next_sam_id = (max(seg.sam_segments.keys()) + 1) if seg.sam_segments else 0
+    # Absent working_categories.npy = a session written before phase 2, which
+    # is exactly "no categories yet" — the zeros the session already holds.
+    # A misshapen file raises (load_categories' contract), same as sam_ids.
+    categories = load_categories(sp.dir, n_points=len(pc))
+    if categories is not None:
+        seg.categories = categories
     if seg.preseg_id is not None:
         _, pre_ii = load_preseg(lay, seg.preseg_id, n_points=len(pc))
         seg.preseg_ids = pre_ii          # immutable preseg layer for snap-to
@@ -280,6 +287,7 @@ def _serialize_apply(out: dict) -> dict:
         body["indices"] = _b64(out["indices"].astype(np.int32))
         body["after_class"] = _b64(out["after_class"].astype(np.int8))
         body["after_instance"] = _b64(out["after_instance"].astype(np.int32))
+        body["after_category"] = _b64(out["after_category"].astype(np.int8))
     return body
 
 def _serialize_delta(out: dict) -> dict:
@@ -289,6 +297,7 @@ def _serialize_delta(out: dict) -> dict:
         "indices": _b64(out["indices"].astype(np.int32)),
         "after_class": _b64(out["after_class"].astype(np.int8)),
         "after_instance": _b64(out["after_instance"].astype(np.int32)),
+        "after_category": _b64(out["after_category"].astype(np.int8)),
     }
 
 def _decode_indices_or_400(req: "ApplyRequest") -> np.ndarray:
@@ -309,9 +318,9 @@ def frozen_class_ids() -> set[int]:
 def reject_frozen_class(class_id, context="assign"):
     """422 on any attempt to newly assign a frozen (legacy) class.
 
-    Deliberately NOT called by the denoise route's internal id-6 materialize —
-    that path is exempt until phase 2 rewires it to the artifact category
-    (spec 2026-07-21 §Decisions).
+    No exemptions: phase 2 moved denoise's "Exclude / Review" output off the
+    class axis onto the `excluded_review` point category, so nothing writes
+    archive id 6 any more.
     """
     if class_id is None:
         return

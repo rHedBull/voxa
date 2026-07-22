@@ -1,6 +1,7 @@
 # backend/tests/test_denoise_routes.py
 import numpy as np
 from fastapi.testclient import TestClient
+from labeling.categories import CATEGORY_EXCLUDED_REVIEW
 from labeling.segment_state import SegmentSession
 
 
@@ -36,17 +37,20 @@ def _client_with_cloud():
     return TestClient(main.app), seg
 
 
-def test_denoise_materializes_exclude_instance():
+def test_denoise_materializes_review_blob():
     client, seg = _client_with_cloud()
     r = client.post("/api/segment/denoise", json={"std_ratio": 2.0})
     assert r.status_code == 200
     body = r.json()
     assert body["n_affected"] == 3            # the three specks
     inst = body["instance_id"]
-    # the three speck points now carry the Exclude class (id 6)
     speck_idx = [400, 401, 402]
-    assert bool((seg.class_ids[speck_idx] == 6).all())
+    # Phase 2: the specks are a class-less review blob on the category axis,
+    # never the banned archive class id 6.
+    assert bool((seg.categories[speck_idx] == CATEGORY_EXCLUDED_REVIEW).all())
+    assert bool((seg.class_ids[speck_idx] == -1).all())
     assert bool((seg.instance_ids[speck_idx] == inst).all())
+    assert int((seg.class_ids == 6).sum()) == 0
 
 
 def test_denoise_replace_inst_erases_prior():

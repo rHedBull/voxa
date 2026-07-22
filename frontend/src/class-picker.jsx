@@ -12,8 +12,13 @@
 
 import { useEffect, useState } from 'react';
 import { CLASS_GROUPS, groupMembers, chordStep } from './class-chords.js';
+import { POINT_CATEGORIES, categoryByKey } from './point-categories.js';
 
-export function ClassPickerModal({ classes, counts = {}, onPick, onClose }) {
+// `onPick` receives either a class def (the class axis) or
+// `{ category: '<name>' }` (the annotation-status axis, phase 2) — callers
+// branch on the shape.
+export function ClassPickerModal({ classes, counts = {}, onPick, onClose,
+                                   allowCategories = true }) {
   // null = unarmed (next digit is a group key); a group = armed (next digit
   // picks a member). The right column always shows a group: the armed one,
   // else the first.
@@ -27,6 +32,17 @@ export function ClassPickerModal({ classes, counts = {}, onPick, onClose }) {
         if (armedGroup) setArmedGroup(null);
         else onClose();
         return;
+      }
+      // Category keys (a/t/r/x) are live only while no group is armed —
+      // armed second strokes are class member keys, which are letters too.
+      if (allowCategories && !armedGroup) {
+        const cat = categoryByKey(e.key);
+        if (cat) {
+          e.preventDefault();
+          e.stopPropagation();
+          onPick({ category: cat.name });
+          return;
+        }
       }
       const step = chordStep(armedGroup, e.key, classes);
       if (step.type === 'group') {
@@ -48,7 +64,7 @@ export function ClassPickerModal({ classes, counts = {}, onPick, onClose }) {
     // PrismKeys' own handler).
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [classes, onPick, onClose, armedGroup]);
+  }, [classes, onPick, onClose, armedGroup, allowCategories]);
 
   const groups = CLASS_GROUPS
     .filter((g) => g.key)
@@ -92,6 +108,21 @@ export function ClassPickerModal({ classes, counts = {}, onPick, onClose }) {
             ))}
           </div>
         </div>
+        {allowCategories && (
+          <div className="class-picker-categories">
+            <span className="class-picker-cat-title">Non-object</span>
+            {POINT_CATEGORIES.map((c) => (
+              <button key={c.name}
+                className={'class-picker-cat' + (c.value === 0 ? ' clear' : '')}
+                onClick={() => onPick({ category: c.name })}
+                title={`${c.hint} · press ${c.key}`}>
+                {c.color && <span className="class-swatch" style={{ background: c.color }} />}
+                <span className="class-picker-label">{c.label}</span>
+                <span className="class-picker-hk">{c.key}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="class-picker-hint">
           {armedGroup
             ? `${armedGroup.label}: press a class key or click · Esc back`

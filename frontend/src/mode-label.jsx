@@ -28,6 +28,32 @@ import { fitEligibility } from './fit-eligibility.js';
 import CutModal from './cut-mode.jsx';
 import { RegionsOverlay } from './region-mode.jsx';
 import RegionPanel from './region-panel.jsx';
+import {
+  CATEGORY_EXCLUDED_REVIEW, POINT_CATEGORIES, REVIEW_COLOR, REVIEW_LABEL,
+  buildCategoryOverlay, categoryCounts,
+} from './point-categories.js';
+
+// The three real marks (in category order), paired with their count key —
+// `none` is the absence of a mark, so it never gets a chip.
+const POINT_CATEGORY_ROWS = ['artifact', 'transient', 'excluded_review']
+  .map((name) => [name, POINT_CATEGORIES.find((c) => c.name === name)]);
+
+// A review blob's Instances-panel row: class-less by construction (status
+// lives on the category axis, never the class axis), so it carries its own
+// grey + "Review" label instead of a class color. Everything else — confirm,
+// delete, note, the phase-0 inspector — works on it unchanged.
+function reviewBlobRow(segId, source) {
+  return {
+    id: newId(),
+    segId,
+    kind: 'pointset',
+    cls: null,
+    label: `${REVIEW_LABEL} #${segId}`,
+    color: REVIEW_COLOR,
+    source,
+    confirmed: false,
+  };
+}
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -244,10 +270,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     }
     const subIdx = cloud.subsampleIdx;
     const subN = cloud.positions.length / 3;
+    // Category-marked points (artifact/transient/review) carry class -1, so
+    // without an overlay they would render as plain unlabeled grey — the mark
+    // would be invisible. They ride the same selection-overlay buffer as every
+    // other highlight; a selection drawn later in this effect wins on overlap.
+    const catOverlay = buildCategoryOverlay(segState.categoryFull, subIdx, subN);
     if (activeTool === 'sam') {
       const samIds = segState.samIds;
       const samSelection = segState.samSelection;
-      const mask = new Uint8Array(subN);
       // One RGB triplet per rendered point: an unselected candidate gets
       // its own hue (same palette as the SAM segment list's row dot and
       // the review modal's mask swatches, sam-util.js::maskColorRGB, keyed
@@ -257,9 +287,10 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       // mode's FAST_HIGHLIGHT_COLOR) — the actual "selected" cue elsewhere
       // in this app is that flat highlight color, not a lightened hue.
       const selColor = SAM_SELECTED_COLOR;
-      const colors = new Float32Array(subN * 3);
+      const mask = catOverlay ? catOverlay.mask : new Uint8Array(subN);
+      const colors = catOverlay ? catOverlay.colors : new Float32Array(subN * 3);
       const colorCache = new Map();
-      let any = false;
+      let any = !!catOverlay;
       for (let p = 0; p < subN; p++) {
         const f = subIdx ? subIdx[p] : p;
         const samId = samIds[f];
@@ -281,17 +312,31 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     }
     const sel = segState.selection;
     if (sel.size === 0) {
-      v.setSelectedSegmentMask(null);
+      v.setSelectedSegmentMask(catOverlay ? catOverlay.mask : null, undefined,
+                               catOverlay ? catOverlay.colors : null);
       return;
     }
     const inst = segState.instanceFull;
-    const mask = new Uint8Array(subN);
+    const selColor = new THREE.Color(fastMode ? FAST_HIGHLIGHT_COLOR : 0xfacc15).toArray();
+    const mask = catOverlay ? catOverlay.mask : new Uint8Array(subN);
     for (let p = 0; p < subN; p++) {
       const f = subIdx ? subIdx[p] : p;
       if (sel.has(inst[f])) mask[p] = 1;
     }
-    v.setSelectedSegmentMask(mask, fastMode ? FAST_HIGHLIGHT_COLOR : undefined);
-  }, [segState?.selection, segState?.samIds, segState?.samSelection, segState?.instanceFull, cloud, viewerRef, fastMode, activeTool]);
+    if (!catOverlay) {
+      // Untouched fast path: one flat color for the whole selection.
+      v.setSelectedSegmentMask(mask, fastMode ? FAST_HIGHLIGHT_COLOR : undefined);
+      return;
+    }
+    const colors = catOverlay.colors;
+    for (let p = 0; p < subN; p++) {
+      const f = subIdx ? subIdx[p] : p;
+      if (!sel.has(inst[f])) continue;
+      const o = p * 3;
+      colors[o] = selColor[0]; colors[o + 1] = selColor[1]; colors[o + 2] = selColor[2];
+    }
+    v.setSelectedSegmentMask(mask, undefined, colors);
+  }, [segState?.selection, segState?.samIds, segState?.samSelection, segState?.instanceFull, segState?.categoryFull, cloud, viewerRef, fastMode, activeTool]);
 
   // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
   // under the cursor. Active in any tool mode whenever segment data exists.
@@ -403,7 +448,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
 
   const counts = useMemoLabel(() => {
     const c = {};
-    instances.forEach((i) => { c[i.cls] = (c[i.cls] || 0) + 1; });
+    // Review blobs (cls == null) are not a class and never enter the counts.
+    instances.forEach((i) => { if (i.cls != null) c[i.cls] = (c[i.cls] || 0) + 1; });
     return c;
   }, [instances]);
 
@@ -689,32 +735,23 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         replaceInst: denoiseInstId,           // erase the prior result first
         protectInstances: protectedSegIds,
       });
-      // Drop the previous denoise row (its points were just erased server-side).
-      // Look up the Exclude class by its stable string key (like everywhere
-      // else in this file), not a hardcoded numeric id.
-      const cls = classes.find((c) => c.id === 'unknown');   // Exclude / Review
-      if (!cls) { console.error('denoise: no "unknown" (Exclude) class in config'); return; }
+      // Drop the previous denoise row (its points were just erased
+      // server-side). Phase 2: the result is a REVIEW BLOB — class-less, on
+      // the category axis — not an "Exclude" class-6 instance.
       const kept = instances.filter((i) => i.segId !== denoiseInstId);
       if (resp.instance_id == null) {
         onChange(kept);
         setDenoiseInstId(null);
       } else {
         const idx = resp.indices;                            // Int32Array (decoded in api.js)
-        const afterClass = new Int8Array(idx.length).fill(cls.class_id);
+        const afterClass = new Int8Array(idx.length).fill(-1);
         const afterInstance = new Int32Array(idx.length).fill(resp.instance_id);
+        const afterCategory = new Int8Array(idx.length).fill(CATEGORY_EXCLUDED_REVIEW);
         setSegState((s) => (s ? applyDelta(s, {
           indices: idx, after_class: afterClass, after_instance: afterInstance,
+          after_category: afterCategory,
         }) : s));
-        onChange([...kept, {
-          id: newId(),
-          segId: resp.instance_id,
-          kind: 'pointset',
-          cls: cls.id,
-          label: `${cls.label} ${(counts[cls.id] || 0) + 1}`,
-          color: cls.color,
-          source: 'denoise',
-          confirmed: false,
-        }]);
+        onChange([...kept, reviewBlobRow(resp.instance_id, 'denoise')]);
         setDenoiseInstId(resp.instance_id);
       }
     } catch (e) {
@@ -723,7 +760,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       setDenoiseBusy(false);
     }
   }, [segState, denoiseBusy, denoiseRatio, denoiseInstId, protectedSegIds,
-      classes, instances, counts, onChange, setSegState]);
+      instances, onChange, setSegState]);
 
   // Feature B: right-click "Remove outliers" strips a selection's spatial
   // strays back to unlabeled (instance) or drops their SAM candidacy (sam).
@@ -807,7 +844,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       const cls = classes.find((c) => c.id === inst.cls);
       return (
         (inst.label || '').toLowerCase().includes(q) ||
-        (cls?.label || inst.cls || '').toLowerCase().includes(q) ||
+        (cls?.label || inst.cls || REVIEW_LABEL).toLowerCase().includes(q) ||
         (inst.id || '').toLowerCase().includes(q)
       );
     });
@@ -986,6 +1023,26 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // Instances-panel "Relabel" affordance). null = closed.
   const [relabelTarget, setRelabelTarget] = useStateLabel(null);
 
+  // Full-res indices of the live point selection: SAM/cut candidates first
+  // (they take precedence in every classify path in this file), else the
+  // presegment/instance selection. Null when nothing is selected.
+  const selectionIndices = useCallbackLabel(() => {
+    if (!segState) return null;
+    const idx = [];
+    if (segState.samSelection.size > 0) {
+      const samIds = segState.samIds;
+      for (let p = 0; p < samIds.length; p++) {
+        if (segState.samSelection.has(samIds[p])) idx.push(p);
+      }
+    } else if (segState.selection.size > 0) {
+      const inst = segState.instanceFull;
+      for (let p = 0; p < inst.length; p++) {
+        if (segState.selection.has(inst[p])) idx.push(p);
+      }
+    }
+    return idx.length ? new Int32Array(idx) : null;
+  }, [segState]);
+
   const confirmSegmentSelection = useCallbackLabel(async (clsDef, opts) => {
     const targetCls = clsDef || activeClassDef;
     if (!segState || segState.selection.size === 0) return;
@@ -1094,6 +1151,60 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     });
   }, [segState, activeClassDef, instances, counts, onChange, setSegState, autoConfirm]);
 
+  // Mark the current selection on the ANNOTATION-STATUS axis instead of the
+  // class axis (eval-labeling phase 2). Same "select, then decide" pipeline
+  // every tool already uses: whichever selection the active tool owns
+  // (SAM/preseg candidates, a preseg selection, or a drawn box) resolves to
+  // points, and the backend writes the category. Only `excluded_review`
+  // allocates an instance — the review blob, which gets a panel row so it can
+  // carry a note and be deleted; artifact/transient/none leave no instance.
+  const markCategory = useCallbackLabel(async (category) => {
+    if (!segState) return;
+    const finish = (r, source) => {
+      if (!r || !r.indices || r.nAffected === 0) {
+        console.warn(r?.nProtected > 0
+          ? `mark ${category}: ${r.nProtected} point(s) skipped — inside a confirmed instance (un-confirm first)`
+          : `mark ${category}: no points affected`);
+        return;
+      }
+      if (r.newInstanceId != null && r.newInstanceId >= 0) {
+        onChange([...instances, reviewBlobRow(r.newInstanceId, source)]);
+      }
+      setSegState((s) => {
+        if (!s) return s;
+        const next = applyDelta(s, {
+          indices: r.indices,
+          after_class: r.afterClass,
+          after_instance: r.afterInstance,
+          after_category: r.afterCategory,
+        });
+        return { ...next, selection: new Set(), samSelection: new Set() };
+      });
+    };
+    try {
+      if (activeTool === 'box' && selBox) {
+        const r = await VoxaAPI.applyShape({
+          shape: { type: 'obb', center: selBox.center, size: selBox.size, rotation: selBox.rotation },
+          targetCategory: category,
+          protectInstances: protectedSegIds,
+        });
+        finish(r, 'box');
+        setSelBox(null);
+        return;
+      }
+      const indices = selectionIndices();
+      if (!indices || indices.length === 0) return;
+      const r = await VoxaAPI.segApply('set_category', {
+        indices,
+        payload: { category, protect_instances: protectedSegIds },
+      });
+      finish(r, segState.samSelection.size > 0 ? 'sam' : 'preseg');
+    } catch (err) {
+      console.error(`mark ${category} failed:`, err);
+    }
+  }, [segState, activeTool, selBox, protectedSegIds, instances, onChange,
+      setSegState, setSelBox, selectionIndices]);
+
   // Box tool apply: send the OBB to the backend, which labels every FULL-RES
   // point inside it (never a client-side subsample test) and returns a delta.
   // Mirrors confirmSegmentSelection's pointset-creation + applyDelta flow, then
@@ -1161,8 +1272,19 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const instancesRef = useRefLabel(instances);
   instancesRef.current = instances;
   const onToolApplied = useCallbackLabel(({
-    instanceId, classId, mergedFrom = [], source = 'draw', obb = null, prism = null,
+    instanceId, classId, category = null, mergedFrom = [], source = 'draw',
+    obb = null, prism = null,
   }) => {
+    if (category) {
+      // Category marks carry no class; only excluded_review leaves an
+      // instance behind (the review blob) and therefore a panel row.
+      if (instanceId != null && instanceId >= 0) {
+        const next = [...instancesRef.current, reviewBlobRow(instanceId, source)];
+        instancesRef.current = next;
+        onChange(next);
+      }
+      return;
+    }
     const cls = classes.find((c) => c.class_id === classId);
     if (!cls) return;
     const absorbed = new Set(mergedFrom);
@@ -1404,6 +1526,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           counts={counts}
           onPick={(cls) => {
             setClassPickerOpen(false);
+            // The picker yields either a class def or a category mark
+            // (annotation-status axis) — see class-picker.jsx.
+            if (cls?.category) { markCategory(cls.category); return; }
             if ((activeTool === 'sam' || activeTool === 'presegment')
               && segState && segState.samSelection.size > 0) confirmSamSelection(cls);
             else if (activeTool === 'box' && selBox) applyBox(cls);
@@ -1421,6 +1546,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             counts={counts}
             onPick={(cls) => { setRelabelTarget(null); relabelInstance(inst, cls); }}
             onClose={() => setRelabelTarget(null)}
+            allowCategories={false}
           />
         );
       })()}
@@ -1485,6 +1611,25 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               title={`Aggressiveness (σ=${denoiseRatio.toFixed(1)}; lower = greedier)`} />
           </div>
         )}
+        {segState && (() => {
+          // Non-object marks (phase 2). They carry no class and (except review
+          // blobs) no instance, so this counter is the only place they are
+          // countable at a glance — the viewport shows WHERE they are.
+          const cc = categoryCounts(segState.categoryFull);
+          const total = cc.artifact + cc.transient + cc.excluded_review;
+          if (total === 0) return null;
+          return (
+            <div className="noncat-row" title="Points marked on the annotation-status axis">
+              <span className="noncat-title">Non-object</span>
+              {POINT_CATEGORY_ROWS.map(([key, cat]) => (
+                <span key={key} className="noncat-chip">
+                  <span className="class-swatch" style={{ background: cat.color }} />
+                  {formatPointCount(cc[key])}
+                </span>
+              ))}
+            </div>
+          );
+        })()}
         <div className="side-hd">
           <span>Classes</span>
           <span className="badge-soft">{instances.length}</span>
@@ -1781,7 +1926,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                   <span className="inst-dot" style={{ background: cls?.color || inst.color }} />
                   <div className="inst-text">
                     <b>{inst.label}</b>
-                    <em>{cls?.label || inst.cls}</em>
+                    <em>{cls?.label || inst.cls || REVIEW_LABEL}</em>
                   </div>
                   <button className={'inst-edit-btn' + (inst.confirmed ? ' is-confirmed' : '')}
                     onClick={(e) => { e.stopPropagation(); toggleConfirm(inst.id); }}
@@ -1828,7 +1973,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                           which the old pills never did. */}
                       <div className="ins-class-current">
                         <span className="class-swatch" style={{ background: inst.color }} />
-                        <span>{classes.find((c) => c.id === inst.cls)?.label || inst.cls}</span>
+                        <span>{classes.find((c) => c.id === inst.cls)?.label
+                          || inst.cls || REVIEW_LABEL}</span>
                         <button className="ghost-btn"
                           disabled={inst.confirmed}
                           onClick={() => setRelabelTarget(inst.id)}>
@@ -1911,6 +2057,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             isSelected: instCutMenu.instId === selectedId,
             confirmed: !!target?.confirmed,
             classFrozen: !!classes.find((c) => c.id === target?.cls)?.frozen,
+            reviewBlob: !!target && target.cls == null,
           });
           return (
             <ContextMenu
@@ -1922,7 +2069,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                   ? 'Edit selection… (un-confirm first)'
                   : elig.reason === 'frozen-class'
                     ? 'Edit selection… (legacy class — re-label with a primitive first)'
-                    : 'Edit selection…',
+                    : elig.reason === 'review-blob'
+                      ? 'Edit selection… (review blob — relabel it first)'
+                      : 'Edit selection…',
                 disabled: !elig.eligible,
                 onSelect: () => {
                   if (!target || !Number.isFinite(target.segId)) return;

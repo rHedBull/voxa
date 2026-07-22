@@ -1,11 +1,15 @@
 export function initSegState({
   classFull, instanceFull, isFromPrelabel = false,
   segBoxes = null, segHulls = null,
-  samIds = null, samSegments = [],
+  samIds = null, samSegments = [], categories = null,
 }) {
   return {
     classFull,
     instanceFull,
+    // Annotation-status axis (phase 2): 0 = none, else artifact/transient/
+    // excluded_review. Defaults to zeros so a pre-phase-2 session (or an
+    // older backend that sends no categories) degrades to "nothing marked".
+    categoryFull: categories || new Int8Array(classFull.length),
     summary: deriveSummary(classFull, instanceFull),
     dirty: false,
     selection: new Set(),
@@ -29,10 +33,15 @@ export function initSegState({
   };
 }
 
-export function applyDelta(state, { indices, after_class, after_instance }) {
+export function applyDelta(state, { indices, after_class, after_instance, after_category }) {
   for (let k = 0; k < indices.length; k++) {
     state.classFull[indices[k]] = after_class[k];
     state.instanceFull[indices[k]] = after_instance[k];
+    // Absent only when talking to a pre-phase-2 backend; the working arrays
+    // then simply keep whatever categories they had.
+    if (after_category && state.categoryFull) {
+      state.categoryFull[indices[k]] = after_category[k];
+    }
   }
   const retired = retireSamIdsForIndices(state, indices);
   return { ...retired, summary: deriveSummary(state.classFull, state.instanceFull), dirty: true };
@@ -195,14 +204,14 @@ export function reconcilePointsetRows(rows, summary, touchedIds, dormant) {
 // instance values BEFORE applyDelta mutates them in place — an ordering
 // invariant no caller should have to know. Returns { next, rows } where
 // `rows` is the reconciled row list or null when the rows are unchanged.
-export function applyUndoRedoDelta(state, { indices, after_class, after_instance }, rows) {
+export function applyUndoRedoDelta(state, { indices, after_class, after_instance, after_category }, rows) {
   const touched = new Set();
   for (let k = 0; k < indices.length; k++) {
     touched.add(state.instanceFull[indices[k]]);
     touched.add(after_instance[k]);
   }
   touched.delete(-1);
-  const next = applyDelta(state, { indices, after_class, after_instance });
+  const next = applyDelta(state, { indices, after_class, after_instance, after_category });
   return { next, rows: reconcilePointsetRows(rows, next.summary, touched, state.dormant) };
 }
 

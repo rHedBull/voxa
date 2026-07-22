@@ -340,3 +340,53 @@ describe('SAM candidate layer', () => {
     expect(next.samSegments.get(5).source).toBe('preseg');
   });
 });
+
+describe('point categories (phase 2)', () => {
+  it('initSegState defaults categoryFull to zeros when the backend sends none', () => {
+    const s = seed();
+    expect(s.categoryFull.length).toBe(8);
+    expect(Array.from(s.categoryFull).every((v) => v === 0)).toBe(true);
+  });
+
+  it('initSegState adopts a supplied category array', () => {
+    const cats = Int8Array.from([0, 1, 0, 0, 0, 0, 0, 3]);
+    const s = initSegState({
+      classFull: new Int8Array(8), instanceFull: new Int32Array(8), categories: cats,
+    });
+    expect(s.categoryFull).toBe(cats);
+  });
+
+  it('applyDelta writes after_category when present', () => {
+    const s = seed();
+    const next = applyDelta(s, {
+      indices: new Int32Array([1, 2]),
+      after_class: new Int8Array([-1, -1]),
+      after_instance: new Int32Array([-1, -1]),
+      after_category: new Int8Array([1, 1]),
+    });
+    expect(Array.from(next.categoryFull.slice(0, 4))).toEqual([0, 1, 1, 0]);
+  });
+
+  it('applyDelta leaves categories alone when the delta carries none', () => {
+    const s = seed();
+    s.categoryFull[1] = 2;
+    const next = applyDelta(s, {
+      indices: new Int32Array([1]),
+      after_class: new Int8Array([3]),
+      after_instance: new Int32Array([9]),
+    });
+    expect(next.categoryFull[1]).toBe(2);
+  });
+
+  it('applyUndoRedoDelta restores categories alongside class/instance', () => {
+    const s = seed();
+    s.categoryFull[3] = 1;
+    const { next } = applyUndoRedoDelta(s, {
+      indices: new Int32Array([3]),
+      after_class: new Int8Array([1]),
+      after_instance: new Int32Array([1]),
+      after_category: new Int8Array([0]),
+    }, []);
+    expect(next.categoryFull[3]).toBe(0);
+  });
+});

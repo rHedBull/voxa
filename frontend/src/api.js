@@ -22,6 +22,7 @@ export function decodeLoadResponse(j) {
     sceneIsZUp: !!j.scene_is_z_up,
     fullClassIds: j.full_class_ids ? b64ToInt8(j.full_class_ids) : null,
     fullInstanceIds: j.full_instance_ids ? b64ToInt32(j.full_instance_ids) : null,
+    fullCategories: j.full_categories ? b64ToInt8(j.full_categories) : null,
     fullPositions: j.full_positions ? b64ToFloat32(j.full_positions) : null,
     fullN: j.full_n ?? null,
     isFromPrelabel: !!j.is_from_prelabel,
@@ -199,6 +200,7 @@ export const VoxaAPI = {
       nSegments: j.n_segments,
       fullClassIds: b64ToInt8(j.full_class_ids),
       fullInstanceIds: b64ToInt32(j.full_instance_ids),
+      fullCategories: j.full_categories ? b64ToInt8(j.full_categories) : null,
       segIds: j.seg_ids ? b64ToInt32(j.seg_ids) : null,
       segCenters: j.seg_centers ? b64ToFloat32(j.seg_centers) : null,
       segSizes: j.seg_sizes ? b64ToFloat32(j.seg_sizes) : null,
@@ -245,10 +247,14 @@ export const VoxaAPI = {
     const j = await r.json();
     return j.presegs;
   },
-  async applyShape({ shape, targetClass, targetInst = -1, mergedFrom = [], protectInstances = [] }) {
+  // Exactly one of targetClass / targetCategory: a shape either labels its
+  // points or marks them on the annotation-status axis (phase 2).
+  async applyShape({ shape, targetClass = null, targetCategory = null, targetInst = -1,
+                     mergedFrom = [], protectInstances = [] }) {
     const body = {
       shape,
-      target_class: targetClass,
+      ...(targetCategory != null ? { target_category: targetCategory }
+                                 : { target_class: targetClass }),
       target_inst: targetInst,
       merged_from: mergedFrom,
       protect_instances: protectInstances,
@@ -439,6 +445,7 @@ function _decodeApplyResponse(j) {
     indices: j.indices ? b64ToInt32(j.indices) : null,
     afterClass: j.after_class ? b64ToInt8(j.after_class) : null,
     afterInstance: j.after_instance ? b64ToInt32(j.after_instance) : null,
+    afterCategory: j.after_category ? b64ToInt8(j.after_category) : null,
     direction: j.direction ?? null,
   };
 }

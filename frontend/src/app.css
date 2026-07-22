@@ -968,6 +968,26 @@ kbd {
   border-top: 1px solid var(--border, #2a2d34);
   font-size: 11px; color: var(--text-dim, #8a8f99); text-align: center;
 }
+/* Non-object footer row: the annotation-status axis (phase 2 categories). */
+.class-picker-categories {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border, #2a2d34);
+}
+.class-picker-cat-title {
+  font-size: 11px; color: var(--text-dim, #8a8f99); margin-right: 2px;
+}
+.class-picker-cat {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px;
+  background: transparent;
+  border: 1px solid var(--border, #2a2d34);
+  border-radius: 6px;
+  color: inherit; cursor: pointer;
+}
+.class-picker-cat:hover { background: rgba(255, 255, 255, 0.05); }
+.class-picker-cat.clear { margin-left: auto; }
+
 .class-picker-row.group .class-picker-label { font-weight: 600; }
 .class-picker-chevron { color: var(--text-dim, #8a8f99); font-size: 13px; }
 
@@ -1297,6 +1317,8 @@ kbd {
 }
 .region-actions .ghost-btn { width: auto; padding: 2px 8px; }
 .region-actions .tool-opt-hint.danger { flex-basis: 100%; color: oklch(0.7 0.18 25); }
+/* Over the excluded-review budget: the eval-grade flip will refuse. */
+.badge-soft.danger { color: oklch(0.7 0.18 25); border-color: oklch(0.7 0.18 25); }
 .region-detail {
   display: flex; flex-direction: column; gap: 6px;
   padding: 6px 0 2px 14px;
@@ -1311,3 +1333,15 @@ kbd {
    flex row — the toggle takes the middle slot instead of the old label. */
 .side-tabs { margin-bottom: 0; flex: 1; margin-left: 6px; }
 .side-tabs button { font-size: 10.5px; padding: 3px 0; letter-spacing: 0.04em; }
+
+/* Non-object mark counter (eval-labeling phase 2) — left rail, above Classes. */
+.noncat-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 8px; margin-top: 8px;
+  border: 1px solid var(--border, #2a2d34); border-radius: 6px;
+}
+.noncat-title { font-size: 11px; color: var(--text-dim, #8a8f99); }
+.noncat-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--text, #d8dadf);
+}

@@ -4,7 +4,9 @@
 // the API calls and state. Membership = majority-inside (region-utils.js).
 
 import { useState } from 'react';
-import { majorityInstances, unlabeledPct, regionCssColor } from './region-utils.js';
+import {
+  REVIEW_BUDGET_PCT, majorityInstances, regionCssColor, reviewPct, unlabeledPct,
+} from './region-utils.js';
 
 export default function RegionPanel({
   regions, stats, instances, classes, eyes,
@@ -30,6 +32,7 @@ export default function RegionPanel({
       {regions.map((region) => {
         const stat = stats[region.id];
         const pct = unlabeledPct(stat);
+        const review = reviewPct(stat);
         const isOpen = expanded === region.id;
         const evalGrade = region.status === 'eval_grade';
         const members = isOpen ? majorityInstances(stat, instances) : [];
@@ -76,6 +79,12 @@ export default function RegionPanel({
             <div className="region-actions">
               <span className="badge-soft">{evalGrade ? 'eval-grade' : 'draft'}</span>
               {pct != null && <span className="badge-soft">{Math.round(pct)}% unlabeled</span>}
+              {review > 0 && (
+                <span className={'badge-soft' + (review > REVIEW_BUDGET_PCT ? ' danger' : '')}
+                  title={`excluded-review budget: ${REVIEW_BUDGET_PCT}% — over it the eval-grade flip is refused`}>
+                  {review.toFixed(1)}% review
+                </span>
+              )}
               {evalGrade ? (
                 <button className="ghost-btn"
                   onClick={() => run(region.id, onFlipStatus(region.id, 'draft'))}>Back to draft</button>
@@ -99,7 +108,7 @@ export default function RegionPanel({
                     return (
                       <div key={inst.id} className="inst-row region-member" onClick={() => onSelectInstance(inst)}>
                         <span className="class-swatch" style={{ background: cls?.color }} />
-                        <span className="region-member-name">{inst.label || cls?.label || inst.cls}</span>
+                        <span className="region-member-name">{inst.label || cls?.label || inst.cls || 'Review'}</span>
                         <span className="badge-soft">{Math.round(frac * 100)} %</span>
                       </div>
                     );

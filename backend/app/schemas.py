@@ -50,6 +50,7 @@ class LoadResponse(BaseModel):
                                       # frontend must invert when exporting a PLY
     full_class_ids: Optional[str] = None     # b64 Int8, full-res
     full_instance_ids: Optional[str] = None  # b64 Int32, full-res
+    full_categories: Optional[str] = None    # b64 Int8, full-res — point categories (phase 2)
     full_positions: Optional[str] = None     # b64 Float32 (xyz, recentered), full-res
     full_n: Optional[int] = None
     is_from_prelabel: bool = False
@@ -85,7 +86,9 @@ class Cuboid(BaseModel):
     # instances. Pointsets carry `kind="pointset"` + `segId`, and have
     # null center/size. Compare-mode IoU skips pointset instances.
     id: str
-    cls: str
+    # null ⟺ review blob: an excluded-review instance carries shape + note,
+    # never a class (eval-labeling phase 2 — status never rides the class axis).
+    cls: Optional[str] = None
     label: str = ""
     color: str = "#5b8def"
     center: Optional[list[float]] = None   # [x,y,z]; null for pointset
@@ -184,7 +187,11 @@ class CenterlineApplyRequest(BaseModel):
 
 class ApplyShapeRequest(BaseModel):
     shape: dict            # {type:'tube'|'obb'|'prism', ...} — validated in shape_indices
-    target_class: int | str
+    # Exactly one of target_class / target_category: a shape either labels its
+    # points (class axis) or marks them on the annotation-status axis
+    # (artifact | transient | excluded_review | none — phase-2 categories).
+    target_class: Optional[int | str] = None
+    target_category: Optional[int | str] = None
     target_inst: int = -1
     merged_from: list[int] = []
     # Instance ids that must not be overwritten ("confirmed = locked"): points
@@ -262,6 +269,7 @@ class SegmentStateResponse(BaseModel):
     is_from_prelabel: bool = False
     full_class_ids: str = ""
     full_instance_ids: str = ""
+    full_categories: str = ""      # b64 Int8 — point categories (phase 2)
     seg_ids: str = ""
     seg_centers: str = ""
     seg_sizes: str = ""
