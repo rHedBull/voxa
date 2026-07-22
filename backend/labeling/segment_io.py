@@ -325,6 +325,32 @@ def load_categories(session_dir: Path, n_points: int) -> Optional[np.ndarray]:
     return arr
 
 
+def load_eval_regions_for_invariants(scan_dir: Path) -> list[dict]:
+    """Read eval_regions.json (scan root) for the save-time gate. Missing
+    file -> [] (a scan with no eval regions yet is not itself invalid). Shape
+    matches labeling.regions.load_regions: {"regions": [...]}."""
+    p = ScanLayout(scan_dir).scan_dir / "eval_regions.json"
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text()).get("regions", [])
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def load_prior_segment_metadata(scan_dir: Path, session_id: str) -> Optional[dict]:
+    """Read the PREVIOUS gt_segment_metadata.json (before this save
+    overwrites it) — needed by eval-invariant 7's cross-save id-lineage
+    check. Returns None if this is the session's first save."""
+    p = ScanLayout(scan_dir).session(session_id).output_gt_segment_metadata
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def sam_segments_to_list(sam_segments: dict[int, dict]) -> list[dict]:
     """{sam_seg_id: meta} -> [{id, **meta}, ...] sorted by id — the shared
     wire/file shape used by both sam_segments.json and GET /api/segment/state."""

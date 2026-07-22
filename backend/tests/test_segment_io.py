@@ -328,3 +328,13 @@ def test_save_and_load_sam_segments_roundtrip_preserves_source_tag(tmp_path):
 def test_load_sam_segments_absent_file_returns_empty_dict(tmp_path):
     from labeling.segment_io import load_sam_segments
     assert load_sam_segments(tmp_path) == {}
+
+
+def test_load_eval_regions_for_invariants_missing(tmp_path):
+    from labeling.segment_io import load_eval_regions_for_invariants
+    assert load_eval_regions_for_invariants(tmp_path) == []
+
+
+def test_load_prior_segment_metadata_missing(tmp_path):
+    from labeling.segment_io import load_prior_segment_metadata
+    assert load_prior_segment_metadata(tmp_path, "s1") is None
