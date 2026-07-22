@@ -1,7 +1,7 @@
 # Eval Regions (Eval-Labeling Phase 1) — Design
 
 **Date:** 2026-07-21
-**Status:** Draft
+**Status:** Implemented (2026-07-22, branch feat/eval-regions)
 **Branch:** `feat/eval-regions`
 
 ## Problem
