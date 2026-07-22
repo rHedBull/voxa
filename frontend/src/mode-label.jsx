@@ -27,6 +27,7 @@ import { removeOutliersEligibility } from './outlier-eligibility.js';
 import { fitEligibility } from './fit-eligibility.js';
 import CutModal from './cut-mode.jsx';
 import { RegionsOverlay } from './region-mode.jsx';
+import RegionPanel from './region-panel.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -142,6 +143,20 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const regionVisibleIds = useMemoLabel(
     () => (activeTool === 'region' ? new Set(regions.map((r) => r.id)) : regionEyes),
     [activeTool, regions, regionEyes]);
+  // Region stats (unlabeled %, instance overlap) refresh whenever labels
+  // change — segState is replaced on every apply/undo/redo delta. Debounced:
+  // prism containment over the full-res arrays is cheap but not free.
+  useEffectLabel(() => {
+    if (!regions.length || !segState) { setRegionStats({}); return undefined; }
+    let dead = false;
+    const t = setTimeout(() => {
+      VoxaAPI.regionStats()
+        .then((list) => { if (!dead) setRegionStats(Object.fromEntries(list.map((s) => [s.id, s]))); })
+        .catch((err) => console.error('region stats failed:', err));
+    }, 400);
+    return () => { dead = true; clearTimeout(t); };
+  }, [regions, segState]);
+  const [sideRTab, setSideRTab] = useStateLabel('instances');
   const [sideRCollapsed, setSideRCollapsed] = useStateLabel(() => {
     try { return localStorage.getItem('voxa.label.sideRCollapsed') === '1'; }
     catch { return false; }
@@ -1679,7 +1694,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         {sideRCollapsed ? (
           <button className="side-collapse-handle"
             onClick={() => setSideRCollapsed(false)}
-            title={`Show instances panel (${instances.length})`}>
+            title={`Show instances / regions panel (${instances.length} instances, ${regions.length} regions)`}>
             <span className="side-collapse-chev">‹</span>
             <span className="side-collapse-label">Instances</span>
             <span className="badge-soft">{instances.length}</span>
@@ -1690,9 +1705,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <button className="side-collapse-btn"
             onClick={() => setSideRCollapsed(true)}
             title="Collapse panel">›</button>
-          <span>Instances</span>
+          <div className="tool-opt-toggle side-tabs">
+            <button className={sideRTab === 'instances' ? 'active' : ''} onClick={() => setSideRTab('instances')}>Instances</button>
+            <button className={sideRTab === 'regions' ? 'active' : ''} onClick={() => setSideRTab('regions')}>
+              Regions{regions.length ? ` (${regions.length})` : ''}
+            </button>
+          </div>
           <div className="side-hd-actions">
-            {confirmedCount > 0 && (
+            {sideRTab === 'instances' && confirmedCount > 0 && (
               <button className="hide-labeled-btn"
                 onClick={() => setHideConfirmed((v) => !v)}
                 title={hideConfirmed
@@ -1701,13 +1721,16 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 {hideConfirmed ? '◌' : '●'} {confirmedCount} done
               </button>
             )}
-            <span className="badge-soft">
-              {(instFilter || instStatus !== 'all')
-                ? `${filteredInstances.length} / ${instances.length}`
-                : instances.length}
-            </span>
+            {sideRTab === 'instances' && (
+              <span className="badge-soft">
+                {(instFilter || instStatus !== 'all')
+                  ? `${filteredInstances.length} / ${instances.length}`
+                  : instances.length}
+              </span>
+            )}
           </div>
         </div>
+        {sideRTab === 'instances' && (<>
         <div className="inst-filter">
           <input className="ins-input"
             placeholder="Filter by label, class, or id"
@@ -1928,6 +1951,23 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             />
           );
         })()}
+        </>)}
+        {sideRTab === 'regions' && (
+          <RegionPanel regions={regions} stats={regionStats} instances={instances} classes={classes}
+            eyes={regionEyes}
+            onToggleEye={(id) => setRegionEyes((s) => {
+              const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next;
+            })}
+            onRename={(id, name) => VoxaAPI.regionPatch(id, { name })
+              .then((r) => setRegions((rs) => rs.map((x) => (x.id === id ? r : x))))
+              .catch((err) => console.error('region rename failed:', err))}
+            onDelete={(id) => VoxaAPI.regionDelete(id)
+              .then(() => setRegions((rs) => rs.filter((x) => x.id !== id)))
+              .catch((err) => console.error('region delete failed:', err))}
+            onFlipStatus={(id, status) => VoxaAPI.regionPatch(id, { status })
+              .then((r) => { setRegions((rs) => rs.map((x) => (x.id === id ? r : x))); })}
+            onSelectInstance={(inst) => { setSelectedId(inst.id); focusInstance(inst); }} />
+        )}
         </>
         )}
       </aside>

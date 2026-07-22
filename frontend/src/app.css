@@ -1268,3 +1268,46 @@ kbd {
   padding: 12px 14px; border-top: 1px solid var(--border);
 }
 .sam-review-actions .ghost-btn { width: auto; flex: 0 0 auto; }
+
+/* Regions tab (eval-labeling phase 1). The outer .region-row is a COLUMN
+   (header + actions + expanded detail) — deliberately not .inst-row, which
+   is a 5-column grid; only the member rows inside reuse that grid. */
+.region-list { display: flex; flex-direction: column; gap: 2px; }
+.region-row {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 4px 6px; border-radius: 6px;
+  border: 1px solid transparent;
+}
+.region-row:hover { background: var(--bg-elev-2); }
+.region-row.open { background: var(--bg-elev-2); border-color: var(--border); }
+.region-row-hd {
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0; cursor: pointer;
+}
+.region-name {
+  flex: 1; min-width: 0;
+  font-size: 12px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.region-row-hd .ins-input { flex: 1; min-width: 0; }
+.region-row-hd .ghost-btn { width: auto; flex: 0 0 auto; padding: 2px 6px; }
+.region-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
+  padding-left: 14px;
+}
+.region-actions .ghost-btn { width: auto; padding: 2px 8px; }
+.region-actions .tool-opt-hint.danger { flex-basis: 100%; color: oklch(0.7 0.18 25); }
+.region-detail {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 0 2px 14px;
+}
+.region-members { display: flex; flex-direction: column; gap: 1px; }
+.region-member { grid-template-columns: 8px 1fr auto; }
+.region-member-name {
+  font-size: 12px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Instances / Regions tabs live inside .side-hd, which is a space-between
+   flex row — the toggle takes the middle slot instead of the old label. */
+.side-tabs { margin-bottom: 0; flex: 1; margin-left: 6px; }
+.side-tabs button { font-size: 10.5px; padding: 3px 0; letter-spacing: 0.04em; }
