@@ -645,6 +645,60 @@ def test_export_labels_confirmed_only_zeros_unconfirmed(client_with_annotated_sc
     assert manifest["filters"]["confirmed_only"] is True
 
 
+def test_export_labels_include_meshes_false_by_default(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+    })
+    assert r.status_code == 200, r.text
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.namelist() == ["scan_labeled.ply", "manifest.json"]
+    manifest = json.loads(zf.read("manifest.json"))
+    assert "meshes" not in manifest
+
+
+def test_export_labels_include_meshes_true_reports_skips(client_with_annotated_scene):
+    # Demo fixture's 4 instances have 1-2 points each -- all below
+    # MIN_POINTS_FOR_MESH (100), so every confirmed/included instance is
+    # skipped, but the wiring (filters -> surviving ids -> manifest) is
+    # still fully exercised.
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    instances = [
+        {"id": "i0", "cls": "pipe", "kind": "pointset", "segId": 0, "confirmed": True},
+        {"id": "i1", "cls": "tank", "kind": "pointset", "segId": 1, "confirmed": False},
+        {"id": "i2", "cls": "equipment", "kind": "pointset", "segId": 2, "confirmed": True},
+        {"id": "i3", "cls": "equipment", "kind": "pointset", "segId": 3, "confirmed": True},
+    ]
+    r = client.put(
+        f"/api/annotations/gt/{scene_id}?session_id={session_id}",
+        json={"scene": scene_id, "kind": "gt", "instances": instances, "meta": {}},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "confirmed_only": True,
+        "include_meshes": True,
+    })
+    assert r.status_code == 200, r.text
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.namelist() == ["scan_labeled.ply", "manifest.json"]  # nothing written, all skipped
+    manifest = json.loads(zf.read("manifest.json"))
+    assert manifest["meshes"]["written"] == 0
+    skipped_ids = {s["id"] for s in manifest["meshes"]["skipped"]}
+    # instance 1 is unconfirmed -> excluded from the surviving set entirely,
+    # so it must NOT appear in the meshes skip list (it never got the chance
+    # to be considered -- it was filtered out upstream, not skipped for size).
+    assert 1 not in skipped_ids
+    assert skipped_ids == {0, 2, 3}
+
+
 def test_export_labels_scene_session_mismatch_409(client_with_annotated_scene):
     client, scene_id, session_id = client_with_annotated_scene
     _load_demo(client, scene_id, session_id)

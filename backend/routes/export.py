@@ -25,6 +25,7 @@ from labeling.materialize import (
     loa_band,
 )
 from labeling.centerline import load_centerlines
+from labeling.instance_meshes import build_instance_glbs
 from labeling.export_pipeline import (
     apply_filters_remap,
     build_manifest,
@@ -272,6 +273,17 @@ def export_labels(req: ExportLabelsRequest) -> Response:
         zip_path = Path(tmpdir) / "export.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
             zf.write(ply_path, "scan_labeled.ply")
+            if req.include_meshes:
+                mesh_cls, _mesh_inst = apply_filters_remap(
+                    ctx.work_cls, ctx.work_inst, confirmed_by_inst, req, src_to_tgt)
+                surviving_ids = {int(i) for i in np.unique(ctx.work_inst[mesh_cls >= 0]) if i >= 0}
+                glbs, skipped = build_instance_glbs(ctx.scan_pos, ctx.work_inst, surviving_ids)
+                for iid, data in glbs.items():
+                    zf.writestr(f"meshes/{iid}.glb", data)
+                manifest["meshes"] = {
+                    "written": len(glbs),
+                    "skipped": [{"id": iid, "reason": reason} for iid, reason in skipped],
+                }
             zf.writestr("manifest.json", json.dumps(manifest, indent=2))
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
