@@ -21,11 +21,16 @@ existing `/api/labels/export` wizard, and retires the script.
 - Mesh generation respects the same `confirmed_only` / `include_classes`
   filters as the point export, so meshes and points in one export are always
   for the same instance set.
-- Degenerate instances (`<4` points, or a `QhullError` from coplanar points)
-  are skipped, not bbox-faked — matches the old script's behavior. This is a
-  distinct convention from `labeling/segment_hulls.py`'s bbox fallback, which
-  serves the frontend's hull-preview overlay (a different consumer that needs
-  every segment to render something).
+- Instances with `<100` points, or a `QhullError` from coplanar points, are
+  skipped, not bbox-faked. The old script's `MIN_POINTS_FOR_HULL = 4` was
+  only the geometric floor (a hull needs ≥4 non-coplanar points to exist at
+  all); `100` is a quality bar on top of that — a technically-valid hull from
+  a handful of points is too noisy/unrepresentative to hand to collision
+  detection, so `MIN_POINTS_FOR_MESH = 100` replaces it as the skip
+  threshold. This is a distinct convention from `labeling/segment_hulls.py`'s
+  bbox fallback, which serves the frontend's hull-preview overlay (a
+  different consumer that needs every segment to render something,
+  regardless of quality).
 - Delete `scripts/build_instance_meshes.py` (currently untracked — never
   committed) and its mention in `scripts/README.md`.
 - Out of scope: no changes to `product/demo`. Its existing pre-baked
@@ -45,10 +50,16 @@ def build_instance_glbs(
     """Convex-hull .glb per id in `surviving_ids`.
 
     Returns (glbs, skipped) where glbs maps instance_id -> glb bytes, and
-    skipped lists (instance_id, reason) for ids with < 4 points or a
-    degenerate/coplanar hull (QhullError).
+    skipped lists (instance_id, reason) for ids with < MIN_POINTS_FOR_MESH
+    points or a degenerate/coplanar hull (QhullError).
     """
 ```
+
+`MIN_POINTS_FOR_MESH = 100` (module constant, up from the old script's
+`MIN_POINTS_FOR_HULL = 4`) — a quality bar, not just the geometric minimum:
+instances below it are skipped even though a hull may be geometrically
+constructible, because too few points make too unreliable a shape for
+collision detection to trust.
 
 Ported from the old script's per-id loop: mask `points` by `instance_ids ==
 id`, `scipy.spatial.ConvexHull`, `trimesh.Trimesh(vertices=pts,
@@ -135,17 +146,17 @@ shown before download).
 ## Testing
 
 - `tests/test_instance_meshes.py` (new): `build_instance_glbs` happy path
-  (valid hull → non-empty glb bytes, correct id set) and degenerate cases
-  (`<4` points and collinear/coplanar points → skipped with a reason, absent
-  from `glbs`).
+  (≥100 non-coplanar points → non-empty glb bytes, correct id set) and skip
+  cases (`<100` points, and a coplanar/collinear point set at ≥100 points
+  triggering `QhullError` → skipped with a reason, absent from `glbs`).
 - Extend `tests/test_export_labels.py`: `include_meshes=True` produces a zip
   containing `meshes/<id>.glb` for confirmed/included instances only, and a
   `meshes` block in `manifest.json`; `include_meshes=False` (default) has
   neither — exact parity with pre-change exports. The default fixture scene
   (`conftest.py`'s `build_annotated_root`) only has 8 points across 4
-  instances (max 2 points/instance) — every instance there is `<4` points and
-  would just get skipped, never exercising a real hull. Use the fixture's
-  `pts` override to supply ≥4 non-coplanar points for at least one surviving
-  instance so the happy path (an actual `.glb` written) is covered, alongside
-  a case with a genuinely too-small instance to confirm it's skipped and
-  reported in `manifest["meshes"]["skipped"]`.
+  instances (max 2 points/instance) — every instance there is far below the
+  `100`-point bar and would just get skipped, never exercising a real hull.
+  Use the fixture's `pts` override to supply ≥100 non-coplanar points for at
+  least one surviving instance so the happy path (an actual `.glb` written)
+  is covered, alongside a small (e.g. 2-point) instance to confirm it's
+  skipped and reported in `manifest["meshes"]["skipped"]`.
