@@ -41,6 +41,7 @@ export default function ExportWizard({
 
   // Classes
   const [confirmedOnly, setConfirmedOnly] = useState(false);
+  const [includeMeshes, setIncludeMeshes] = useState(false);
   // includeSet holds the class_ids currently kept. Starts as "all".
   const [includeSet, setIncludeSet] = useState(() => new Set(classes.map((c) => c.class_id)));
   // Merge rows: { key, from:Set<class_id>, label, color }. `key` is a stable
@@ -152,6 +153,7 @@ export default function ExportWizard({
         include_classes: includeArr,
         remap: previewRows.map((r) => ({ from: r.from, to: r.to })),
         drop_unlabeled: false,
+        include_meshes: includeMeshes,
       };
       const blob = await VoxaAPI.exportLabels(cfg);
       downloadBlob(blob, `scan_labeled_${kind}.zip`);
@@ -215,6 +217,12 @@ export default function ExportWizard({
                 <input type="checkbox" checked={confirmedOnly}
                   onChange={(e) => setConfirmedOnly(e.target.checked)} />
                 <span>Confirmed instances only <em>(unconfirmed points become unlabeled)</em></span>
+              </label>
+
+              <label className="ew-check">
+                <input type="checkbox" checked={includeMeshes}
+                  onChange={(e) => setIncludeMeshes(e.target.checked)} />
+                <span>Include instance meshes <em>(.glb per instance, for collision detection)</em></span>
               </label>
 
               <div className="ew-sub">Include classes</div>

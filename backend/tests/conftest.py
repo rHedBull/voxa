@@ -58,7 +58,9 @@ def write_scene_ply(path: Path, n: int = 8, pts: np.ndarray | None = None) -> No
     PlyData([PlyElement.describe(arr, 'vertex')], text=False).write(str(path))
 
 
-def build_annotated_root(tmp_path: Path, pts: np.ndarray | None = None) -> tuple[Path, str]:
+def build_annotated_root(
+    tmp_path: Path, pts: np.ndarray | None = None, n_instance0_points: int = 2,
+) -> tuple[Path, str]:
     """Build a synthesized lidar root with one annotated/demo scene (scan-schema
     v2: a registered preseg result + one session seeded from it). Returns
     (root, session_id). Lives in conftest (not tests/test_lidar_io) so multiple
@@ -66,7 +68,11 @@ def build_annotated_root(tmp_path: Path, pts: np.ndarray | None = None) -> tuple
 
     ``pts`` (default None) lets a caller supply a custom point cloud (e.g. a
     dense grid for the eval-grade gate) — everything else about the fixture
-    (n=8 random points, the 4-segment preseg) is unchanged when omitted."""
+    (n=8 random points, the 4-segment preseg) is unchanged when omitted.
+    ``n_instance0_points`` (only used when ``pts`` is given) controls how many
+    leading points get assigned to the single instance/segment 0 — default 2
+    matches the original fixture; a caller needing a larger single instance
+    (e.g. to clear a point-count threshold) can raise it, up to ``len(pts)``."""
     root = tmp_path / "lidar"
     scan_dir = root / "annotated" / "demo"
     write_scene_ply(scan_dir / "source" / "scan.ply", n=8, pts=pts)
@@ -96,7 +102,7 @@ def build_annotated_root(tmp_path: Path, pts: np.ndarray | None = None) -> tuple
                                  {"id": 3, "class_id": 2}]}
     else:
         inst = np.full(n_points, -1, dtype=np.int32)
-        inst[:2] = 0
+        inst[:n_instance0_points] = 0
         summary = {"segments": [{"id": 0, "class_id": 0}]}
     register_preseg(lay, "ransac", inst,
                     summary=summary,

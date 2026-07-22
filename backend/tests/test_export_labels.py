@@ -26,6 +26,16 @@ def _base_req(**overrides):
     return ExportLabelsRequest(**payload)
 
 
+def test_include_meshes_defaults_false():
+    req = _base_req()
+    assert req.include_meshes is False
+
+
+def test_include_meshes_can_be_set_true():
+    req = _base_req(include_meshes=True)
+    assert req.include_meshes is True
+
+
 def test_parses_from_alias():
     req = ExportLabelsRequest(**{
         "scene": "annotated/foo",
@@ -633,6 +643,94 @@ def test_export_labels_confirmed_only_zeros_unconfirmed(client_with_annotated_sc
     confirmed_mask = np.isin(inst_arr, [0, 2])
     assert np.all(cls_arr[confirmed_mask] != -1)
     assert manifest["filters"]["confirmed_only"] is True
+
+
+def test_export_labels_include_meshes_false_by_default(client_with_annotated_scene):
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+    })
+    assert r.status_code == 200, r.text
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.namelist() == ["scan_labeled.ply", "manifest.json"]
+    manifest = json.loads(zf.read("manifest.json"))
+    assert "meshes" not in manifest
+
+
+def test_export_labels_include_meshes_true_reports_skips(client_with_annotated_scene):
+    # Demo fixture's 4 instances have 1-2 points each -- all below
+    # MIN_POINTS_FOR_MESH (100), so every confirmed/included instance is
+    # skipped, but the wiring (filters -> surviving ids -> manifest) is
+    # still fully exercised.
+    client, scene_id, session_id = client_with_annotated_scene
+    _load_demo(client, scene_id, session_id)
+
+    instances = [
+        {"id": "i0", "cls": "pipe", "kind": "pointset", "segId": 0, "confirmed": True},
+        {"id": "i1", "cls": "tank", "kind": "pointset", "segId": 1, "confirmed": False},
+        {"id": "i2", "cls": "equipment", "kind": "pointset", "segId": 2, "confirmed": True},
+        {"id": "i3", "cls": "equipment", "kind": "pointset", "segId": 3, "confirmed": True},
+    ]
+    r = client.put(
+        f"/api/annotations/gt/{scene_id}?session_id={session_id}",
+        json={"scene": scene_id, "kind": "gt", "instances": instances, "meta": {}},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "confirmed_only": True,
+        "include_meshes": True,
+    })
+    assert r.status_code == 200, r.text
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.namelist() == ["scan_labeled.ply", "manifest.json"]  # nothing written, all skipped
+    manifest = json.loads(zf.read("manifest.json"))
+    assert manifest["meshes"]["written"] == 0
+    skipped_ids = {s["id"] for s in manifest["meshes"]["skipped"]}
+    assert 1 not in skipped_ids
+    assert skipped_ids == {0, 2, 3}
+
+
+def test_export_labels_include_meshes_true_writes_real_mesh(monkeypatch, tmp_path):
+    # The shared client_with_annotated_scene fixture's instances are all far
+    # below MIN_POINTS_FOR_MESH (100), so the skip-reporting test above can
+    # never exercise an actual glb landing in the zip. Build a scene with one
+    # >=100-point instance (non-coplanar, so ConvexHull succeeds) to cover
+    # that happy path through the real endpoint, not just the pure helper.
+    import main
+    import trimesh
+    from fastapi.testclient import TestClient
+    from labeling.instance_meshes import MIN_POINTS_FOR_MESH
+    from tests.conftest import build_annotated_root
+
+    n = MIN_POINTS_FOR_MESH
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(-1, 1, size=(n, 3)).astype(np.float32)
+
+    root, session_id = build_annotated_root(tmp_path, pts=pts, n_instance0_points=n)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    scene_id = "annotated/demo"
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "include_meshes": True,
+    })
+    assert r.status_code == 200, r.text
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.namelist() == ["scan_labeled.ply", "meshes/0.glb", "manifest.json"]
+    manifest = json.loads(zf.read("manifest.json"))
+    assert manifest["meshes"] == {"written": 1, "skipped": []}
+    mesh = trimesh.load(trimesh.util.wrap_as_stream(zf.read("meshes/0.glb")),
+                         file_type="glb", force="mesh")
+    assert len(mesh.vertices) >= 4
 
 
 def test_export_labels_scene_session_mismatch_409(client_with_annotated_scene):
