@@ -469,6 +469,30 @@ describe('VoxaAPI regions', () => {
     )));
     expect(await VoxaAPI.regionsList()).toEqual([{ id: 1, name: 'Region 1', status: 'draft' }]);
   });
+
+  it('regionCreate/regionDelete/regionStats hit the expected URL, method, and body', async () => {
+    const prism = { polygon: [[0, 0], [1, 0], [1, 1]], y0: 0, height: 2 };
+    let capturedUrl, capturedOpts;
+    const fakeFetch = vi.fn(async (url, opts) => {
+      capturedUrl = url;
+      capturedOpts = opts;
+      return new Response(JSON.stringify({ regions: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fakeFetch);
+
+    await VoxaAPI.regionCreate({ prism, name: 'Region 1' });
+    expect(capturedUrl).toBe('/api/regions');
+    expect(capturedOpts.method).toBe('POST');
+    expect(JSON.parse(capturedOpts.body)).toEqual({ prism, name: 'Region 1' });
+
+    await VoxaAPI.regionDelete(3);
+    expect(capturedUrl).toBe('/api/regions/3');
+    expect(capturedOpts.method).toBe('DELETE');
+
+    await VoxaAPI.regionStats();
+    expect(capturedUrl).toBe('/api/regions/stats');
+    expect(capturedOpts).toBeUndefined();
+  });
 });
 
 describe('VoxaAPI.segApply wire shape', () => {
