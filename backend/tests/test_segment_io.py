@@ -335,6 +335,58 @@ def test_load_eval_regions_for_invariants_missing(tmp_path):
     assert load_eval_regions_for_invariants(tmp_path) == []
 
 
+def test_load_eval_regions_for_invariants_round_trip(tmp_path):
+    """Write a real eval_regions.json in the shape regions.py::empty_doc /
+    save_regions actually produce and confirm the loader returns the
+    regions list verbatim."""
+    from labeling.segment_io import load_eval_regions_for_invariants
+
+    doc = {
+        "version": 1,
+        "next_region_id": 2,
+        "regions": [
+            {
+                "id": 1,
+                "name": "Region 1",
+                "status": "eval_grade",
+                "prism": {"polygon": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                          "y0": 0.0, "height": 2.0},
+                "created_at": "2026-07-20T10:00:00+00:00",
+                "accuracy": {"p50": 0.004, "p90": 0.008, "loa": "fine",
+                             "n_points": 500,
+                             "measured_at": "2026-07-20T10:05:00+00:00"},
+            },
+        ],
+    }
+    (tmp_path / "eval_regions.json").write_text(json.dumps(doc))
+
+    result = load_eval_regions_for_invariants(tmp_path)
+    assert result == doc["regions"]
+
+
 def test_load_prior_segment_metadata_missing(tmp_path):
     from labeling.segment_io import load_prior_segment_metadata
     assert load_prior_segment_metadata(tmp_path, "s1") is None
+
+
+def test_load_prior_segment_metadata_round_trip(tmp_path):
+    """Write a real gt_segment_metadata.json in the shape
+    _build_segment_metadata actually produces and confirm the loader parses
+    it back verbatim at the ScanLayout-resolved path."""
+    from scan_schema.layout import ScanLayout
+    from labeling.segment_io import load_prior_segment_metadata
+
+    sid = "sess-001"
+    meta = {
+        "n_points": 10,
+        "n_gt_segments": 1,
+        "n_labeled_points": 10,
+        "class_map_version": 2,
+        "segments": [{"gt_id": 5, "class_id": 2, "n_points": 10, "label": "pipe"}],
+    }
+    out_path = ScanLayout(tmp_path).session(sid).output_gt_segment_metadata
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(meta))
+
+    result = load_prior_segment_metadata(tmp_path, sid)
+    assert result == meta
