@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 import numpy as np  # noqa: E402
 
-from labeling.categories import CATEGORY_NONE, CATEGORY_EXCLUDED_REVIEW  # noqa: E402
+from labeling.categories import CATEGORY_NONE, CATEGORY_EXCLUDED_REVIEW, category_histogram  # noqa: E402
 from scan_schema.layout import ScanLayout  # noqa: E402
 
 LEGACY_UNKNOWN_CLASS_ID = 6
@@ -84,7 +84,25 @@ def migrate_session(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
     for iid in converted_ids:
         review_blobs.append({"instance_id": iid, "n_points": review_blob_counts[iid]})
     meta["review_blobs"] = review_blobs
-    meta.setdefault("categories", {})
+    meta["categories"] = category_histogram(categories)
+
+    # instances_gt.json (frontend-owned, sibling of output/) carries its own
+    # per-instance `cls`/`confirmed` — a converted instance's row there must
+    # be brought in line with the arrays (now a class-less review blob) or
+    # scan_schema.eval_invariants.check_instance_class_consistency /
+    # check_confirmed_* reject the mismatch. segId is the join key (per
+    # Cuboid.segId / labeling/instances_doc.py::load_instances_for_invariants).
+    instances_gt_path = session_dir / "instances_gt.json"
+    instances_gt = None
+    if converted_ids and instances_gt_path.exists():
+        instances_gt = json.loads(instances_gt_path.read_text())
+        converted_set = set(converted_ids)
+        for inst in instances_gt.get("instances", []):
+            if inst.get("kind") != "pointset" or inst.get("segId") not in converted_set:
+                continue
+            inst["cls"] = None
+            if inst.get("confirmed"):
+                inst["confirmed"] = False
 
     result = {
         "n_legacy_converted": n_legacy,
@@ -98,6 +116,8 @@ def migrate_session(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
     np.save(categories_path, categories)
     np.save(component_path, comp_ids)
     meta_path.write_text(json.dumps(meta, indent=2))
+    if instances_gt is not None:
+        instances_gt_path.write_text(json.dumps(instances_gt, indent=2))
     return result
 
 
