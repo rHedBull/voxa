@@ -12,7 +12,15 @@ export default function RegionPanel({
 }) {
   const [expanded, setExpanded] = useState(null);   // region id
   const [editingName, setEditingName] = useState(null); // {id, value}
-  const [flipError, setFlipError] = useState(null);     // {id, message}
+  const [rowError, setRowError] = useState(null);       // {id, message}
+
+  // Every row mutation goes through here. The callbacks in mode-label.jsx
+  // deliberately do NOT catch — a rejected rename/delete/flip (409 no session,
+  // 422 locked/gated) has to reach the row that triggered it, not the console.
+  const run = (id, result) => {
+    setRowError(null);
+    Promise.resolve(result).catch((err) => setRowError({ id, message: err.detail || err.message }));
+  };
 
   if (!regions.length) {
     return <div className="sugg-empty">No regions yet. Pick the Region tool and trace a footprint.</div>;
@@ -33,7 +41,7 @@ export default function RegionPanel({
                 <input className="ins-input" autoFocus value={editingName.value}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => setEditingName({ id: region.id, value: e.target.value })}
-                  onBlur={() => { onRename(region.id, editingName.value); setEditingName(null); }}
+                  onBlur={() => { run(region.id, onRename(region.id, editingName.value)); setEditingName(null); }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') e.target.blur();
                     if (e.key === 'Escape') setEditingName(null);
@@ -51,7 +59,13 @@ export default function RegionPanel({
               </button>
               {!evalGrade && (
                 <button className="ghost-btn danger" title="Delete region"
-                  onClick={(e) => { e.stopPropagation(); onDelete(region.id); }}>×</button>
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // Regions are not on the undo stack — a mis-click would
+                    // silently destroy a hand-traced footprint.
+                    if (!window.confirm(`Delete region "${region.name}"? This cannot be undone.`)) return;
+                    run(region.id, onDelete(region.id));
+                  }}>×</button>
               )}
             </div>
             {/* Status/coverage badges share the second line with the flip
@@ -63,15 +77,13 @@ export default function RegionPanel({
               <span className="badge-soft">{evalGrade ? 'eval-grade' : 'draft'}</span>
               {pct != null && <span className="badge-soft">{Math.round(pct)}% unlabeled</span>}
               {evalGrade ? (
-                <button className="ghost-btn" onClick={() => onFlipStatus(region.id, 'draft')}>Back to draft</button>
+                <button className="ghost-btn"
+                  onClick={() => run(region.id, onFlipStatus(region.id, 'draft'))}>Back to draft</button>
               ) : (
-                <button className="ghost-btn" onClick={() => {
-                  setFlipError(null);
-                  Promise.resolve(onFlipStatus(region.id, 'eval_grade'))
-                    .catch((err) => setFlipError({ id: region.id, message: err.detail || err.message }));
-                }}>Mark eval-grade</button>
+                <button className="ghost-btn"
+                  onClick={() => run(region.id, onFlipStatus(region.id, 'eval_grade'))}>Mark eval-grade</button>
               )}
-              {flipError?.id === region.id && <p className="tool-opt-hint danger">{flipError.message}</p>}
+              {rowError?.id === region.id && <p className="tool-opt-hint danger">{rowError.message}</p>}
             </div>
             {isOpen && (
               <div className="region-detail">

@@ -47,7 +47,7 @@ function RegionKeys({ prism, setPrism, onExit, onClose }) {
   return null;
 }
 
-function RegionDrawPanel({ prism, onClear }) {
+function RegionDrawPanel({ prism, error, onClear }) {
   const placing = prism.phase === 'footprint';
   const aiming = prism.phase === 'height' && !prism.committed;
   const h = liveHeight(prism);
@@ -66,6 +66,7 @@ function RegionDrawPanel({ prism, onClear }) {
           Move the mouse to set the height, then click to create the region. Height: {h.toFixed(2)} m · Backspace to edit footprint
         </p>
       )}
+      {error && <p className="tool-opt-hint danger">{error} — click again to retry, or Clear to discard.</p>}
       {prism.corners.length > 0 && (
         <div className="tool-opt-toggle"><button onClick={onClear}>Clear</button></div>
       )}
@@ -76,7 +77,12 @@ function RegionDrawPanel({ prism, onClear }) {
 
 export default function RegionMode({ viewerRef, onExit, onCreated }) {
   const [prism, setPrism] = useState(EMPTY_PRISM);
+  const [createError, setCreateError] = useState(null);
   const busyRef = useRef(false);
+
+  // Starting over (Clear/Esc, or the first corner of the next trace) drops a
+  // stale create error; a retry clears it in the create effect below.
+  useEffect(() => { if (prism.corners.length === 0) setCreateError(null); }, [prism.corners.length]);
 
   const closeFootprint = useCallback((dropLast = false) => {
     const camera = viewerRef.current?.getCamera?.();
@@ -97,10 +103,17 @@ export default function RegionMode({ viewerRef, onExit, onCreated }) {
     const shape = prismShapeFromCorners(prism.corners, prism.topY);
     if (!shape) { setPrism(EMPTY_PRISM); return; }
     busyRef.current = true;
+    setCreateError(null);
     VoxaAPI.regionCreate({ prism: shape })
-      .then((region) => { onCreated?.(region); })
-      .catch((err) => console.error('region create failed:', err))
-      .finally(() => { busyRef.current = false; setPrism(EMPTY_PRISM); });
+      .then((region) => { onCreated?.(region); setPrism(EMPTY_PRISM); })
+      .catch((err) => {
+        // Keep the traced geometry — re-tracing a footprint by hand is the
+        // expensive part. Dropping `committed` is also what stops this effect
+        // from re-POSTing on its own: the retry needs another commit click.
+        setCreateError(err.detail || err.message);
+        setPrism((s) => (s.phase === 'height' ? { ...s, committed: false } : s));
+      })
+      .finally(() => { busyRef.current = false; });
   }, [prism, onCreated]);
 
   return (
@@ -108,7 +121,7 @@ export default function RegionMode({ viewerRef, onExit, onCreated }) {
       <RegionKeys prism={prism} setPrism={setPrism} onExit={onExit} onClose={closeNow} />
       <PrismOverlay viewerRef={viewerRef} prism={prism} setPrism={setPrism} onClose={closeFootprint} />
       <PrismRubberBand viewerRef={viewerRef} prism={prism} />
-      <RegionDrawPanel prism={prism} onClear={() => setPrism(EMPTY_PRISM)} />
+      <RegionDrawPanel prism={prism} error={createError} onClear={() => setPrism(EMPTY_PRISM)} />
     </>
   );
 }

@@ -134,7 +134,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     let dead = false;
     VoxaAPI.regionsList()
       .then((rs) => { if (!dead) setRegions(rs); })
-      .catch((err) => console.error('regions load failed:', err));
+      .catch((err) => {
+        // 409 = no active backend session (e.g. this session was just
+        // deleted while segState was still set) — expected, just empty out.
+        if (err.status === 409) { if (!dead) setRegions([]); return; }
+        console.error('regions load failed:', err);
+      });
     return () => { dead = true; };
   }, [!!segState, isAnnotated, activeSessionId]);
   // The overlay's rebuild effect keys on `visibleIds` identity — building the
@@ -1952,6 +1957,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           );
         })()}
         </>)}
+        {/* The region mutations deliberately have no .catch — RegionPanel
+            catches and renders the backend detail on the row itself. */}
         {sideRTab === 'regions' && (
           <RegionPanel regions={regions} stats={regionStats} instances={instances} classes={classes}
             eyes={regionEyes}
@@ -1959,11 +1966,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
               const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next;
             })}
             onRename={(id, name) => VoxaAPI.regionPatch(id, { name })
-              .then((r) => setRegions((rs) => rs.map((x) => (x.id === id ? r : x))))
-              .catch((err) => console.error('region rename failed:', err))}
+              .then((r) => setRegions((rs) => rs.map((x) => (x.id === id ? r : x))))}
             onDelete={(id) => VoxaAPI.regionDelete(id)
-              .then(() => setRegions((rs) => rs.filter((x) => x.id !== id)))
-              .catch((err) => console.error('region delete failed:', err))}
+              .then(() => setRegions((rs) => rs.filter((x) => x.id !== id)))}
             onFlipStatus={(id, status) => VoxaAPI.regionPatch(id, { status })
               .then((r) => { setRegions((rs) => rs.map((x) => (x.id === id ? r : x))); })}
             onSelectInstance={(inst) => { setSelectedId(inst.id); focusInstance(inst); }} />
