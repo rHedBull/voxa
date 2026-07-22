@@ -96,16 +96,22 @@ regeneration for auditing).
 |---|---|---|
 | 1 | Every in-region point has exactly one category | `gt_point_category.npy` × `eval_regions.json` region masks |
 | 2 | `excluded_review` points per eval-grade region ≤ 3% budget | same, region status `eval-grade` only (draft regions are unchecked — the budget is an eval-grade admission bar, already enforced once at flip time in phase 2; this re-checks it stays true on every subsequent save) |
-| 3 | Every instance id in `gt_segment_ids.npy` exists in `instances_gt.json` with a valid class, except review blobs (`class: null` iff every member point is `excluded_review`); every `excluded_review` point belongs to such a blob | `gt_segment_ids.npy` × `instances_gt.json` × `gt_point_category.npy` |
-| 4 | No new GT contains class ids 4 (`double`) or 6 (`unknown`) | `gt_class_ids.npy` — defense-in-depth alongside the existing assign-time `reject_frozen_class` guard, since this phase's gate runs at a different point (whole-array save, not per-op assign) |
+| 3 | Every instance id present in `gt_segment_ids.npy` exists in `instances_gt.json` with a valid class. Separately: every review blob recorded in `gt_segment_metadata.json::review_blobs` has `class: null` in `instances_gt.json`, and every `excluded_review` point in `gt_point_category.npy` is accounted for by exactly one entry in `review_blobs` | `gt_segment_ids.npy` × `instances_gt.json` × `gt_segment_metadata.json::review_blobs` × `gt_point_category.npy` — **not** a single "review-blob ids live in `gt_segment_ids.npy` with `class: null`" check: the existing save-path strip (`backend/routes/segment.py`, `out_inst[unclassified] = -1` where `unclassified = (out_inst>=0)&(out_class==-1)`) already removes every review-blob id from `gt_segment_ids`/`gt_class_ids` before this gate runs — review blobs are only ever visible via the sibling `review_blobs` list, never as a `class:null` row inside the main segment-id array |
+| 4 | No new GT contains a frozen legacy class id | `gt_class_ids.npy` against `backend.app.core.frozen_class_ids()` (today: `{0, 3, 4, 5, 6, 13}` — `pipe`, `structural`, `double`, `fitting`, `unknown`, `cable` — read from `classes.yaml`'s `frozen: true` flag, not a hardcoded pair) — defense-in-depth alongside the existing assign-time `reject_frozen_class` guard, since this phase's gate runs at a different point (whole-array save, not per-op assign) |
 | 5 | Every point with an instance id has a component id and vice versa | `gt_segment_ids.npy` × `gt_point_component_ids.npy` |
 | 6 | Manifest regenerated and consistent (drift is a hard error) | freshly computed `manifest.build_manifest(...)` vs. what's about to be written — this is inherently satisfied by construction (the gate always writes what it just computed) and exists as a check for callers that pass in a stale manifest to compare against, e.g. a future harness re-deriving one independently |
-| 7 | Instance ids never reused or renumbered across saves | current `instances_gt.json` ids vs. the previous save's ids (read from the prior `gt_segment_metadata.json`, which already exists at the time of a second save) — only flags ids that vanished-and-reappeared-differently or were renumbered; new ids are always fine |
+| 7 | Instance ids never reused or renumbered across saves | the union of current `instances_gt.json` ids **and** current `review_blobs` ids, vs. that same union from the previous save (read from the prior `gt_segment_metadata.json`, which carries both `segments`-equivalent instance metadata and `review_blobs`) — only flags ids that vanished-and-reappeared-differently or were renumbered; new ids, and a blob id that later gains a real class and moves from `review_blobs` into ordinary instance metadata, are both fine as long as the id itself is stable |
 | 8 | An eval-grade region's declared accuracy is consistent with its measured p90 (≤10mm) | region's stored `accuracy.p90` (measured at phase-1 gate time) re-checked into the manifest; re-measured via the existing `labeling.materialize.raw_sample_spacing` if the region's points changed since that measurement |
 | 9 (discovered in scoping) | A `confirmed` instance's points carry no non-`none` category, and a `confirmed` instance is never a review blob (review blobs have no real class by definition) | `instances_gt.json::confirmed` × `gt_point_category.npy` × `gt_class_ids.npy` |
 
 All 9 are hard failures at save time — no warn-only mode for new saves. (See
 §4 for why existing scans get migrated instead of grandfathered.)
+
+`scan_schema/layout.py` gains accessors for `gt_point_category.npy` and
+`gt_point_component_ids.npy` (today `segment_io.py` builds these paths ad hoc
+off `SessionPaths.output_dir`) so the load-time CLI manifest/invariant path
+locates them the same way the save-time path does — one path-join per file
+name, not two copies that can drift.
 
 ### 3. Manifest fields
 
@@ -132,15 +138,30 @@ precious pre-phase-2 scans need to pass before the gate ships, not after.
 - Backfills `gt_point_component_ids.npy` with component 0 per instance where
   absent (each pre-phase-2 instance becomes exactly one component — no
   fragment splitting is invented, since none was ever recorded).
+- **Converts legacy class-id-6 (`unknown`) points to the phase-2
+  representation**: `category = excluded_review`, `class_id = -1`, instance id
+  stripped and recorded as a review blob in `gt_segment_metadata.json`
+  (exactly what phase 2's denoise now produces going forward — this backfills
+  the same conversion for points written by the pre-phase-2 denoise, which is
+  known to be non-empty: `smart_ais_navvis`'s current session has 357,678
+  class-6 points in `gt_class_ids.npy`). This is the one **non-additive** step:
+  it rewrites `gt_class_ids.npy`/`gt_segment_ids.npy` for exactly those points,
+  because invariant 4 (no frozen class ids, `unknown` included) would
+  otherwise permanently reject this scan with no grandfather path available.
+  Every other already-labeled point (any real class, ids 0/3/5/13 included —
+  those stay readable per the frozen-legacy contract, just never re-assignable)
+  is untouched.
 - Regenerates `gt_segment_metadata.json` with the new manifest fields.
 - Runs all 9 invariants against the result; a scan that still fails needs
-  manual fixup (expected: none — the backfilled arrays are constructed to
-  trivially satisfy invariants 1, 3, 5, 9; existing class/instance data is
-  untouched, so 4 and 7 pass exactly as before).
+  manual fixup.
 
-Additive only: `working_*.npy` and every already-saved class/instance
-assignment are byte-for-byte untouched, per the standing rule that labeled
-scans are precious.
+Additive-only for everything except the class-6→review-blob conversion above,
+which is a disclosed, targeted rewrite of a legacy write path phase 2 already
+retired going forward — not a reinterpretation of any labeler's real
+classification. `working_*.npy` and every point with a real (non-6) class are
+byte-for-byte untouched, per the standing rule that labeled scans are precious.
+Before running against a real scan, run against a copy first and diff every
+array outside the class-6 point set to confirm exact preservation (§ Testing).
 
 ### 5. scan_schema dependency pin
 
@@ -168,20 +189,29 @@ change.
   422'd with that invariant identified; a clean session's save merges the new
   manifest fields into `gt_segment_metadata.json`; invariant 7 correctly
   ignores added ids and flags a renumbered one across two successive saves.
-- `scripts/migrate_eval_invariants.py`: synthetic pre-phase-2 session fixture
-  (no category/component arrays) migrates cleanly and passes all 9 invariants
-  afterward; existing `gt_class_ids`/`gt_segment_ids` are unchanged byte-for-byte.
+- `scripts/migrate_eval_invariants.py`: two fixtures — (a) a synthetic
+  pre-phase-2 session with no category/component arrays and no class-6 points,
+  which migrates with every array byte-for-byte unchanged except the backfilled
+  category/component files; (b) a fixture with class-6 points, confirming they
+  convert to `category=excluded_review`/`class=-1`/a recorded review blob and
+  that every non-class-6 point is byte-for-byte unchanged. Both pass all 9
+  invariants afterward.
 
 Manual verification: run the migration script against a copy (not the
-original) of one precious scan's session directory and diff the untouched
-arrays to confirm byte-for-byte preservation before running it for real.
+original) of `smart_ais_navvis`'s session (the known class-6 case, 357,678
+points) and diff every array outside that point set to confirm exact
+preservation, before running it against the real scan.
 
 ## Risks / open points
 
 - **Hard-fail-everywhere means the migration script is load-bearing before
-  ship.** If it misses a case, save on a precious scan starts 422ing. Mitigated
-  by running the migration against copies first and asserting exact invariant
-  pass/fail before touching the real sessions.
+  ship, and it is not purely additive.** `smart_ais_navvis` has 357,678
+  legacy class-6 points that invariant 4 would otherwise reject forever; the
+  migration must rewrite those specific points (§4) rather than only backfill
+  new arrays. If the conversion logic has a bug, it either corrupts real GT
+  or leaves invariant 4 failing. Mitigated by running against a copy first and
+  diffing every array outside the class-6 point set before touching the real
+  session.
 - **Invariant 7 needs a prior save to compare against.** A scan's very first
   post-phase-3 save has nothing to diff — it trivially passes (no prior ids to
   have lost). This is correct but worth stating: the check only bites starting
