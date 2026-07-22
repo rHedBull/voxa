@@ -121,6 +121,8 @@ def test_gate_passes_on_5mm_grid_and_records_accuracy():
     assert acc["p90"] == pytest.approx(0.005, abs=1e-4)
     assert acc["loa"] == "LOA40"
     assert "measured_at" in acc
+    # n_points keeps eval_regions.json auditable without a voxa reload.
+    assert acc["n_points"] == 400          # 0.2 m / 5 mm footprint over the grid
 
 
 def test_gate_refuses_20mm_grid():
@@ -140,6 +142,18 @@ def test_gate_refuses_below_point_floor():
     few = grid_positions(0.005, n=5)          # 25 pts inside
     with pytest.raises(reg.RegionError, match="100"):
         reg.flip_status(doc, r["id"], "eval_grade", few)
+
+
+def test_gate_refuses_zero_spacing_sample():
+    # Coincident points measure p50 = p90 = 0, which sails through the p90 bar
+    # and gets stamped with the FINEST LOA band — the worst failure direction
+    # for a trust marker.
+    doc = {"version": 1, "next_region_id": 1, "regions": []}
+    r = reg.create_region(doc, PRISM)
+    dup = np.tile(np.array([[0.5, 0.0, 0.5]], dtype=np.float32), (400, 1))
+    with pytest.raises(reg.RegionError, match="coincident"):
+        reg.flip_status(doc, r["id"], "eval_grade", dup)
+    assert doc["regions"][0]["status"] == "draft"
 
 
 def test_gate_unknown_status_rejected():

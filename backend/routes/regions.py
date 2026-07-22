@@ -59,6 +59,10 @@ def patch_region(rid: int, req: PatchRegionRequest):
     if req.name is None and req.prism is None and req.status is None:
         raise HTTPException(422, "empty patch — send name, prism, or status")
     doc = regstore.load_regions(scan_dir)
+    # Field order is LOAD-BEARING: `prism` is applied BEFORE `status`, so a
+    # combined {"status":"draft","prism":X} hits set_geometry's eval-grade lock
+    # and 422s. Swapped, one request could unlock and redraw a benchmark
+    # region — see test_patch_cannot_unlock_and_redraw_in_one_request.
     try:
         region = None
         if req.name is not None:

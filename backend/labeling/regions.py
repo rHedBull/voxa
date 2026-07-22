@@ -28,6 +28,8 @@ from labeling.shapes import prism_indices
 REGIONS_FILE = "eval_regions.json"
 MIN_GATE_POINTS = 100          # raw_sample_spacing returns (0,0) for n<2 —
 EVAL_GRADE_P90_M = 0.010       # without a floor an empty region would PASS.
+MIN_GATE_P50_M = 1e-6          # a coincident/duplicated sample also measures
+                               # 0 spacing and would PASS at the finest LOA.
 
 
 class RegionError(ValueError):
@@ -136,16 +138,20 @@ def flip_status(doc: dict, rid: int, status: str, positions,
     idx = prism_indices(positions, runtime)
     if len(idx) < MIN_GATE_POINTS:
         raise RegionError(
-            f"region holds {len(idx)} points — at least {MIN_GATE_POINTS} "
-            "needed to measure spacing")
+            f"region holds {len(idx)} point{'' if len(idx) == 1 else 's'} — at "
+            f"least {MIN_GATE_POINTS} needed to measure spacing")
     p50, p90 = raw_sample_spacing(positions[idx])
+    if p50 <= MIN_GATE_P50_M:
+        raise RegionError(
+            "measured p50 spacing is ~0 — the region's points are coincident "
+            "or duplicated, so the spacing measurement is meaningless")
     if p90 > EVAL_GRADE_P90_M:
         raise RegionError(
             f"measured p90 spacing {p90 * 1000:.1f} mm exceeds the "
             f"{EVAL_GRADE_P90_M * 1000:.0f} mm eval-grade bar")
     r["status"] = "eval_grade"
     r["accuracy"] = {"p50": p50, "p90": p90, "loa": loa_band(p90),
-                     "measured_at": _now()}
+                     "n_points": int(len(idx)), "measured_at": _now()}
     return r
 
 

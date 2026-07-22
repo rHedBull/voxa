@@ -83,6 +83,22 @@ def test_gate_passes_on_dense_scene_and_locks(client_with_dense_annotated_scene)
     assert client.delete("/api/regions/1").status_code == 200
 
 
+def test_patch_cannot_unlock_and_redraw_in_one_request(client_with_dense_annotated_scene):
+    """Pins the field ordering in patch_region: prism is applied BEFORE status,
+    so a combined {"status":"draft","prism":X} can never unlock-then-mutate an
+    eval-grade region. Swapping those two blocks would silently allow it."""
+    client = client_with_dense_annotated_scene
+    client.post("/api/regions", json={"prism": PRISM})
+    assert client.patch("/api/regions/1", json={"status": "eval_grade"}).status_code == 200
+
+    other = {**PRISM, "height": 7.0}
+    assert client.patch("/api/regions/1", json={"status": "draft", "prism": other}).status_code == 422
+
+    after = client.get("/api/regions").json()["regions"][0]
+    assert after["prism"]["height"] == PRISM["height"]
+    assert after["status"] == "eval_grade"
+
+
 def test_stats(client_with_dense_annotated_scene):
     client = client_with_dense_annotated_scene
     client.post("/api/regions", json={"prism": PRISM})

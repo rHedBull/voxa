@@ -147,11 +147,15 @@ is subsampled to `VOXA_MAX_POINTS` and would inflate the measured p90). Pure hel
   - `status: "eval_grade"` runs the gate: resolve the region's full-res
     point indices via the existing `shapes.py::prism_indices`, then compute
     `labeling.materialize.raw_sample_spacing` over those positions. Refuse
-    with 422 if the region holds fewer than **100 points** or if
-    p90 > 0.010 m. The floor is load-bearing, not cosmetic:
-    `raw_sample_spacing` returns `(0.0, 0.0)` for n < 2, which would
-    otherwise *pass* the p90 check on a near-empty region. On success,
-    record `accuracy` and lock.
+    with 422 if the region holds fewer than **100 points**, if the measured
+    p50 is ~0 (`<= 1e-6` m), or if p90 > 0.010 m. Both refusals close
+    false-pass holes rather than making the gate exhaustive: the point floor
+    covers `raw_sample_spacing` returning `(0.0, 0.0)` for n < 2, and the p50
+    guard covers a coincident/duplicated sample, which likewise measures 0
+    spacing and would otherwise pass at the *finest* LOA band. Neither
+    verifies that the region is uniformly populated — see the phase-2 item
+    under Edge cases. On success, record `accuracy` (p50, p90, LOA band,
+    `n_points` the measurement was taken over, timestamp) and lock.
   - `status: "draft"` unlocks and drops `accuracy`.
   - `name` changes are always allowed — a name is not geometry.
 - `DELETE /api/regions/{id}` — draft only; deleting an eval-grade region
@@ -229,6 +233,20 @@ geometry (`structure.json`, `centerlines.json`).
 
 - Empty or too-sparse region → eval-grade flip refuses with a clear 422
   (point count + measured p90 in the detail).
+- **Known limitation, phase 2: the gate does not check that a region is
+  uniformly populated.** The 100-point floor is an absolute count that does
+  not scale with region volume, and p50/p90 are measured over whichever
+  points happen to be inside — so a large, mostly-empty region containing
+  one small dense blob passes the gate on the blob's pitch. Closing this
+  needs a density-vs-volume (or occupancy-grid coverage) check, which is
+  phase-2 work; phase 1 only closes the two zero-spacing false-pass holes
+  (n < 2, and coincident points).
+- The region overlay's translucent fill is **fan-triangulated** (inherited
+  from the Prism tool's preview), so a **concave** footprint renders its
+  fill incorrectly — the drawn fill is not a faithful picture of the actual
+  eval boundary, even though the backend's `prism_indices` containment
+  handles concave polygons correctly. Worth knowing because the overlay is
+  the labeler's only visual check of where the boundary runs.
 - Degenerate drawn prism (self-intersecting footprint) is prevented by the
   coplanar draw interaction, same as the Prism tool; the backend still
   validates vertex count and height.
