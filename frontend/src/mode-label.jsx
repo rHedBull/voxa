@@ -13,7 +13,7 @@ import { deriveFastQueue, stepIndex, FastLabelKeys, FastLabelHUD,
          FastConfirmModal, FAST_HIGHLIGHT_COLOR } from './fast-label.jsx';
 import SessionPicker from './session-picker.jsx';
 import ExportWizard from './export-wizard.jsx';
-import { applyDelta, applySamDelta, computeDiffMask, reconcileSamAfterApply, filterSamSelectionOnToolSwitch, retireSamIdsForIndices } from './segment-state.js';
+import { applyDelta, applySamDelta, computeDiffMask, indicesForSelection, reconcileSamAfterApply, filterSamSelectionOnToolSwitch, retireSamIdsForIndices } from './segment-state.js';
 import { toolAvailable, defaultTool } from './label-tools.js';
 import { maskColorRGB } from './sam-util.js';
 import ToolRail from './tool-rail.jsx';
@@ -33,10 +33,8 @@ import {
   buildCategoryOverlay, categoryCounts,
 } from './point-categories.js';
 
-// The three real marks (in category order), paired with their count key —
-// `none` is the absence of a mark, so it never gets a chip.
-const POINT_CATEGORY_ROWS = ['artifact', 'transient', 'excluded_review']
-  .map((name) => [name, POINT_CATEGORIES.find((c) => c.name === name)]);
+// The three real marks; `none` is the absence of a mark, never a chip.
+const POINT_CATEGORY_MARKS = POINT_CATEGORIES.filter((c) => c.value !== 0);
 
 // A review blob's Instances-panel row: class-less by construction (status
 // lives on the category axis, never the class axis), so it carries its own
@@ -317,26 +315,29 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       return;
     }
     const inst = segState.instanceFull;
-    const selColor = new THREE.Color(fastMode ? FAST_HIGHLIGHT_COLOR : 0xfacc15).toArray();
     const mask = catOverlay ? catOverlay.mask : new Uint8Array(subN);
-    for (let p = 0; p < subN; p++) {
-      const f = subIdx ? subIdx[p] : p;
-      if (sel.has(inst[f])) mask[p] = 1;
-    }
-    if (!catOverlay) {
-      // Untouched fast path: one flat color for the whole selection.
-      v.setSelectedSegmentMask(mask, fastMode ? FAST_HIGHLIGHT_COLOR : undefined);
-      return;
-    }
-    const colors = catOverlay.colors;
+    // With marks present the buffer is per-point colored, so the selection
+    // has to paint its own color in (it wins wherever the two overlap);
+    // without them the flat-color fast path stays exactly as it was.
+    const colors = catOverlay?.colors || null;
+    const selColor = colors
+      ? new THREE.Color(fastMode ? FAST_HIGHLIGHT_COLOR : 0xfacc15).toArray() : null;
     for (let p = 0; p < subN; p++) {
       const f = subIdx ? subIdx[p] : p;
       if (!sel.has(inst[f])) continue;
+      mask[p] = 1;
+      if (!colors) continue;
       const o = p * 3;
       colors[o] = selColor[0]; colors[o + 1] = selColor[1]; colors[o + 2] = selColor[2];
     }
-    v.setSelectedSegmentMask(mask, undefined, colors);
-  }, [segState?.selection, segState?.samIds, segState?.samSelection, segState?.instanceFull, segState?.categoryFull, cloud, viewerRef, fastMode, activeTool]);
+    v.setSelectedSegmentMask(mask, colors ? undefined : (fastMode ? FAST_HIGHLIGHT_COLOR : undefined),
+                             colors);
+    // Depends on segState as a whole, not its sub-arrays: applyDelta mutates
+    // classFull/instanceFull/categoryFull IN PLACE and returns a new state
+    // object, so array identity never changes but the object's does — a
+    // category mark that touches no selection (denoise) would otherwise not
+    // repaint until an unrelated change fired this effect.
+  }, [segState, cloud, viewerRef, fastMode, activeTool]);
 
   // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
   // under the cursor. Active in any tool mode whenever segment data exists.
@@ -445,6 +446,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     if (sel.kind === 'pointset') return [];
     return [selectedId];
   }, [instances, hiddenClasses, selectedId]);
+
+  // Full-res scan — memoized on the segState object (applyDelta returns a new
+  // one per apply), never recomputed on unrelated re-renders.
+  const markCounts = useMemoLabel(
+    () => categoryCounts(segState?.categoryFull), [segState]);
 
   const counts = useMemoLabel(() => {
     const c = {};
@@ -1028,33 +1034,17 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // presegment/instance selection. Null when nothing is selected.
   const selectionIndices = useCallbackLabel(() => {
     if (!segState) return null;
-    const idx = [];
-    if (segState.samSelection.size > 0) {
-      const samIds = segState.samIds;
-      for (let p = 0; p < samIds.length; p++) {
-        if (segState.samSelection.has(samIds[p])) idx.push(p);
-      }
-    } else if (segState.selection.size > 0) {
-      const inst = segState.instanceFull;
-      for (let p = 0; p < inst.length; p++) {
-        if (segState.selection.has(inst[p])) idx.push(p);
-      }
-    }
-    return idx.length ? new Int32Array(idx) : null;
+    return segState.samSelection.size > 0
+      ? indicesForSelection(segState.samIds, segState.samSelection)
+      : indicesForSelection(segState.instanceFull, segState.selection);
   }, [segState]);
 
   const confirmSegmentSelection = useCallbackLabel(async (clsDef, opts) => {
     const targetCls = clsDef || activeClassDef;
     if (!segState || segState.selection.size === 0) return;
     if (!targetCls) return;
-    const inst = segState.instanceFull;
-    const sel = segState.selection;
-    const idx = [];
-    for (let p = 0; p < inst.length; p++) {
-      if (sel.has(inst[p])) idx.push(p);
-    }
-    if (idx.length === 0) return;
-    const indices = new Int32Array(idx);
+    const indices = indicesForSelection(segState.instanceFull, segState.selection);
+    if (!indices) return;
 
     let r;
     try {
@@ -1103,14 +1093,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     const targetCls = clsDef || activeClassDef;
     if (!segState || segState.samSelection.size === 0) return;
     if (!targetCls) return;
-    const samIds = segState.samIds;
     const sel = segState.samSelection;
-    const idx = [];
-    for (let p = 0; p < samIds.length; p++) {
-      if (sel.has(samIds[p])) idx.push(p);
-    }
-    if (idx.length === 0) return;
-    const indices = new Int32Array(idx);
+    const indices = indicesForSelection(segState.samIds, sel);
+    if (!indices) return;
 
     let r;
     try {
@@ -1615,16 +1600,15 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           // Non-object marks (phase 2). They carry no class and (except review
           // blobs) no instance, so this counter is the only place they are
           // countable at a glance — the viewport shows WHERE they are.
-          const cc = categoryCounts(segState.categoryFull);
-          const total = cc.artifact + cc.transient + cc.excluded_review;
-          if (total === 0) return null;
+          const cc = markCounts;
+          if (cc.artifact + cc.transient + cc.excluded_review === 0) return null;
           return (
             <div className="noncat-row" title="Points marked on the annotation-status axis">
               <span className="noncat-title">Non-object</span>
-              {POINT_CATEGORY_ROWS.map(([key, cat]) => (
-                <span key={key} className="noncat-chip">
+              {POINT_CATEGORY_MARKS.map((cat) => (
+                <span key={cat.name} className="noncat-chip" title={cat.hint}>
                   <span className="class-swatch" style={{ background: cat.color }} />
-                  {formatPointCount(cc[key])}
+                  {formatPointCount(cc[cat.name])}
                 </span>
               ))}
             </div>

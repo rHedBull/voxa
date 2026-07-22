@@ -33,6 +33,17 @@ export function initSegState({
   };
 }
 
+// Full-res point indices whose id array value is in `selection` — the same
+// scan every classify path does (preseg/instance selection over instanceFull,
+// SAM candidates over samIds). Returns null when nothing matches, so callers
+// can bail without allocating.
+export function indicesForSelection(ids, selection) {
+  if (!ids || !selection || selection.size === 0) return null;
+  const idx = [];
+  for (let p = 0; p < ids.length; p++) if (selection.has(ids[p])) idx.push(p);
+  return idx.length ? new Int32Array(idx) : null;
+}
+
 export function applyDelta(state, { indices, after_class, after_instance, after_category }) {
   for (let k = 0; k < indices.length; k++) {
     state.classFull[indices[k]] = after_class[k];

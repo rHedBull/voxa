@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
+import { initSegState, applyDelta, indicesForSelection, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
 
 const seed = () => initSegState({
   classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
@@ -388,5 +388,20 @@ describe('point categories (phase 2)', () => {
       after_category: new Int8Array([0]),
     }, []);
     expect(next.categoryFull[3]).toBe(0);
+  });
+});
+
+describe('indicesForSelection', () => {
+  it('collects every point whose id is selected', () => {
+    const ids = Int32Array.from([-1, 4, 7, 4, -1]);
+    expect(Array.from(indicesForSelection(ids, new Set([4])))).toEqual([1, 3]);
+    expect(Array.from(indicesForSelection(ids, new Set([4, 7])))).toEqual([1, 2, 3]);
+  });
+
+  it('returns null for an empty selection, no match, or no array', () => {
+    const ids = Int32Array.from([1, 2]);
+    expect(indicesForSelection(ids, new Set())).toBeNull();
+    expect(indicesForSelection(ids, new Set([9]))).toBeNull();
+    expect(indicesForSelection(null, new Set([1]))).toBeNull();
   });
 });

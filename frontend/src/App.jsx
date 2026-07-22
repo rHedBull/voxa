@@ -513,6 +513,7 @@ function MainApp() {
             indices: r.indices,
             after_class: r.afterClass,
             after_instance: r.afterInstance,
+            after_category: r.afterCategory,
           }, gtInstancesRef.current);
           viewerRef.current?.recolorByEdit({
             affectedFullIndices: r.indices,
