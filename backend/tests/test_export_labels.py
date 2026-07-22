@@ -26,6 +26,16 @@ def _base_req(**overrides):
     return ExportLabelsRequest(**payload)
 
 
+def test_include_meshes_defaults_false():
+    req = _base_req()
+    assert req.include_meshes is False
+
+
+def test_include_meshes_can_be_set_true():
+    req = _base_req(include_meshes=True)
+    assert req.include_meshes is True
+
+
 def test_parses_from_alias():
     req = ExportLabelsRequest(**{
         "scene": "annotated/foo",

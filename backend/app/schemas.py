@@ -367,6 +367,7 @@ class ExportLabelsRequest(BaseModel):
     include_classes: Optional[list[int]] = None
     remap: list[RemapRule] = []
     drop_unlabeled: bool = False
+    include_meshes: bool = False
 
 class RegionPrism(BaseModel):
     polygon: list[tuple[float, float]]
