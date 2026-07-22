@@ -176,6 +176,21 @@ def _n_review(categories, idx) -> int:
     return int((cats[idx] == CATEGORY_EXCLUDED_REVIEW).sum())
 
 
+def region_mask(region: dict, positions, offset=(0.0, 0.0, 0.0)) -> np.ndarray:
+    """Per-point boolean membership mask for one region's prism, in the
+    RUNTIME (recentered) frame — `offset` is the load-time recenter_offset;
+    the region's stored-frame prism is shifted by -offset to get back to
+    runtime, mirroring `flip_status`/`region_stats`. Shared by region_stats
+    and (from segment_io.save_labels) the eval-invariant 1/2 in-region mask
+    and the phase-3 manifest's region_summaries."""
+    positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+    runtime = shift_prism(region["prism"], [-v for v in offset])
+    idx = prism_indices(positions, runtime)
+    mask = np.zeros(positions.shape[0], dtype=bool)
+    mask[idx] = True
+    return mask
+
+
 def region_stats(doc: dict, positions, class_ids, instance_ids,
                  offset=(0.0, 0.0, 0.0), categories=None) -> list[dict]:
     """Per-region point/unlabeled/instance-overlap counts over the full-res
@@ -190,8 +205,7 @@ def region_stats(doc: dict, positions, class_ids, instance_ids,
     totals = np.bincount(instance_ids[labeled_all], minlength=n_inst)
     out = []
     for r in doc["regions"]:
-        runtime = shift_prism(r["prism"], [-v for v in offset])
-        idx = prism_indices(positions, runtime)
+        idx = np.flatnonzero(region_mask(r, positions, offset))
         inst_in = instance_ids[idx]
         counts = (np.bincount(inst_in[inst_in >= 0], minlength=n_inst)
                   if n_inst else np.zeros(0, dtype=int))

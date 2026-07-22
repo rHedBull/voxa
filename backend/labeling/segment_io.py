@@ -17,12 +17,21 @@ import numpy as np
 
 from scan_schema.layout import ScanLayout
 from scan_schema.invariants import validate_invariants
+from scan_schema import eval_invariants as _ei
+from scan_schema.manifest import build_manifest
 # Crash-safe writers now live in the schema package; re-exported here so the
 # existing labeling/preseg/migration callers import them unchanged.
 from scan_schema.storage import atomic_write_npy, atomic_write_json  # noqa: F401
 
 
 _TS_RE = re.compile(r"^\d{8}_\d{6}$")
+
+# Phase-3 manifest thresholds not already owned elsewhere in voxa.
+# size_floor_m mirrors labeling.components.LINK_RADIUS_M (the upstream
+# spec's instance size floor); canonical_spacing_m is the LOA40 band
+# (labeling.materialize.LOA_BANDS) — the target sample spacing the manifest
+# reports against, distinct from regions.py's 10mm eval-grade p90 *ceiling*.
+EVAL_CANONICAL_SPACING_M = 0.005
 
 
 def _load_class_registry(scan_dir: Path) -> Optional[dict]:
@@ -120,6 +129,82 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _eval_regions_with_masks(eval_regions, positions, recenter_offset):
+    """Attach a per-point boolean membership mask to each region dict —
+    shared input for the eval-invariant 1/2 in-region union and the phase-3
+    manifest's region_summaries. Without `positions` (a caller with no
+    session/cloud loaded), masks can't be computed; regions are returned
+    as-is, which degrades gracefully to an all-zero region histogram in the
+    manifest rather than crashing (build_manifest treats a missing "mask"
+    key as size-0 = no points)."""
+    if not eval_regions or positions is None:
+        return list(eval_regions or [])
+    from labeling.regions import region_mask
+    return [{**r, "mask": region_mask(r, positions, recenter_offset)} for r in eval_regions]
+
+
+def _instance_id_union_from_metadata(meta: dict) -> set[int]:
+    """{gt_id, ...} ∪ {review_blobs[].instance_id, ...} from a
+    gt_segment_metadata.json dict — the id set eval-invariant 7 compares
+    across saves."""
+    ids = {int(s["gt_id"]) for s in meta.get("segments", [])}
+    ids |= {int(b["instance_id"]) for b in meta.get("review_blobs", [])}
+    return ids
+
+
+def _check_eval_invariants(
+    class_ids: np.ndarray,
+    instance_ids: np.ndarray,
+    *,
+    positions: Optional[np.ndarray],
+    categories: Optional[np.ndarray],
+    review_blobs: Optional[list[dict]],
+    frozen_ids: Optional[set],
+    instances_doc: Optional[dict],
+    regions_masked: list[dict],
+    prior_segment_metadata: Optional[dict],
+    component_arr: Optional[np.ndarray],
+) -> None:
+    """The 9 eval-labeling loader invariants (scan_schema.eval_invariants),
+    gated on the optional inputs actually supplied — a caller that doesn't
+    pass a given input (e.g. a test calling save_labels directly, or a
+    pre-phase-2 session with no categories) skips just that invariant rather
+    than failing on a missing argument. Invariant 6 (manifest drift) needs no
+    check here: the manifest is regenerated from scratch every save, so it
+    can never be stale by construction."""
+    has_regions_with_points = any("mask" in r for r in regions_masked)
+    cats = categories
+
+    if has_regions_with_points:
+        in_region = np.zeros(instance_ids.shape[0], dtype=bool)
+        for r in regions_masked:
+            if "mask" in r:
+                in_region |= np.asarray(r["mask"], dtype=bool)
+        _ei.check_category_exhaustive(cats, in_region)
+        from labeling.regions import REVIEW_BUDGET_FRAC
+        _ei.check_review_budget(cats, REVIEW_BUDGET_FRAC, in_region=in_region)
+
+    if instances_doc is not None:
+        _ei.check_instance_class_consistency(
+            instance_ids, class_ids, cats, instances_doc, review_blobs or [])
+        _ei.check_confirmed_reconciliation(instance_ids, cats, instances_doc)
+
+    if frozen_ids is not None:
+        _ei.check_no_frozen_classes(class_ids, frozen_ids)
+
+    if component_arr is not None:
+        _ei.check_component_instance_coverage(instance_ids, component_arr)
+
+    if prior_segment_metadata is not None:
+        prior_ids = _instance_id_union_from_metadata(prior_segment_metadata)
+        current_ids = set(np.unique(instance_ids[instance_ids >= 0]).tolist())
+        current_ids |= {int(b["instance_id"]) for b in (review_blobs or [])}
+        _ei.check_id_lineage(prior_ids, current_ids)
+
+    if regions_masked:
+        _ei.check_accuracy_band(regions_masked)
+
+
 def save_labels(
     scan_dir: Path,
     session_id: str,
@@ -133,6 +218,11 @@ def save_labels(
     source_fingerprint: Optional[str] = None,
     categories: Optional[np.ndarray] = None,
     review_blobs: Optional[list[dict]] = None,
+    frozen_ids: Optional[set] = None,
+    instances_doc: Optional[dict] = None,
+    eval_regions: Optional[list[dict]] = None,
+    prior_segment_metadata: Optional[dict] = None,
+    recenter_offset: tuple = (0.0, 0.0, 0.0),
 ) -> None:
     """Validate, snapshot existing labels, then write gt_*.npy + metadata.
 
@@ -144,12 +234,40 @@ def save_labels(
     metadata category histogram + review-blob table; component ids are derived
     from `positions` + `instance_ids` and written to
     gt_point_component_ids.npy whenever positions are supplied.
+
+    The eval-labeling loader invariants (`frozen_ids`, `instances_doc`,
+    `eval_regions`, `prior_segment_metadata`) are all optional and additive —
+    a caller (typically a test) that omits them gets exactly pre-Task-15
+    behavior for that check; the real save route always supplies them. See
+    `_check_eval_invariants`. On success, a fresh phase-3 manifest
+    (scan_schema.manifest.build_manifest) is always merged into
+    gt_segment_metadata.json — it is regenerated from the arrays being
+    written, so it never depends on which of the above were passed.
     """
     registry = _load_class_registry(scan_dir)
     meta_version = _read_meta_class_map_version(scan_dir)
     validate_invariants(class_ids, instance_ids,
                         registry=registry,
                         meta_class_map_version=meta_version)
+
+    component_arr = None
+    if positions is not None:
+        from labeling.components import component_ids
+        component_arr = component_ids(positions, instance_ids)
+    # A fabricated all-`none` array for callers with no phase-2 categories
+    # (a pre-phase-2 session, or a direct test call) — every category-aware
+    # invariant check and the manifest tolerate this by construction (an
+    # all-none cloud trivially satisfies exhaustiveness/budget/consistency).
+    cats_for_checks = categories if categories is not None else np.zeros_like(class_ids, dtype=np.int8)
+
+    regions_masked = _eval_regions_with_masks(eval_regions, positions, recenter_offset)
+    _check_eval_invariants(
+        class_ids, instance_ids,
+        positions=positions, categories=cats_for_checks, review_blobs=review_blobs,
+        frozen_ids=frozen_ids, instances_doc=instances_doc,
+        regions_masked=regions_masked, prior_segment_metadata=prior_segment_metadata,
+        component_arr=component_arr,
+    )
 
     sp = ScanLayout(scan_dir).session(session_id)
     sp.output_dir.mkdir(parents=True, exist_ok=True)
@@ -179,13 +297,25 @@ def save_labels(
         meta["categories"] = category_histogram(categories)
         meta["review_blobs"] = list(review_blobs or [])
     if positions is not None:
-        from labeling.components import LINK_RADIUS_M, component_ids
-        np.save(component_path, component_ids(positions, instance_ids))
+        from labeling.components import LINK_RADIUS_M
+        np.save(component_path, component_arr)
         meta["component_link_radius_m"] = LINK_RADIUS_M
     if preseg_fingerprint is not None:
         meta["preseg_fingerprint"] = preseg_fingerprint
     if source_fingerprint is not None:
         meta["source_fingerprint"] = source_fingerprint
+
+    from labeling.regions import REVIEW_BUDGET_FRAC
+    from labeling.components import LINK_RADIUS_M as _SIZE_FLOOR_M
+    meta.update(build_manifest(
+        class_ids=class_ids,
+        categories=cats_for_checks,
+        class_map_version=registry["version"] if registry is not None else 1,
+        regions=regions_masked,
+        review_budget_frac=REVIEW_BUDGET_FRAC,
+        size_floor_m=_SIZE_FLOOR_M,
+        canonical_spacing_m=EVAL_CANONICAL_SPACING_M,
+    ))
     sp.output_gt_segment_metadata.write_text(json.dumps(meta, indent=2))
 
 

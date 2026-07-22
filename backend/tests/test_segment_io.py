@@ -390,3 +390,81 @@ def test_load_prior_segment_metadata_round_trip(tmp_path):
 
     result = load_prior_segment_metadata(tmp_path, sid)
     assert result == meta
+
+
+# ---- eval-invariant gate (Task 15) ----------------------------------------
+
+def test_save_labels_rejects_frozen_class(tmp_path):
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    class_ids = np.array([6], dtype=np.int32)     # frozen 'unknown'
+    instance_ids = np.array([0], dtype=np.int32)
+    with pytest.raises(ValueError, match="eval-invariant 4"):
+        save_labels(scan_dir, "s1", class_ids, instance_ids,
+                   instances_doc={0: {"class_id": "unknown", "confirmed": False}},
+                   frozen_ids={0, 3, 4, 5, 6, 13})
+
+
+def test_save_labels_merges_manifest_fields(tmp_path):
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    class_ids = np.array([2], dtype=np.int32)
+    instance_ids = np.array([0], dtype=np.int32)
+    save_labels(scan_dir, "s1", class_ids, instance_ids,
+               instances_doc={0: {"class_id": "pipe_new", "confirmed": False}})
+    meta = json.loads((scan_dir / "sessions" / "s1" / "output" / "gt_segment_metadata.json").read_text())
+    assert "class_histogram" in meta
+    assert "thresholds" in meta
+    assert meta["class_histogram"] == {"2": 1}
+
+
+def test_save_labels_rejects_confirmed_instance_with_category(tmp_path):
+    """eval-invariant 9: a confirmed instance's points must all carry
+    category `none` — a confirmed point marked (e.g.) `artifact` is rejected."""
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    class_ids = np.array([2], dtype=np.int32)
+    instance_ids = np.array([0], dtype=np.int32)
+    categories = np.array([1], dtype=np.int8)  # CATEGORY_ARTIFACT
+    with pytest.raises(ValueError, match="eval-invariant 9"):
+        save_labels(scan_dir, "s1", class_ids, instance_ids,
+                   categories=categories,
+                   instances_doc={0: {"class_id": "pipe_new", "confirmed": True}})
+
+
+def test_save_labels_rejects_lost_instance_id_across_saves(tmp_path):
+    """eval-invariant 7: an id present in a prior save must not vanish."""
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    first_cls = np.array([2, 2], dtype=np.int32)
+    first_inst = np.array([0, 1], dtype=np.int32)
+    save_labels(scan_dir, "s1", first_cls, first_inst, write_history=False)
+
+    from labeling.segment_io import load_prior_segment_metadata
+    prior_meta = load_prior_segment_metadata(scan_dir, "s1")
+
+    # instance id 1 is gone in the second save.
+    second_cls = np.array([2], dtype=np.int32)
+    second_inst = np.array([0], dtype=np.int32)
+    with pytest.raises(ValueError, match="eval-invariant 7"):
+        save_labels(scan_dir, "s1", second_cls, second_inst, write_history=False,
+                   prior_segment_metadata=prior_meta)
+
+
+def test_save_labels_backward_compat_no_new_params(tmp_path):
+    """A caller passing none of the new optional params must behave exactly
+    as before Task 15 — no eval-invariant checks run, existing writes are
+    unaffected (manifest fields are additive, harmlessly merged in)."""
+    scan_dir = tmp_path / "annotated" / "demo"
+    sid = "sess-001"
+    cls = np.array([-1, 0, 0, 1, 1], dtype=np.int8)
+    inst = np.array([-1, 0, 0, 1, 1], dtype=np.int32)
+    save_labels(scan_dir, sid, cls, inst, write_history=False)
+
+    out_dir = scan_dir / "sessions" / sid / "output"
+    np.testing.assert_array_equal(
+        _read_npy(out_dir / "gt_class_ids.npy"), cls.astype(np.int32),
+    )
+    meta = json.loads((out_dir / "gt_segment_metadata.json").read_text())
+    assert meta["n_points"] == 5
+    assert meta["n_gt_segments"] == 2
