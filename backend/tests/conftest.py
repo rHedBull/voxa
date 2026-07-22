@@ -158,6 +158,25 @@ def scan_dir_for_loaded_scene(client_with_loaded_annotated_scene, tmp_path):
     return tmp_path / "lidar" / "annotated" / "demo"
 
 
+def put_gt_instances(client, scene_id: str, session_id: str, rows) -> None:
+    """PUT /api/annotations/gt with one pointset Cuboid row per (seg_id, cls)
+    in `rows` — the minimal instances_gt.json a real frontend apply produces
+    alongside a labeled segment. Save-route tests that mutate the working
+    canvas directly (bypassing the frontend's own PUT) need this to satisfy
+    eval-invariant 3 (every labeled segment id needs a matching instances_gt
+    entry) at /api/segment/save time."""
+    instances = [
+        {"id": f"seg-{seg_id}", "kind": "pointset", "segId": seg_id,
+         "cls": cls, "confirmed": False}
+        for seg_id, cls in rows
+    ]
+    r = client.put(
+        f"/api/annotations/gt/{scene_id}?session_id={session_id}",
+        json={"scene": scene_id, "kind": "gt", "instances": instances, "meta": {}},
+    )
+    assert r.status_code == 200, r.text
+
+
 def dense_grid_pts(spacing=0.005, n=20, offset=(0.0, 0.0, 0.0)):
     """n×n XZ grid at the given spacing (nn distance == spacing), optionally
     translated — offsets > 1e3 trigger the load-time auto-recenter."""

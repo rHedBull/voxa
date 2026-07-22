@@ -130,3 +130,21 @@ def test_cut_instance_frozen_422(client_with_loaded_annotated_scene):
     })
     assert r.status_code == 422
     assert "re-label" in r.json()["detail"].lower()
+
+
+def test_save_rejects_frozen_class_422(client_with_loaded_annotated_scene):
+    """End-to-end (Task 16): /api/segment/save 422s with an "eval-invariant"
+    detail when the working canvas still carries a frozen legacy class —
+    fixture instance 0 carries frozen class 0 ("pipe") from the start and is
+    left untouched here. instances_gt.json rows are supplied for every
+    segment (satisfying eval-invariant 3) so the 422 below is unambiguously
+    eval-invariant 4, not a different check firing first."""
+    import main
+    from tests.conftest import put_gt_instances
+    client = client_with_loaded_annotated_scene
+    put_gt_instances(client, "annotated/demo", main._state["session_id"],
+                     [(0, "pipe"), (1, "tank"), (2, "equipment"), (3, "equipment")])
+    r = client.put("/api/segment/save")
+    assert r.status_code == 422
+    assert "eval-invariant 4" in r.json()["detail"]
+    assert "frozen" in r.json()["detail"].lower()

@@ -1,6 +1,8 @@
 """Tests for per-point comparison: metrics module + /api/compare-points route."""
 from __future__ import annotations
 
+import base64
+
 import numpy as np
 import pytest
 
@@ -83,10 +85,24 @@ def test_length_mismatch_raises():
 
 # ---- route tests ----
 
-def _save_fixture_session(client):
-    """Give the fixture session a saved output via the real save route."""
+def _save_fixture_session(client, scene_id="annotated/demo"):
+    """Give the ACTIVE fixture session a saved output via the real save
+    route. The fixture's segment 0 carries frozen legacy class 0 ("pipe")
+    by construction (see test_frozen_guard.py, which depends on that exact
+    seed) and no session ever has instances_gt.json rows until the frontend
+    (or a test) writes them — relabel it live and register matching rows
+    first, so save clears eval-invariants 3 and 4."""
+    import main
+    from tests.conftest import put_gt_instances
+    client.post("/api/segment/apply", json={
+        "op": "set_class",
+        "indices": base64.b64encode(np.array([1, 2], dtype=np.int32).tobytes()).decode("ascii"),
+        "payload": {"class_id": 2},
+    })
+    put_gt_instances(client, scene_id, main._state["session_id"],
+                     [(0, "equipment"), (1, "tank"), (2, "equipment"), (3, "equipment")])
     r = client.put("/api/segment/save")
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
 
 
 def test_compare_session_vs_preseg(client_with_loaded_annotated_scene):
@@ -120,7 +136,7 @@ def test_compare_session_vs_session(client_with_loaded_annotated_scene):
     # activate + save the new session so it has output
     assert client.post("/api/load", json={"name": "annotated/demo",
                                           "session_id": sid_b}).status_code == 200
-    assert client.put("/api/segment/save").status_code == 200
+    _save_fixture_session(client)
     r = client.post("/api/compare-points/annotated/demo", json={
         "a": {"kind": "session", "id": sid},
         "b": {"kind": "session", "id": sid_b},
