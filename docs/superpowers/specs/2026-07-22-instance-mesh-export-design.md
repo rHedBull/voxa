@@ -76,25 +76,37 @@ surviving_ids = set(int(i) for i in np.unique(mesh_inst[mesh_cls >= 0]) if i >= 
 
 This runs on the full scan-resolution arrays already in memory (`ctx.work_cls`
 / `ctx.work_inst`), the same arrays the "scan" resolution point export uses —
-no extra fetch, no re-running `/api/load`.
+no extra fetch, no re-running `/api/load`. `surviving_ids` can be computed
+right after `src_to_tgt`/`confirmed_by_inst` exist, but `build_instance_glbs`
+itself must be *called* later — see placement below.
 
-When `req.include_meshes`:
+**Placement matters.** `zf` (the `zipfile.ZipFile`) only exists inside the
+`with zipfile.ZipFile(...) as zf:` block, which opens after `manifest =
+build_manifest(...)` (export.py:264) and is immediately followed by `zf.write
+(ply_path, "scan_labeled.ply")` then `zf.writestr("manifest.json",
+json.dumps(manifest, ...))` (export.py:274-275). For the `meshes` block to
+land inside the serialized `manifest.json`, mesh generation must run
+*between those two `zf` calls*, mutating `manifest` before it's dumped —
+not right after the ctx/src_to_tgt setup as a standalone step:
 
 ```python
-if req.include_meshes:
-    glbs, skipped = build_instance_glbs(ctx.scan_pos, ctx.work_inst, surviving_ids)
-    for iid, data in glbs.items():
-        zf.writestr(f"meshes/{iid}.glb", data)
-    manifest["meshes"] = {
-        "written": len(glbs),
-        "skipped": [{"id": iid, "reason": reason} for iid, reason in skipped],
-    }
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+    zf.write(ply_path, "scan_labeled.ply")
+    if req.include_meshes:
+        glbs, skipped = build_instance_glbs(ctx.scan_pos, ctx.work_inst, surviving_ids)
+        for iid, data in glbs.items():
+            zf.writestr(f"meshes/{iid}.glb", data)
+        manifest["meshes"] = {
+            "written": len(glbs),
+            "skipped": [{"id": iid, "reason": reason} for iid, reason in skipped],
+        }
+    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
 ```
 
 `manifest["meshes"]` is only present when `include_meshes` was requested —
 existing exports without it are unaffected (`build_manifest`'s signature
-doesn't change; the block is added to the dict after the call, mirroring how
-`export.py` already assembles the zip).
+doesn't change; the block is added to the dict after the call, before
+serialization).
 
 ### Frontend — `export-wizard.jsx`
 
@@ -129,4 +141,11 @@ shown before download).
 - Extend `tests/test_export_labels.py`: `include_meshes=True` produces a zip
   containing `meshes/<id>.glb` for confirmed/included instances only, and a
   `meshes` block in `manifest.json`; `include_meshes=False` (default) has
-  neither — exact parity with pre-change exports.
+  neither — exact parity with pre-change exports. The default fixture scene
+  (`conftest.py`'s `build_annotated_root`) only has 8 points across 4
+  instances (max 2 points/instance) — every instance there is `<4` points and
+  would just get skipped, never exercising a real hull. Use the fixture's
+  `pts` override to supply ≥4 non-coplanar points for at least one surviving
+  instance so the happy path (an actual `.glb` written) is covered, alongside
+  a case with a genuinely too-small instance to confirm it's skipped and
+  reported in `manifest["meshes"]["skipped"]`.
