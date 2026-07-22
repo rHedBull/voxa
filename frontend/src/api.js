@@ -320,6 +320,40 @@ export const VoxaAPI = {
     if (!r.ok) throw new Error(`fitBox failed: ${r.status} ${await r.text()}`);
     return r.json(); // { center, size, rotation }
   },
+  // --- eval regions (scan-level; see 2026-07-21-eval-regions-design.md) ---
+  async regionsList() {
+    const r = await fetch('/api/regions');
+    if (!r.ok) await throwApiError(r, 'regionsList');
+    return (await r.json()).regions;
+  },
+  async regionCreate({ prism, name = null }) {
+    const r = await fetch('/api/regions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prism, name }),
+    });
+    if (!r.ok) await throwApiError(r, 'regionCreate');
+    return r.json();
+  },
+  async regionPatch(id, patch) {
+    const r = await fetch(`/api/regions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!r.ok) await throwApiError(r, 'regionPatch');
+    return r.json();
+  },
+  async regionDelete(id) {
+    const r = await fetch(`/api/regions/${id}`, { method: 'DELETE' });
+    if (!r.ok) await throwApiError(r, 'regionDelete');
+    return r.json();
+  },
+  async regionStats() {
+    const r = await fetch('/api/regions/stats');
+    if (!r.ok) await throwApiError(r, 'regionStats');
+    return (await r.json()).regions;
+  },
   async samCapture({ camera, mode, box = null, text = null }) {
     const r = await fetch('/api/sam/capture', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

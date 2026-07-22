@@ -26,6 +26,8 @@ import { cutEligibility } from './cut-eligibility.js';
 import { removeOutliersEligibility } from './outlier-eligibility.js';
 import { fitEligibility } from './fit-eligibility.js';
 import CutModal from './cut-mode.jsx';
+import { RegionsOverlay } from './region-mode.jsx';
+import RegionPanel from './region-panel.jsx';
 
 // "30k", "1.2M", "523" — keeps the HUD chip narrow regardless of scene size.
 function formatPointCount(n) {
@@ -61,10 +63,11 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   const drawMode = activeTool === 'draw';
   const beamMode = activeTool === 'beam';
   const prismMode = activeTool === 'prism';
+  const regionMode = activeTool === 'region';
   // Sub-modes whose overlay owns viewport input (capture-phase keys +
   // pointer): global pick/hotkey handlers stand down. A future 5th tool
   // adds one term here instead of touching every gate.
-  const subModeOwnsInput = drawMode || beamMode || prismMode;
+  const subModeOwnsInput = drawMode || beamMode || prismMode || regionMode;
   // Presegmentation is a way to *select* points; its segments (hulls, boxes,
   // per-segment hue coloring) only show while the Presegment tool is active.
   // Every other tool works on the raw RGB cloud.
@@ -120,6 +123,45 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
   // into segState.selection. Same UX as the box in Edit mode.
   const [selBox, setSelBox] = useStateLabel(null);
   const showSegHulls = false;
+  // Eval regions (scan-level; phase 1). regions = runtime-frame list from
+  // GET /api/regions; regionStats keyed by region id; regionEyes = per-region
+  // overlay visibility while OTHER tools are active (UI-local, not persisted).
+  const [regions, setRegions] = useStateLabel([]);
+  const [regionStats, setRegionStats] = useStateLabel({});
+  const [regionEyes, setRegionEyes] = useStateLabel(() => new Set());
+  useEffectLabel(() => {
+    if (!segState || !isAnnotated) { setRegions([]); setRegionStats({}); return undefined; }
+    let dead = false;
+    VoxaAPI.regionsList()
+      .then((rs) => { if (!dead) setRegions(rs); })
+      .catch((err) => {
+        // 409 = no active backend session (e.g. this session was just
+        // deleted while segState was still set) — expected, just empty out.
+        if (err.status === 409) { if (!dead) setRegions([]); return; }
+        console.error('regions load failed:', err);
+      });
+    return () => { dead = true; };
+  }, [!!segState, isAnnotated, activeSessionId]);
+  // The overlay's rebuild effect keys on `visibleIds` identity — building the
+  // Set inline in the JSX would dispose-and-rebuild every region volume on
+  // every LabelMode render.
+  const regionVisibleIds = useMemoLabel(
+    () => (activeTool === 'region' ? new Set(regions.map((r) => r.id)) : regionEyes),
+    [activeTool, regions, regionEyes]);
+  // Region stats (unlabeled %, instance overlap) refresh whenever labels
+  // change — segState is replaced on every apply/undo/redo delta. Debounced:
+  // prism containment over the full-res arrays is cheap but not free.
+  useEffectLabel(() => {
+    if (!regions.length || !segState) { setRegionStats({}); return undefined; }
+    let dead = false;
+    const t = setTimeout(() => {
+      VoxaAPI.regionStats()
+        .then((list) => { if (!dead) setRegionStats(Object.fromEntries(list.map((s) => [s.id, s]))); })
+        .catch((err) => console.error('region stats failed:', err));
+    }, 400);
+    return () => { dead = true; clearTimeout(t); };
+  }, [regions, segState]);
+  const [sideRTab, setSideRTab] = useStateLabel('instances');
   const [sideRCollapsed, setSideRCollapsed] = useStateLabel(() => {
     try { return localStorage.getItem('voxa.label.sideRCollapsed') === '1'; }
     catch { return false; }
@@ -1515,7 +1557,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           onApply={() => setClassPickerOpen(true)}
           onEditSelection={openCutModal}
           onRemoveOutliers={removeOutliers}
-          onFitBox={fitBoxToSelection} />
+          onFitBox={fitBoxToSelection}
+          onRegionCreated={(region) => setRegions((rs) => [...rs, region])} />
       </aside>
 
       {/* Center: viewport */}
@@ -1552,6 +1595,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             : null}
           showSegHulls={showSegHulls}
         />
+
+        <RegionsOverlay viewerRef={viewerRef} regions={regions} visibleIds={regionVisibleIds} />
 
         <div className="vp-hud-top">
           <div className="hud-group">
@@ -1654,7 +1699,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         {sideRCollapsed ? (
           <button className="side-collapse-handle"
             onClick={() => setSideRCollapsed(false)}
-            title={`Show instances panel (${instances.length})`}>
+            title={`Show instances / regions panel (${instances.length} instances, ${regions.length} regions)`}>
             <span className="side-collapse-chev">‹</span>
             <span className="side-collapse-label">Instances</span>
             <span className="badge-soft">{instances.length}</span>
@@ -1665,9 +1710,14 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
           <button className="side-collapse-btn"
             onClick={() => setSideRCollapsed(true)}
             title="Collapse panel">›</button>
-          <span>Instances</span>
+          <div className="tool-opt-toggle side-tabs">
+            <button className={sideRTab === 'instances' ? 'active' : ''} onClick={() => setSideRTab('instances')}>Instances</button>
+            <button className={sideRTab === 'regions' ? 'active' : ''} onClick={() => setSideRTab('regions')}>
+              Regions{regions.length ? ` (${regions.length})` : ''}
+            </button>
+          </div>
           <div className="side-hd-actions">
-            {confirmedCount > 0 && (
+            {sideRTab === 'instances' && confirmedCount > 0 && (
               <button className="hide-labeled-btn"
                 onClick={() => setHideConfirmed((v) => !v)}
                 title={hideConfirmed
@@ -1676,13 +1726,16 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                 {hideConfirmed ? '◌' : '●'} {confirmedCount} done
               </button>
             )}
-            <span className="badge-soft">
-              {(instFilter || instStatus !== 'all')
-                ? `${filteredInstances.length} / ${instances.length}`
-                : instances.length}
-            </span>
+            {sideRTab === 'instances' && (
+              <span className="badge-soft">
+                {(instFilter || instStatus !== 'all')
+                  ? `${filteredInstances.length} / ${instances.length}`
+                  : instances.length}
+              </span>
+            )}
           </div>
         </div>
+        {sideRTab === 'instances' && (<>
         <div className="inst-filter">
           <input className="ins-input"
             placeholder="Filter by label, class, or id"
@@ -1903,6 +1956,23 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             />
           );
         })()}
+        </>)}
+        {/* The region mutations deliberately have no .catch — RegionPanel
+            catches and renders the backend detail on the row itself. */}
+        {sideRTab === 'regions' && (
+          <RegionPanel regions={regions} stats={regionStats} instances={instances} classes={classes}
+            eyes={regionEyes}
+            onToggleEye={(id) => setRegionEyes((s) => {
+              const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next;
+            })}
+            onRename={(id, name) => VoxaAPI.regionPatch(id, { name })
+              .then((r) => setRegions((rs) => rs.map((x) => (x.id === id ? r : x))))}
+            onDelete={(id) => VoxaAPI.regionDelete(id)
+              .then(() => setRegions((rs) => rs.filter((x) => x.id !== id)))}
+            onFlipStatus={(id, status) => VoxaAPI.regionPatch(id, { status })
+              .then((r) => { setRegions((rs) => rs.map((x) => (x.id === id ? r : x))); })}
+            onSelectInstance={(inst) => { setSelectedId(inst.id); focusInstance(inst); }} />
+        )}
         </>
         )}
       </aside>
