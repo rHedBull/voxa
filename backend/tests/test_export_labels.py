@@ -692,11 +692,45 @@ def test_export_labels_include_meshes_true_reports_skips(client_with_annotated_s
     manifest = json.loads(zf.read("manifest.json"))
     assert manifest["meshes"]["written"] == 0
     skipped_ids = {s["id"] for s in manifest["meshes"]["skipped"]}
-    # instance 1 is unconfirmed -> excluded from the surviving set entirely,
-    # so it must NOT appear in the meshes skip list (it never got the chance
-    # to be considered -- it was filtered out upstream, not skipped for size).
     assert 1 not in skipped_ids
     assert skipped_ids == {0, 2, 3}
+
+
+def test_export_labels_include_meshes_true_writes_real_mesh(monkeypatch, tmp_path):
+    # The shared client_with_annotated_scene fixture's instances are all far
+    # below MIN_POINTS_FOR_MESH (100), so the skip-reporting test above can
+    # never exercise an actual glb landing in the zip. Build a scene with one
+    # >=100-point instance (non-coplanar, so ConvexHull succeeds) to cover
+    # that happy path through the real endpoint, not just the pure helper.
+    import main
+    import trimesh
+    from fastapi.testclient import TestClient
+    from labeling.instance_meshes import MIN_POINTS_FOR_MESH
+    from tests.conftest import build_annotated_root
+
+    n = MIN_POINTS_FOR_MESH
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(-1, 1, size=(n, 3)).astype(np.float32)
+
+    root, session_id = build_annotated_root(tmp_path, pts=pts, n_instance0_points=n)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    scene_id = "annotated/demo"
+    _load_demo(client, scene_id, session_id)
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+        "include_meshes": True,
+    })
+    assert r.status_code == 200, r.text
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.namelist() == ["scan_labeled.ply", "meshes/0.glb", "manifest.json"]
+    manifest = json.loads(zf.read("manifest.json"))
+    assert manifest["meshes"] == {"written": 1, "skipped": []}
+    mesh = trimesh.load(trimesh.util.wrap_as_stream(zf.read("meshes/0.glb")),
+                         file_type="glb", force="mesh")
+    assert len(mesh.vertices) >= 4
 
 
 def test_export_labels_scene_session_mismatch_409(client_with_annotated_scene):
