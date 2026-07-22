@@ -1,5 +1,6 @@
 import json
 from labeling.instances_doc import load_instances_for_invariants
+from app.schemas import Cuboid
 
 
 def test_load_instances_for_invariants(tmp_path):
@@ -41,3 +42,12 @@ def test_load_instances_for_invariants_skips_non_pointset_kind(tmp_path):
     (session_dir / "instances_gt.json").write_text(json.dumps(doc))
     result = load_instances_for_invariants(session_dir)
     assert result == {5: {"class_id": "pipe", "confirmed": True}}
+
+
+def test_expected_keys_are_cuboid_fields():
+    """instances_doc hand-parses instances_gt.json rows instead of importing
+    Cuboid (see module docstring), so nothing pins its field expectations
+    (kind/segId/cls/confirmed) to Cuboid's actual fields — except this test.
+    If Cuboid ever renames one of these, this test is the tripwire."""
+    expected_keys = {"kind", "segId", "cls", "confirmed"}
+    assert expected_keys <= set(Cuboid.model_fields)

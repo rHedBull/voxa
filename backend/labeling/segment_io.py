@@ -341,7 +341,15 @@ def load_eval_regions_for_invariants(scan_dir: Path) -> list[dict]:
 def load_prior_segment_metadata(scan_dir: Path, session_id: str) -> Optional[dict]:
     """Read the PREVIOUS gt_segment_metadata.json (before this save
     overwrites it) — needed by eval-invariant 7's cross-save id-lineage
-    check. Returns None if this is the session's first save."""
+    check. Returns None if this is the session's first save.
+
+    Callers MUST call this BEFORE save_labels runs for the same session.
+    Calling it after save_labels has already written the new
+    gt_segment_metadata.json silently defeats eval-invariant 7's lineage
+    check: it would return the just-written CURRENT metadata mislabeled as
+    "prior", so the check ends up comparing current-against-current and
+    always passes — a silent invariant defeat, not a crash, and the worst
+    kind of bug for a hard-failure gate."""
     p = ScanLayout(scan_dir).session(session_id).output_gt_segment_metadata
     if not p.exists():
         return None

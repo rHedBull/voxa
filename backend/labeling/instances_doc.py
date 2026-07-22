@@ -1,7 +1,18 @@
 """Read-only loader for instances_gt.json, for the save-time eval-invariant
 gate (segment_io.save_labels). Deliberately NOT the same code path as the
-route (backend/routes/compare.py's GET/PUT /api/annotations) — this must not
-depend on FastAPI, and segment_io is pure I/O by convention."""
+route (backend/routes/compare.py's GET/PUT /api/annotations), and deliberately
+does NOT import app.schemas.Cuboid — backend/labeling/* is meant to stay
+usable/testable independent of the backend/app/* app layer (the same spirit
+as segment_io's "pure I/O, no in-memory state"), so this module hand-parses
+the row shape it actually needs (`kind`, `segId`, `cls`, `confirmed`) instead
+of importing the schema.
+
+That means Cuboid and this loader's field expectations are NOT pinned
+together by any shared import — if Cuboid's field names for these four keys
+ever change, this loader silently keeps reading the old names and degrades
+to returning {} / wrong values rather than erroring. See
+test_instances_doc.py::test_expected_keys_are_cuboid_fields, which locks the
+two in sync the same way test_class_config.py pins classes.yaml/classes.json."""
 from __future__ import annotations
 
 import json
