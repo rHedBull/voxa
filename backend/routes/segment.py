@@ -481,6 +481,7 @@ def segment_save():
     seg.flush_autosave()
     try:
         from labeling.segment_io import (
+            EvalInvariantError,
             load_eval_regions_for_invariants,
             load_prior_segment_metadata,
             review_blob_summary,
@@ -508,9 +509,10 @@ def segment_save():
             prior_segment_metadata=load_prior_segment_metadata(scan_dir, session_id),
             recenter_offset=_state.get("recenter_offset") or (0.0, 0.0, 0.0),
         )
+    except EvalInvariantError as e:
+        raise HTTPException(422, str(e))
     except ValueError as e:
-        status = 422 if str(e).startswith("eval-invariant") else 400
-        raise HTTPException(status, str(e))
+        raise HTTPException(400, str(e))
     # The flush_autosave above persisted dirty:True; now that the export
     # succeeded, re-persist the cleared flag so the session list stops
     # reporting this session as unsaved after reload.

@@ -26,6 +26,13 @@ from scan_schema.storage import atomic_write_npy, atomic_write_json  # noqa: F40
 
 _TS_RE = re.compile(r"^\d{8}_\d{6}$")
 
+
+class EvalInvariantError(ValueError):
+    """Marks a ValueError as coming from one of the 9 scan_schema.eval_invariants
+    checks (vs. the older SCHEMA invariants 3-6, which raise plain ValueError).
+    Lets callers `isinstance`-check for 422-vs-400 routing instead of
+    string-matching the "eval-invariant N: ..." message prefix."""
+
 # Phase-3 manifest thresholds not already owned elsewhere in voxa.
 # size_floor_m mirrors labeling.components.LINK_RADIUS_M (the upstream
 # spec's instance size floor); canonical_spacing_m is the LOA40 band
@@ -171,38 +178,46 @@ def _check_eval_invariants(
     pre-phase-2 session with no categories) skips just that invariant rather
     than failing on a missing argument. Invariant 6 (manifest drift) needs no
     check here: the manifest is regenerated from scratch every save, so it
-    can never be stale by construction."""
+    can never be stale by construction.
+
+    Every `_ei.check_*` call below is the only source of ValueError in this
+    function, so a ValueError raised from any of them is re-raised as
+    `EvalInvariantError` — a typed marker the route layer can `isinstance`-check
+    for 422-vs-400 routing instead of string-matching the message prefix."""
     has_regions_with_points = any("mask" in r for r in regions_masked)
     cats = categories
 
-    if has_regions_with_points:
-        in_region = np.zeros(instance_ids.shape[0], dtype=bool)
-        for r in regions_masked:
-            if "mask" in r:
-                in_region |= np.asarray(r["mask"], dtype=bool)
-        _ei.check_category_exhaustive(cats, in_region)
-        from labeling.regions import REVIEW_BUDGET_FRAC
-        _ei.check_review_budget(cats, REVIEW_BUDGET_FRAC, in_region=in_region)
+    try:
+        if has_regions_with_points:
+            in_region = np.zeros(instance_ids.shape[0], dtype=bool)
+            for r in regions_masked:
+                if "mask" in r:
+                    in_region |= np.asarray(r["mask"], dtype=bool)
+            _ei.check_category_exhaustive(cats, in_region)
+            from labeling.regions import REVIEW_BUDGET_FRAC
+            _ei.check_review_budget(cats, REVIEW_BUDGET_FRAC, in_region=in_region)
 
-    if instances_doc is not None:
-        _ei.check_instance_class_consistency(
-            instance_ids, class_ids, cats, instances_doc, review_blobs or [])
-        _ei.check_confirmed_reconciliation(instance_ids, cats, instances_doc)
+        if instances_doc is not None:
+            _ei.check_instance_class_consistency(
+                instance_ids, class_ids, cats, instances_doc, review_blobs or [])
+            _ei.check_confirmed_reconciliation(instance_ids, cats, instances_doc)
 
-    if frozen_ids is not None:
-        _ei.check_no_frozen_classes(class_ids, frozen_ids)
+        if frozen_ids is not None:
+            _ei.check_no_frozen_classes(class_ids, frozen_ids)
 
-    if component_arr is not None:
-        _ei.check_component_instance_coverage(instance_ids, component_arr)
+        if component_arr is not None:
+            _ei.check_component_instance_coverage(instance_ids, component_arr)
 
-    if prior_segment_metadata is not None:
-        prior_ids = _instance_id_union_from_metadata(prior_segment_metadata)
-        current_ids = set(np.unique(instance_ids[instance_ids >= 0]).tolist())
-        current_ids |= {int(b["instance_id"]) for b in (review_blobs or [])}
-        _ei.check_id_lineage(prior_ids, current_ids)
+        if prior_segment_metadata is not None:
+            prior_ids = _instance_id_union_from_metadata(prior_segment_metadata)
+            current_ids = set(np.unique(instance_ids[instance_ids >= 0]).tolist())
+            current_ids |= {int(b["instance_id"]) for b in (review_blobs or [])}
+            _ei.check_id_lineage(prior_ids, current_ids)
 
-    if regions_masked:
-        _ei.check_accuracy_band(regions_masked)
+        if regions_masked:
+            _ei.check_accuracy_band(regions_masked)
+    except ValueError as exc:
+        raise EvalInvariantError(str(exc)) from exc
 
 
 def save_labels(
