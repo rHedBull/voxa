@@ -177,6 +177,23 @@ def drop_unlabeled_rows(class_ids, *arrays):
     return (class_ids[keep], *(a[keep] for a in arrays))
 
 
+def surviving_instance_ids(
+    work_cls: np.ndarray,
+    work_inst: np.ndarray,
+    confirmed_by_inst: dict[int, bool],
+    req: ExportLabelsRequest,
+    src_to_tgt: dict[int, int],
+) -> set[int]:
+    """Instance ids that still have a labeled point after confirmed_only /
+    include_classes filtering, computed once against the full scan-resolution
+    arrays (independent of the point export's resolution kind) — the shared
+    aggregate other export sub-features (e.g. instance meshes) should read
+    from, rather than each re-deriving it with its own apply_filters_remap
+    call."""
+    out_cls, _ = apply_filters_remap(work_cls, work_inst, confirmed_by_inst, req, src_to_tgt)
+    return {int(i) for i in np.unique(work_inst[out_cls >= 0]) if i >= 0}
+
+
 def count_absent_instances(
     work_inst: np.ndarray,
     confirmed_by_inst: dict[int, bool],

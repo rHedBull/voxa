@@ -32,6 +32,7 @@ from labeling.export_pipeline import (
     build_taxonomy,
     count_absent_instances,
     drop_unlabeled_rows,
+    surviving_instance_ids,
     validate_export_request,
 )
 
@@ -274,9 +275,8 @@ def export_labels(req: ExportLabelsRequest) -> Response:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
             zf.write(ply_path, "scan_labeled.ply")
             if req.include_meshes:
-                mesh_cls, _mesh_inst = apply_filters_remap(
+                surviving_ids = surviving_instance_ids(
                     ctx.work_cls, ctx.work_inst, confirmed_by_inst, req, src_to_tgt)
-                surviving_ids = {int(i) for i in np.unique(ctx.work_inst[mesh_cls >= 0]) if i >= 0}
                 glbs, skipped = build_instance_glbs(ctx.scan_pos, ctx.work_inst, surviving_ids)
                 for iid, data in glbs.items():
                     zf.writestr(f"meshes/{iid}.glb", data)

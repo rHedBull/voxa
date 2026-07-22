@@ -35,8 +35,16 @@ def build_instance_glbs(
     glbs: dict[int, bytes] = {}
     skipped: list[tuple[int, str]] = []
 
+    # Single grouping pass instead of one `instance_ids == asset_id` scan of
+    # the full array per surviving id (same approach as segment_hulls.py's
+    # compute_hulls, which groups the same (points, instance_ids) shape).
+    order = np.argsort(instance_ids, kind="stable")
+    sorted_ids = instance_ids[order]
+
     for asset_id in sorted(surviving_ids):
-        pts = points[instance_ids == asset_id]
+        start = np.searchsorted(sorted_ids, asset_id, side="left")
+        end = np.searchsorted(sorted_ids, asset_id, side="right")
+        pts = points[order[start:end]]
         if len(pts) < MIN_POINTS_FOR_MESH:
             skipped.append((asset_id, f"only {len(pts)} points"))
             continue
