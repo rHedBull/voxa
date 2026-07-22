@@ -161,18 +161,20 @@ export default function PrismMode({
       ? { ...EMPTY_PRISM, phase: 'footprint', corners: s.corners } : s));
   }, []);
 
-  const applyPrism = useCallback(async (classId) => {
+  // classId labels the prism's points; `category` (phase 2) marks them on the
+  // annotation-status axis instead — mutually exclusive, mirroring apply-shape.
+  const applyPrism = useCallback(async (classId, category = null) => {
     const p = prismRef.current;
     if (!(p.phase === 'height' && p.committed)) return;
     const shape = prismShapeFromCorners(p.corners, p.topY);
     if (!shape) return;
-    const cls = classes.find((c) => c.class_id === classId);
-    if (!cls) return;
+    const cls = category ? null : classes.find((c) => c.class_id === classId);
+    if (!category && !cls) return;
     let r;
     try {
       r = await VoxaAPI.applyShape({
         shape: { type: 'prism', ...shape },
-        targetClass: cls.id,
+        ...(category ? { targetCategory: category } : { targetClass: cls.id }),
         protectInstances: protectInstancesRef.current,
       });
     } catch (err) { console.error('prism apply failed:', err); return; }
@@ -183,14 +185,22 @@ export default function PrismMode({
       return;
     }
     const segId = Number.isFinite(r.instanceId) ? r.instanceId : -1;
-    if (segId >= 0) {
+    if (category) {
+      // A category mark persists no selection volume: the prism said WHICH
+      // points, not what shape the object is (only a review blob even leaves
+      // an instance behind).
+      onApplied?.({ instanceId: segId, category, source: 'prism' });
+    } else if (segId >= 0) {
       onApplied?.({
         instanceId: segId, classId: cls.class_id, source: 'prism',
         prism: { polygon: shape.polygon.map((pt) => [...pt]), y0: shape.y0, height: shape.height },
       });
     }
     setSegState((s) => (s ? {
-      ...applyDelta(s, { indices: r.indices, after_class: r.afterClass, after_instance: r.afterInstance }),
+      ...applyDelta(s, {
+        indices: r.indices, after_class: r.afterClass,
+        after_instance: r.afterInstance, after_category: r.afterCategory,
+      }),
       selection: new Set(),
     } : s));
     reset();
@@ -206,7 +216,11 @@ export default function PrismMode({
       <PrismPanel prism={prism} onClear={reset} onApply={requestClassify} />
       {pickerOpen && (
         <ClassPickerModal classes={classes} counts={counts}
-          onPick={(cls) => { setPickerOpen(false); applyPrism(cls.class_id); }}
+          onPick={(cls) => {
+            setPickerOpen(false);
+            if (cls?.category) applyPrism(null, cls.category);
+            else applyPrism(cls.class_id);
+          }}
           onClose={() => setPickerOpen(false)} />
       )}
     </>

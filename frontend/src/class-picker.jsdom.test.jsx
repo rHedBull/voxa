@@ -61,3 +61,34 @@ describe('ClassPickerModal (two-column master–detail + chords)', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ClassPickerModal — non-object categories (phase 2)', () => {
+  it('renders the four category buttons and picks one by click', () => {
+    const onPick = vi.fn();
+    render(<ClassPickerModal classes={CLASSES} onPick={onPick} onClose={() => {}} />);
+    expect(screen.getByText('Non-object')).toBeTruthy();
+    fireEvent.click(screen.getByText('Artifact'));
+    expect(onPick.mock.calls[0][0]).toEqual({ category: 'artifact' });
+  });
+
+  it('category hotkeys fire only while no group is armed', () => {
+    const onPick = vi.fn();
+    render(<ClassPickerModal classes={CLASSES} onPick={onPick} onClose={() => {}} />);
+    fireEvent.keyDown(window, { key: 'r' });
+    expect(onPick.mock.calls[0][0]).toEqual({ category: 'excluded_review' });
+
+    onPick.mockClear();
+    fireEvent.keyDown(window, { key: '1' });    // arm pipe-network
+    fireEvent.keyDown(window, { key: 'a' });    // NOT a category pick any more
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it('allowCategories=false hides them entirely (relabel path)', () => {
+    const onPick = vi.fn();
+    render(<ClassPickerModal classes={CLASSES} onPick={onPick} onClose={() => {}}
+                             allowCategories={false} />);
+    expect(screen.queryByText('Non-object')).toBeNull();
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(onPick).not.toHaveBeenCalled();
+  });
+});

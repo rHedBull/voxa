@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { majorityInstances, unlabeledPct, regionCssColor, REGION_COLORS } from './region-utils.js';
+import { majorityInstances, unlabeledPct, regionCssColor, reviewPct, REGION_COLORS, REVIEW_BUDGET_PCT } from './region-utils.js';
 
 const stat = {
   id: 1, n_points: 200, n_unlabeled: 30,
@@ -43,5 +43,18 @@ describe('regionCssColor', () => {
     expect(regionCssColor('eval_grade')).toBe('#22c55e');
     expect(REGION_COLORS.draft).toBe(0xf59e0b);
     expect(REGION_COLORS.eval_grade).toBe(0x22c55e);
+  });
+});
+
+describe('reviewPct (phase 2 budget)', () => {
+  it('is null without stats and 0 when nothing is marked', () => {
+    expect(reviewPct(null)).toBeNull();
+    expect(reviewPct({ n_points: 0, n_review: 0 })).toBeNull();
+    expect(reviewPct({ n_points: 100 })).toBe(0);
+  });
+
+  it('reports the excluded-review share', () => {
+    expect(reviewPct({ n_points: 200, n_review: 8 })).toBe(4);
+    expect(REVIEW_BUDGET_PCT).toBe(3);
   });
 });

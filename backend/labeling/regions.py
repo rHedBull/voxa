@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from labeling.categories import CATEGORY_EXCLUDED_REVIEW
 from labeling.materialize import loa_band, raw_sample_spacing
 from labeling.segment_io import atomic_write_json
 from labeling.shapes import prism_indices
@@ -30,6 +31,9 @@ MIN_GATE_POINTS = 100          # raw_sample_spacing returns (0,0) for n<2 —
 EVAL_GRADE_P90_M = 0.010       # without a floor an empty region would PASS.
 MIN_GATE_P50_M = 1e-6          # a coincident/duplicated sample also measures
                                # 0 spacing and would PASS at the finest LOA.
+REVIEW_BUDGET_FRAC = 0.03      # excluded-review is a budget, not a bin: past
+                               # 3% of a region's points it is not eval-grade
+                               # yet (upstream spec, non-object taxonomy).
 
 
 class RegionError(ValueError):
@@ -120,10 +124,12 @@ def delete_region(doc: dict, rid: int) -> None:
 
 
 def flip_status(doc: dict, rid: int, status: str, positions,
-                offset=(0.0, 0.0, 0.0)) -> dict:
+                offset=(0.0, 0.0, 0.0), categories=None) -> dict:
     """draft <-> eval_grade. The eval_grade flip is the gate: measure the
     region's local p50/p90 spacing over its full-res points and refuse
-    (RegionError) below the point floor or above the 10 mm bar."""
+    (RegionError) below the point floor, above the 10 mm bar, or over the
+    excluded-review budget (`categories`, the phase-2 point-category array;
+    None skips that check for callers with no session)."""
     r = _get(doc, rid)
     if status == "draft":
         r["status"] = "draft"
@@ -149,14 +155,29 @@ def flip_status(doc: dict, rid: int, status: str, positions,
         raise RegionError(
             f"measured p90 spacing {p90 * 1000:.1f} mm exceeds the "
             f"{EVAL_GRADE_P90_M * 1000:.0f} mm eval-grade bar")
+    if categories is not None:
+        n_review = _n_review(categories, idx)
+        frac = n_review / len(idx)
+        if frac > REVIEW_BUDGET_FRAC:
+            raise RegionError(
+                f"{n_review} of {len(idx)} points ({frac * 100:.1f}%) are "
+                f"excluded-review — over the "
+                f"{REVIEW_BUDGET_FRAC * 100:.0f}% budget; resolve or relabel "
+                f"them before flipping to eval-grade")
     r["status"] = "eval_grade"
     r["accuracy"] = {"p50": p50, "p90": p90, "loa": loa_band(p90),
                      "n_points": int(len(idx)), "measured_at": _now()}
     return r
 
 
+def _n_review(categories, idx) -> int:
+    """How many of `idx` carry the excluded-review category."""
+    cats = np.asarray(categories)
+    return int((cats[idx] == CATEGORY_EXCLUDED_REVIEW).sum())
+
+
 def region_stats(doc: dict, positions, class_ids, instance_ids,
-                 offset=(0.0, 0.0, 0.0)) -> list[dict]:
+                 offset=(0.0, 0.0, 0.0), categories=None) -> list[dict]:
     """Per-region point/unlabeled/instance-overlap counts over the full-res
     working arrays. The caller (frontend) filters instances to confirmed and
     applies the majority rule — confirmed-status lives client-side, exactly
@@ -178,6 +199,7 @@ def region_stats(doc: dict, positions, class_ids, instance_ids,
             "id": r["id"],
             "n_points": int(len(idx)),
             "n_unlabeled": int((class_ids[idx] < 0).sum()),
+            "n_review": _n_review(categories, idx) if categories is not None else 0,
             "instances": {int(i): {"inside": int(counts[i]), "total": int(totals[i])}
                           for i in np.nonzero(counts)[0]},
         })

@@ -93,6 +93,22 @@ def _build_segment_metadata(
     }
 
 
+def review_blob_summary(categories: np.ndarray, instance_ids: np.ndarray) -> list[dict]:
+    """[{instance_id, n_points}] for every review blob, from the WORKING
+    arrays (before the save-path strip of class-less instances). Recorded in
+    gt_segment_metadata.json so the blob ids survive that strip."""
+    from labeling.categories import CATEGORY_EXCLUDED_REVIEW
+
+    cats = np.asarray(categories)
+    inst = np.asarray(instance_ids)
+    mask = (cats == CATEGORY_EXCLUDED_REVIEW) & (inst >= 0)
+    if not mask.any():
+        return []
+    ids, counts = np.unique(inst[mask], return_counts=True)
+    return [{"instance_id": int(i), "n_points": int(c)}
+            for i, c in zip(ids.tolist(), counts.tolist())]
+
+
 def _utc_timestamp() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
@@ -115,12 +131,19 @@ def save_labels(
     history_keep: int = 10,
     preseg_fingerprint: Optional[str] = None,
     source_fingerprint: Optional[str] = None,
+    categories: Optional[np.ndarray] = None,
+    review_blobs: Optional[list[dict]] = None,
 ) -> None:
     """Validate, snapshot existing labels, then write gt_*.npy + metadata.
 
     Writes into sessions/<session_id>/output/ under scan_dir. Writes are
-    sequential (3 files); not atomic across files. A history snapshot is
-    taken from the prior on-disk labels before overwrite.
+    sequential; not atomic across files. A history snapshot is taken from the
+    prior on-disk labels before overwrite.
+
+    `categories` (phase 2) additionally writes gt_point_category.npy and the
+    metadata category histogram + review-blob table; component ids are derived
+    from `positions` + `instance_ids` and written to
+    gt_point_component_ids.npy whenever positions are supplied.
     """
     registry = _load_class_registry(scan_dir)
     meta_version = _read_meta_class_map_version(scan_dir)
@@ -130,7 +153,10 @@ def save_labels(
 
     sp = ScanLayout(scan_dir).session(session_id)
     sp.output_dir.mkdir(parents=True, exist_ok=True)
-    gt_files = (sp.output_gt_class_ids, sp.output_gt_segment_ids, sp.output_gt_segment_metadata)
+    category_path = sp.output_dir / "gt_point_category.npy"
+    component_path = sp.output_dir / "gt_point_component_ids.npy"
+    gt_files = (sp.output_gt_class_ids, sp.output_gt_segment_ids,
+                sp.output_gt_segment_metadata, category_path, component_path)
 
     if write_history and sp.output_gt_class_ids.exists():
         snap_dir = sp.history_dir / _utc_timestamp()
@@ -147,6 +173,15 @@ def save_labels(
     np.save(sp.output_gt_segment_ids, instance_ids.astype(np.int32))
     meta = _build_segment_metadata(class_ids, instance_ids, positions,
                                    registry=registry)
+    if categories is not None:
+        from labeling.categories import category_histogram
+        np.save(category_path, np.asarray(categories).astype(np.int8))
+        meta["categories"] = category_histogram(categories)
+        meta["review_blobs"] = list(review_blobs or [])
+    if positions is not None:
+        from labeling.components import LINK_RADIUS_M, component_ids
+        np.save(component_path, component_ids(positions, instance_ids))
+        meta["component_link_radius_m"] = LINK_RADIUS_M
     if preseg_fingerprint is not None:
         meta["preseg_fingerprint"] = preseg_fingerprint
     if source_fingerprint is not None:
@@ -197,6 +232,7 @@ def save_session_aux(
     class_ids: Optional[np.ndarray] = None,
     instance_ids: Optional[np.ndarray] = None,
     sam_ids: Optional[np.ndarray] = None,
+    categories: Optional[np.ndarray] = None,
 ) -> dict:
     """Atomically persist editor session state. Returns the payload as
     written (callers use its ``saved_at`` stamp).
@@ -216,6 +252,9 @@ def save_session_aux(
     if sam_ids is not None:
         atomic_write_npy(session_dir / "working_sam_ids.npy",
                          sam_ids.astype(np.int32, copy=False))
+    if categories is not None:
+        atomic_write_npy(session_dir / "working_categories.npy",
+                         categories.astype(np.int8, copy=False))
     payload = dict(aux)
     payload.setdefault("schema_version", SESSION_SCHEMA_VERSION)
     payload["saved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -269,6 +308,20 @@ def load_sam_ids(session_dir: Path, n_points: int) -> Optional[np.ndarray]:
     arr = np.load(p).astype(np.int32, copy=False)
     if arr.shape != (n_points,):
         raise ValueError(f"working_sam_ids.npy shape {arr.shape} != ({n_points},)")
+    return arr
+
+
+def load_categories(session_dir: Path, n_points: int) -> Optional[np.ndarray]:
+    """Return the point-category layer (int8) if working_categories.npy exists,
+    or None for a session written before phase 2 (caller defaults to all
+    `none`). Shape mismatch raises, same contract as load_sam_ids: a misshapen
+    file signals a foreign/corrupt data dir, not an empty layer."""
+    p = session_dir / "working_categories.npy"
+    if not p.exists():
+        return None
+    arr = np.load(p).astype(np.int8, copy=False)
+    if arr.shape != (n_points,):
+        raise ValueError(f"working_categories.npy shape {arr.shape} != ({n_points},)")
     return arr
 
 

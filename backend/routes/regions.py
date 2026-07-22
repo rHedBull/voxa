@@ -71,7 +71,8 @@ def patch_region(rid: int, req: PatchRegionRequest):
             region = regstore.set_geometry(
                 doc, rid, regstore.shift_prism(req.prism.model_dump(), off))
         if req.status is not None:
-            region = regstore.flip_status(doc, rid, req.status, seg.positions, off)
+            region = regstore.flip_status(doc, rid, req.status, seg.positions,
+                                          off, categories=seg.categories)
     except regstore.RegionNotFound as e:
         raise HTTPException(404, str(e))
     except regstore.RegionError as e:
@@ -99,4 +100,5 @@ def regions_stats():
     seg, scan_dir, off = _ctx()
     doc = regstore.load_regions(scan_dir)
     return {"regions": regstore.region_stats(
-        doc, seg.positions, seg.class_ids, seg.instance_ids, off)}
+        doc, seg.positions, seg.class_ids, seg.instance_ids, off,
+        categories=seg.categories)}

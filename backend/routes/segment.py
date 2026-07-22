@@ -42,6 +42,15 @@ def segment_apply(req: ApplyRequest):
                 target_inst=req.payload.get("target_inst"),
                 target_class=target_class,
             )
+        elif req.op == "set_category":
+            # Annotation-status axis (phase 2): no class involved, so no
+            # frozen-class guard — that guard exists precisely because status
+            # used to ride the class axis.
+            idx = _decode_indices_or_400(req)
+            out = seg.apply_category(
+                idx, req.payload["category"],
+                protect_instances=req.payload.get("protect_instances"),
+            )
         else:
             raise HTTPException(400, f"unknown op: {req.op}")
     except (KeyError, ValueError) as e:
@@ -92,6 +101,7 @@ def segment_state():
         is_from_prelabel=bool(seg.is_from_prelabel),
         full_class_ids=_b64(class_ids),
         full_instance_ids=_b64(instance_ids),
+        full_categories=_b64(seg.categories.astype(np.int8, copy=False)),
         seg_ids=_b64(box_ids),
         seg_centers=_b64(box_centers),
         seg_sizes=_b64(box_sizes),
@@ -105,10 +115,15 @@ def segment_state():
 
 def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
                       merged_from: list[int],
-                      protect_instances: list[int] | None = None) -> dict:
+                      protect_instances: list[int] | None = None,
+                      target_category=None) -> dict:
     """Shared core for /apply-shape and /centerline-apply: resolve a shape to
     full-res point indices, reassign them, and run the per-shape structure
-    persist hook (tube -> update_centerlines; obb -> none)."""
+    persist hook (tube -> update_centerlines; obb -> none).
+
+    `target_category` (phase 2) switches the write to the annotation-status
+    axis instead: the shape's points are marked artifact/transient/
+    excluded_review/none rather than classified."""
     from labeling.shapes import shape_indices
     # Guard the tube session requirement BEFORE mutating working arrays, so a
     # session-less tube apply 409s cleanly instead of leaving partial state.
@@ -119,6 +134,17 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
         # Same key-absence contract as _serialize_apply on an empty delta.
         return {"op": "apply-shape", "n_affected": 0, "n_protected": 0,
                 "dirty": bool(seg.dirty)}
+    if target_category is not None:
+        out = seg.apply_category(idx, target_category,
+                                 protect_instances=protect_instances)
+        if out["n_affected"] == 0:
+            return {"op": "apply-shape", "n_affected": 0,
+                    "n_protected": out.get("n_protected", 0), "dirty": bool(seg.dirty)}
+        body = _serialize_apply(out)
+        # Only an excluded-review mark allocates an instance (the review blob);
+        # artifact/transient/none leave the points instance-less.
+        body["instance_id"] = out.get("new_instance_id")
+        return body
     out = seg.apply_reassign(idx, target_inst=target_inst, target_class=target_class,
                              protect_instances=protect_instances)
     if out["n_affected"] == 0:
@@ -142,15 +168,14 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
     return body
 
 
-# Exclude/Review class id, sourced from classes.yaml so it can't drift from
-# config (the mapping's single home is app.core._voxa_class_name_to_id).
-EXCLUDE_CLASS_ID = _voxa_class_name_to_id().get("unknown", 6)
-
-
 def _denoise_core(seg, req: "DenoiseRequest") -> dict:
-    """Shared core for /denoise: run global statistical-outlier detection
-    over the whole cloud and materialize the flagged points as one
-    unconfirmed Exclude pointset (Feature C)."""
+    """Shared core for /denoise: run global statistical-outlier detection over
+    the whole cloud and materialize the flagged points as one unconfirmed
+    review blob (Feature C). Phase 2 moved this off the class axis: it used to
+    write class `unknown` (archive id 6), which the eval-labeling spec bans in
+    new GT — the flagged points now carry the `excluded_review` category and a
+    class-less blob instance."""
+    from labeling.categories import CATEGORY_EXCLUDED_REVIEW
     from labeling.outliers import statistical_outlier_indices
 
     def _empty(n_protected: int = 0) -> dict:
@@ -172,8 +197,8 @@ def _denoise_core(seg, req: "DenoiseRequest") -> dict:
         tree=seg._ensure_tree())
     if outliers.size == 0:
         return _empty()
-    out = seg.apply_reassign(
-        outliers.astype(np.int32), target_inst=-1, target_class=EXCLUDE_CLASS_ID,
+    out = seg.apply_category(
+        outliers.astype(np.int32), CATEGORY_EXCLUDED_REVIEW,
         protect_instances=req.protect_instances)
     if out["n_affected"] == 0:            # everything caught was locked/confirmed
         return _empty(out.get("n_protected", 0))
@@ -225,9 +250,14 @@ def denoise_selection(req: DenoiseSelectionRequest):
 
 @router.post("/api/segment/apply-shape")
 def apply_shape(req: ApplyShapeRequest):
-    """Generic shape-based label apply: resolve `req.shape` (tube or obb) to
-    full-res point indices and reassign them to (target_class, target_inst)."""
+    """Generic shape-based apply: resolve `req.shape` (tube, obb or prism) to
+    full-res point indices and either reassign them to (target_class,
+    target_inst) or — with `target_category` — mark them on the
+    annotation-status axis."""
     seg = _require_seg()
+    if (req.target_class is None) == (req.target_category is None):
+        raise HTTPException(
+            400, "apply-shape needs exactly one of target_class / target_category")
     try:
         target_class = _coerce_class_id(req.target_class)
     except ValueError as e:
@@ -236,8 +266,9 @@ def apply_shape(req: ApplyShapeRequest):
     try:
         return _apply_shape_core(seg, req.shape, req.target_inst,
                                  target_class, req.merged_from,
-                                 req.protect_instances)
-    except ValueError as e:            # unknown shape type
+                                 req.protect_instances,
+                                 target_category=req.target_category)
+    except ValueError as e:            # unknown shape type or category
         raise HTTPException(400, str(e))
 
 
@@ -449,7 +480,7 @@ def segment_save():
     # canvas, independent of the output/ export.
     seg.flush_autosave()
     try:
-        from labeling.segment_io import save_labels
+        from labeling.segment_io import review_blob_summary, save_labels
         save_labels(
             scan_dir,
             session_id,
@@ -459,6 +490,11 @@ def segment_save():
             write_history=write_history,
             preseg_fingerprint=seg.preseg_fingerprint,
             source_fingerprint=seg.source_fingerprint,
+            categories=seg.categories,
+            # Read off the WORKING arrays: the strip above drops review blobs
+            # from out_inst (they are class-less by construction), so this is
+            # where their ids are preserved.
+            review_blobs=review_blob_summary(seg.categories, seg.instance_ids),
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

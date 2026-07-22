@@ -141,3 +141,41 @@ def test_frame_roundtrip_with_recenter(monkeypatch, tmp_path):
     assert out[0] == pytest.approx(PRISM["polygon"][0][0], abs=1e-3)
     # The gate works across the frame shift too (grid is 5 mm).
     assert client.patch("/api/regions/1", json={"status": "eval_grade"}).status_code == 200
+
+
+def _mark_review(client, indices):
+    import base64
+
+    import numpy as np
+    return client.post("/api/segment/apply", json={
+        "op": "set_category",
+        "indices": base64.b64encode(np.asarray(indices, np.int32).tobytes()).decode(),
+        "payload": {"category": "excluded_review"},
+    })
+
+
+def test_gate_refuses_over_review_budget(client_with_dense_annotated_scene):
+    """excluded-review is a budget, not a bin: >3% of a region's points blocks
+    the eval-grade flip (eval-labeling phase 2)."""
+    client = client_with_dense_annotated_scene
+    client.post("/api/regions", json={"prism": PRISM})
+    assert _mark_review(client, range(20)).status_code == 200      # 20/400 = 5%
+    r = client.patch("/api/regions/1", json={"status": "eval_grade"})
+    assert r.status_code == 422
+    assert "budget" in r.json()["detail"]
+    assert client.get("/api/regions").json()["regions"][0]["status"] == "draft"
+
+
+def test_gate_passes_at_the_budget_edge(client_with_dense_annotated_scene):
+    client = client_with_dense_annotated_scene
+    client.post("/api/regions", json={"prism": PRISM})
+    assert _mark_review(client, range(12)).status_code == 200      # 12/400 = 3.0%
+    assert client.patch("/api/regions/1", json={"status": "eval_grade"}).status_code == 200
+
+
+def test_stats_report_review_points(client_with_dense_annotated_scene):
+    client = client_with_dense_annotated_scene
+    client.post("/api/regions", json={"prism": PRISM})
+    _mark_review(client, range(5))
+    s = client.get("/api/regions/stats").json()["regions"][0]
+    assert s["n_review"] == 5

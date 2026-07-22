@@ -514,3 +514,47 @@ describe('VoxaAPI.segApply wire shape', () => {
     expect(captured.body.class_id).toBeUndefined();
   });
 });
+
+describe('point categories on the wire (phase 2)', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('applyShape sends target_category instead of target_class', async () => {
+    let capturedOpts;
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      capturedOpts = opts;
+      return { ok: true, json: async () => ({ op: 'set_category', n_affected: 2, dirty: true }) };
+    }));
+    await VoxaAPI.applyShape({
+      shape: { type: 'obb', center: [0, 0, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
+      targetCategory: 'artifact',
+    });
+    const body = JSON.parse(capturedOpts.body);
+    expect(body.target_category).toBe('artifact');
+    expect('target_class' in body).toBe(false);
+  });
+
+  it('segApply decodes after_category into the response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        op: 'set_category', n_affected: 2, dirty: true,
+        indices: encodeInt32([4, 5]),
+        after_class: encodeInt8([-1, -1]),
+        after_instance: encodeInt32([-1, -1]),
+        after_category: encodeInt8([1, 1]),
+      }),
+    })));
+    const r = await VoxaAPI.segApply('set_category', {
+      indices: new Int32Array([4, 5]), payload: { category: 'artifact' },
+    });
+    expect(Array.from(r.afterCategory)).toEqual([1, 1]);
+  });
+
+  it('decodeLoadResponse surfaces full_categories', () => {
+    const j = {
+      positions: encodeFloat32([0, 0, 0]), colors: encodeFloat32([1, 1, 1]),
+      full_categories: encodeInt8([0, 3]),
+    };
+    expect(Array.from(decodeLoadResponse(j).fullCategories)).toEqual([0, 3]);
+  });
+});

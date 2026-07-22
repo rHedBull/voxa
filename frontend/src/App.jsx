@@ -271,6 +271,7 @@ function MainApp() {
             : null,
           samIds: segLive.fullSamIds || null,
           samSegments: segLive.samSegments || [],
+          categories: segLive.fullCategories || null,
         }));
         // Project full-res labels onto the subsampled cloud so points pick
         // up segment colours immediately.
@@ -300,6 +301,7 @@ function MainApp() {
           segBoxes: (c.segIds && c.segCenters && c.segSizes)
             ? { segIds: c.segIds, segCenters: c.segCenters, segSizes: c.segSizes }
             : null,
+          categories: c.fullCategories || null,
         }));
       } else {
         prelabelRef.current = { classFull: null, instanceFull: null };
@@ -511,6 +513,7 @@ function MainApp() {
             indices: r.indices,
             after_class: r.afterClass,
             after_instance: r.afterInstance,
+            after_category: r.afterCategory,
           }, gtInstancesRef.current);
           viewerRef.current?.recolorByEdit({
             affectedFullIndices: r.indices,

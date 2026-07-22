@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initSegState, applyDelta, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
+import { initSegState, applyDelta, indicesForSelection, recomputeSummary, computeDiffMask, hydrateFromServerState, reconcilePointsetRows, applyUndoRedoDelta, applySamDelta, reconcileSamAfterApply, filterSamSelectionOnToolSwitch } from './segment-state.js';
 
 const seed = () => initSegState({
   classFull: new Int8Array([-1, 0, 0, 1, 1, 2, -1, 2]),
@@ -338,5 +338,70 @@ describe('SAM candidate layer', () => {
     const s = initSegState({ classFull, instanceFull });
     const next = applySamDelta(s, { indices: [0, 1], samSegId: 5, source: 'preseg' });
     expect(next.samSegments.get(5).source).toBe('preseg');
+  });
+});
+
+describe('point categories (phase 2)', () => {
+  it('initSegState defaults categoryFull to zeros when the backend sends none', () => {
+    const s = seed();
+    expect(s.categoryFull.length).toBe(8);
+    expect(Array.from(s.categoryFull).every((v) => v === 0)).toBe(true);
+  });
+
+  it('initSegState adopts a supplied category array', () => {
+    const cats = Int8Array.from([0, 1, 0, 0, 0, 0, 0, 3]);
+    const s = initSegState({
+      classFull: new Int8Array(8), instanceFull: new Int32Array(8), categories: cats,
+    });
+    expect(s.categoryFull).toBe(cats);
+  });
+
+  it('applyDelta writes after_category when present', () => {
+    const s = seed();
+    const next = applyDelta(s, {
+      indices: new Int32Array([1, 2]),
+      after_class: new Int8Array([-1, -1]),
+      after_instance: new Int32Array([-1, -1]),
+      after_category: new Int8Array([1, 1]),
+    });
+    expect(Array.from(next.categoryFull.slice(0, 4))).toEqual([0, 1, 1, 0]);
+  });
+
+  it('applyDelta leaves categories alone when the delta carries none', () => {
+    const s = seed();
+    s.categoryFull[1] = 2;
+    const next = applyDelta(s, {
+      indices: new Int32Array([1]),
+      after_class: new Int8Array([3]),
+      after_instance: new Int32Array([9]),
+    });
+    expect(next.categoryFull[1]).toBe(2);
+  });
+
+  it('applyUndoRedoDelta restores categories alongside class/instance', () => {
+    const s = seed();
+    s.categoryFull[3] = 1;
+    const { next } = applyUndoRedoDelta(s, {
+      indices: new Int32Array([3]),
+      after_class: new Int8Array([1]),
+      after_instance: new Int32Array([1]),
+      after_category: new Int8Array([0]),
+    }, []);
+    expect(next.categoryFull[3]).toBe(0);
+  });
+});
+
+describe('indicesForSelection', () => {
+  it('collects every point whose id is selected', () => {
+    const ids = Int32Array.from([-1, 4, 7, 4, -1]);
+    expect(Array.from(indicesForSelection(ids, new Set([4])))).toEqual([1, 3]);
+    expect(Array.from(indicesForSelection(ids, new Set([4, 7])))).toEqual([1, 2, 3]);
+  });
+
+  it('returns null for an empty selection, no match, or no array', () => {
+    const ids = Int32Array.from([1, 2]);
+    expect(indicesForSelection(ids, new Set())).toBeNull();
+    expect(indicesForSelection(ids, new Set([9]))).toBeNull();
+    expect(indicesForSelection(null, new Set([1]))).toBeNull();
   });
 });

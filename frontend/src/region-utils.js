@@ -27,3 +27,13 @@ export function unlabeledPct(statRegion) {
   if (!statRegion || !statRegion.n_points) return null;
   return (100 * statRegion.n_unlabeled) / statRegion.n_points;
 }
+
+// excluded-review share of a region (eval-labeling phase 2). It is a BUDGET,
+// not a bin: the backend's eval-grade gate refuses a region above
+// REVIEW_BUDGET_PCT, so the panel shows the number before the user tries.
+export const REVIEW_BUDGET_PCT = 3;   // mirrors regions.py::REVIEW_BUDGET_FRAC
+
+export function reviewPct(statRegion) {
+  if (!statRegion || !statRegion.n_points) return null;
+  return (100 * (statRegion.n_review || 0)) / statRegion.n_points;
+}

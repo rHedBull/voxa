@@ -128,6 +128,10 @@ def load_scene(req: LoadRequest):
             full_payload["seg_ids"] = _b64(box_ids)
             full_payload["seg_centers"] = _b64(box_centers)
             full_payload["seg_sizes"] = _b64(box_sizes)
+        # Point categories (phase 2) live on the session, not in `labels`:
+        # they are working state, not part of the loaded GT arrays.
+        if seg is not None and seg.categories.shape[0] == len(pc):
+            full_payload["full_categories"] = _b64(seg.categories.astype(np.int8))
     full_payload["is_from_prelabel"] = seg.is_from_prelabel if seg else False
 
     subsample_idx_b64 = _b64(idx.astype(np.int32)) if idx is not None else None

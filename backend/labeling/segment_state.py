@@ -21,8 +21,10 @@ class _Delta:
     indices: np.ndarray            # int32
     before_cls: np.ndarray         # int8
     before_inst: np.ndarray        # int32
+    before_cat: np.ndarray         # int8  (point category, phase 2)
     after_cls: np.ndarray          # int8
     after_inst: np.ndarray         # int32
+    after_cat: np.ndarray          # int8
 
 
 class SegmentSession:
@@ -56,6 +58,10 @@ class SegmentSession:
         # apply (the frontend's instance doc may still reference it).
         self._next_fresh_inst = int(instance_ids.max(initial=-1)) + 1
         self.positions = positions.astype(np.float32, copy=False)
+        # Annotation-status axis (eval-labeling phase 2): artifact / transient /
+        # excluded_review, 0 = none. Never conflated with the class axis; see
+        # labeling/categories.py.
+        self.categories: np.ndarray = np.zeros(n, dtype=np.int8)
         self.preseg_ids: np.ndarray = np.full(n, -1, dtype=np.int32)
         self.sam_ids: np.ndarray = np.full(n, -1, dtype=np.int32)
         # {sam_seg_id: {"n_points": int, "mask_score": float|None, "created_at": str}}
@@ -139,6 +145,39 @@ class SegmentSession:
         out["n_protected"] = n_protected
         return out
 
+    def apply_category(
+        self, indices: np.ndarray, category,
+        protect_instances: Optional[list[int]] = None,
+    ) -> dict:
+        """Mark points on the annotation-status axis (eval-labeling phase 2).
+
+        A category mark is a statement *about the points*, so it resolves the
+        other two axes rather than layering over them: artifact/transient/none
+        erase to (-1, -1), excluded_review erases the class and allocates one
+        fresh instance id for the whole mark — a *review blob* (the spec's
+        "instance-shaped blobs, never a point spray").
+
+        protect_instances behaves exactly as on apply_reassign: points that
+        belong to a confirmed instance are dropped before the write.
+        """
+        from labeling.categories import parse_category, CATEGORY_EXCLUDED_REVIEW
+        cat = parse_category(category)
+        indices = np.asarray(indices, dtype=np.int32)
+        n_candidate = int(indices.size)
+        if protect_instances:
+            protect = {int(v) for v in protect_instances}
+            protect.discard(-1)
+            if protect:
+                keep = ~np.isin(self.instance_ids[indices], list(protect))
+                indices = indices[keep]
+        n_protected = n_candidate - int(indices.size)
+        if indices.size == 0:
+            return {"op": "set_category", "n_affected": 0, "n_protected": n_protected}
+        out = self._apply("set_category", indices, dict(
+            category=cat, blob=(cat == CATEGORY_EXCLUDED_REVIEW)))
+        out["n_protected"] = n_protected
+        return out
+
     def _retire_sam_ids(self, indices: np.ndarray) -> None:
         """Clear SAM candidacy for these points — they're about to carry a
         real label (or a fresher SAM candidate id). Shrinks/drops the
@@ -218,6 +257,7 @@ class SegmentSession:
         # Apply 'before' to current
         self.class_ids[d.indices] = d.before_cls
         self.instance_ids[d.indices] = d.before_inst
+        self.categories[d.indices] = d.before_cat
         self._redo.append(d)
         self.dirty = True
         self.schedule_autosave(write_arrays=True)
@@ -229,6 +269,7 @@ class SegmentSession:
         d = self._redo.pop()
         self.class_ids[d.indices] = d.after_cls
         self.instance_ids[d.indices] = d.after_inst
+        self.categories[d.indices] = d.after_cat
         self._undo.append(d)
         self.dirty = True
         self.schedule_autosave(write_arrays=True)
@@ -305,7 +346,14 @@ class SegmentSession:
         self._retire_sam_ids(indices)
         before_cls = self.class_ids[indices].copy()
         before_inst = self.instance_ids[indices].copy()
+        before_cat = self.categories[indices].copy()
         new_inst_id: Optional[int] = None
+        # Labeling a point as a real object retracts any non-object mark it
+        # carried — "exactly one of confirmed-thing/stuff/artifact/transient/
+        # excluded-review" (upstream loader invariant 1). set_category writes
+        # its own value below; every other op clears. Same unconditional-per-
+        # apply treatment as _retire_sam_ids above.
+        self.categories[indices] = np.int8(0)
 
         if op == "set_class":
             self.class_ids[indices] = np.int8(payload["class_id"])
@@ -337,14 +385,28 @@ class SegmentSession:
         elif op == "snap_to_preseg":
             self.instance_ids[indices] = payload["after_inst"].astype(np.int32, copy=False)
             # class_ids unchanged
+        elif op == "set_category":
+            self.categories[indices] = np.int8(payload["category"])
+            self.class_ids[indices] = np.int8(-1)
+            if payload["blob"]:
+                # One review blob per mark: it exists to carry shape + note,
+                # so it takes a real (monotonic, never-reused) instance id
+                # while its class stays null.
+                new_inst_id = max(self._next_fresh_inst,
+                                  int(self.instance_ids.max(initial=-1)) + 1)
+                self._next_fresh_inst = new_inst_id + 1
+                self.instance_ids[indices] = np.int32(new_inst_id)
+            else:
+                self.instance_ids[indices] = np.int32(-1)
         else:
             raise ValueError(f"unknown op: {op}")
 
         delta = _Delta(
             op=op, indices=indices,
-            before_cls=before_cls, before_inst=before_inst,
+            before_cls=before_cls, before_inst=before_inst, before_cat=before_cat,
             after_cls=self.class_ids[indices].copy(),
             after_inst=self.instance_ids[indices].copy(),
+            after_cat=self.categories[indices].copy(),
         )
         self._undo.append(delta)
         if len(self._undo) > self.history_cap:
@@ -358,6 +420,7 @@ class SegmentSession:
             "indices": indices,
             "after_class": delta.after_cls,
             "after_instance": delta.after_inst,
+            "after_category": delta.after_cat,
         }
         if new_inst_id is not None:
             out["new_instance_id"] = new_inst_id
@@ -407,6 +470,7 @@ class SegmentSession:
                 class_ids=self.class_ids if write_arrays else None,
                 instance_ids=self.instance_ids if write_arrays else None,
                 sam_ids=self.sam_ids if write_arrays else None,
+                categories=self.categories if write_arrays else None,
             )
             if write_arrays:
                 save_sam_segments(self.session_dir, self.sam_segments)
@@ -442,10 +506,12 @@ class SegmentSession:
         # Frontend reapplies these by index → (class, instance).
         cls = d.before_cls if direction == "undo" else d.after_cls
         inst = d.before_inst if direction == "undo" else d.after_inst
+        cat = d.before_cat if direction == "undo" else d.after_cat
         return {
             "op": d.op, "direction": direction,
             "indices": d.indices,
             "after_class": cls,
             "after_instance": inst,
+            "after_category": cat,
             "n_affected": int(d.indices.size),
         }
