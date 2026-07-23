@@ -122,6 +122,47 @@ def build_annotated_root(
     return root, sess.session_id
 
 
+def register_raw_source(root: Path, scan_name: str, points, source_id: str = "test-raw") -> Path:
+    """Register a REAL raw LAS file as `scan_name`'s raw source, via the
+    derivation-lineage fallback path (scene_registry.py's `source_laz_path`
+    resolution) rather than `meta.json::source_laz` — this deliberately
+    avoids touching `source_mesh`/`source_laz` on meta.json, which would flip
+    `is_z_up_from_meta` and rotate coordinates unexpectedly. The written LAS
+    points are in the SAME (already Y-up, unrotated) frame as the scan's own
+    points, since is_z_up stays False for these synthetic fixtures — see
+    scan_meta.py::is_z_up_from_meta.
+
+    Returns the path to the written LAS file."""
+    import laspy
+
+    raw_rel = f"raw/{scan_name}.laz"
+    (root / "raw").mkdir(parents=True, exist_ok=True)
+    (root / "raw" / "sources.json").write_text(json.dumps({
+        "sources": [{"source_id": source_id, "path": raw_rel, "format": "laz"}],
+    }))
+    raw_path = root / raw_rel
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n = len(points)
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.scales = np.array([0.0001, 0.0001, 0.0001])
+    header.offsets = np.array([0.0, 0.0, 0.0])
+    las = laspy.LasData(header)
+    pts = np.asarray(points, dtype=np.float64)
+    las.x, las.y, las.z = pts[:, 0], pts[:, 1], pts[:, 2]
+    rng = np.random.default_rng(1)
+    las.red = rng.integers(0, 65535, n).astype(np.uint16)
+    las.green = rng.integers(0, 65535, n).astype(np.uint16)
+    las.blue = rng.integers(0, 65535, n).astype(np.uint16)
+    las.write(str(raw_path))
+
+    meta_path = root / "annotated" / scan_name / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["derivation"] = {"root": {"source_id": source_id}}
+    meta_path.write_text(json.dumps(meta))
+    return raw_path
+
+
 @pytest.fixture
 def client_with_annotated_scene(monkeypatch, tmp_path):
     """TestClient + scene_id + session_id for a synthesized annotated scene.
@@ -189,11 +230,15 @@ def dense_grid_pts(spacing=0.005, n=20, offset=(0.0, 0.0, 0.0)):
 @pytest.fixture
 def client_with_dense_annotated_scene(monkeypatch, tmp_path):
     """Loaded annotated scene whose 400 points sit on a 5 mm grid — dense
-    enough to pass the eval-grade gate (p90 = 5 mm <= 10 mm)."""
+    enough to pass the eval-grade gate (p90 = 5 mm <= 10 mm) — with a
+    matching raw source registered so the gate (which now measures raw
+    density, not the session cloud) actually passes."""
     import main
     from fastapi.testclient import TestClient
 
-    root, _sid = build_annotated_root(tmp_path, pts=dense_grid_pts())
+    pts = dense_grid_pts()
+    root, _sid = build_annotated_root(tmp_path, pts=pts)
+    register_raw_source(root, "demo", pts)
     monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
     client = TestClient(main.app)
     r = client.post("/api/load", json={"name": "annotated/demo", "max_points": 100})
