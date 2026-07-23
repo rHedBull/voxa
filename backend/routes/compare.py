@@ -46,6 +46,23 @@ def get_annotation(scene: str, kind: str, session_id: str | None = None):
 @router.put("/api/annotations/{kind}/{scene:path}")
 def put_annotation(scene: str, kind: str, doc: SaveAnnotationRequest,
                    session_id: str | None = None):
+    if session_id is None and scene.startswith("annotated/"):
+        # Annotated scans store instance docs per session; a session-less PUT
+        # would silently land in the legacy scene-global path — a doc no
+        # session ever reads back. It happens exactly when a desynced client
+        # (activeSessionId lost) autosaves stale rows, so refuse loudly.
+        # Gated on the tier prefix so the frequent legacy autosave path never
+        # pays for _resolve (a full, uncached archive discovery); annotated
+        # ids are always tier-prefixed. A prefixed name that doesn't resolve
+        # is treated as legacy (docs may exist for scenes with no source dir).
+        try:
+            src = _resolve(scene)
+        except HTTPException:
+            src = None
+        if src is not None and src.tier == "annotated":
+            raise HTTPException(409, (
+                f"scene {scene!r} is an annotated scan: instance docs are "
+                f"session-scoped, pass ?session_id=…"))
     p = _annotation_path(scene, kind, session_id)
     p.parent.mkdir(parents=True, exist_ok=True)
     _ensure_seq(doc.instances)

@@ -77,6 +77,20 @@ def test_no_session_id_keeps_legacy_global_path(client, tmp_path):
     assert len(r.json()["instances"]) == 1
 
 
+def test_put_without_session_id_refused_for_annotated_scene(
+        client_with_annotated_scene):
+    # A session-less PUT on an annotated scan must 409, not silently write the
+    # legacy scene-global path: it happens exactly when a desynced client (e.g.
+    # a scene switch that dropped its load response, leaving activeSessionId
+    # null) autosaves stale rows — a doc no session ever reads back.
+    from app.constants import ANNOT_DIR
+    client, scene_id, _sid = client_with_annotated_scene
+    r = client.put(f"/api/annotations/gt/{scene_id}", json=_doc(scene_id))
+    assert r.status_code == 409
+    legacy = ANNOT_DIR / scene_id / "ground_truth.json"
+    assert not legacy.exists(), "refused write must not touch the legacy path"
+
+
 def test_box_obb_and_seq_round_trip(client_with_annotated_scene):
     client, scene_id, session_id = client_with_annotated_scene
     doc = {
