@@ -60,19 +60,42 @@ AABB-filtered set, not the raw file.
 Used by the eval-grade gate, scoped to the region's own prism — cheap because it only
 returns points local to one region, not the whole scan.
 
-### 2. `raw_reservoir_sample_spacing(raw_path, scene_is_z_up, offset, sample=100_000, chunk=1_000_000, seed=0)`
+### 2. `raw_reservoir_sample_spacing(raw_path, scene_is_z_up, offset, n_chunks=5, chunk=1_000_000, seed=0)`
 
-Streams the *whole* raw file via the same `scenes.lidar_io._laz_chunk_iter` chunk iterator
-`materialize_raw` uses, transforming each chunk into the display frame, but — unlike
-`materialize_raw` — does not replay labels or accumulate the whole cloud. Instead it
-maintains a bounded reservoir sample of positions (Algorithm R, seeded, size `sample`) as
-chunks stream past, so memory stays bounded regardless of file size (raw files run up to
-~156M points). The resulting reservoir feeds the same spacing calculation.
+**Correction from spec review round 2:** an earlier version of this design reservoir-sampled
+individual *points* down to a flat 100k-point pool and fed that straight into
+`raw_sample_spacing`. That's wrong — `raw_sample_spacing` builds its KD-tree over its
+*entire* input array (`materialize.py:298`, `cKDTree(scan_pos)`) and only subsamples which
+points to *query*; it does not know or care that its input is itself a subsample. Feeding it
+a reservoir of individual points scattered across a ~156M-point file collapses local density
+by the same factor as the reservoir ratio (e.g. ~11x sparser at a 100k reservoir over 156M
+points) — the KD-tree's nearest-neighbour distances would reflect the *reservoir's* spacing,
+not the scan's, and could easily report a **worse** number than today's session-cloud
+measurement (which is a real, spatially-dense 3M-point cloud, not a scattered sample). That
+would silently defeat this spec's entire goal for this endpoint.
 
-Used by the export accuracy endpoint, which is scan-wide rather than region-scoped, so
-there's no AABB to filter by — a full-file streaming pass is unavoidable if we want a raw
-measurement at all, and reservoir sampling keeps it statistically unbiased over point
-ordering rather than biased toward however the LAZ happens to be tiled/sorted on disk.
+**Fix: reservoir-sample whole *chunks*, not individual points**, following the same "local
+chunks" methodology already used (and validated against ground truth) for the density
+figures in the phase-0b memory notes. Stream the raw file via `scenes.lidar_io.
+_laz_chunk_iter` as before, but instead of pulling points into a flat pool, run Algorithm R
+over the **stream of chunks** to pick `n_chunks` (default 5) chunk indices uniformly at
+random across the file — each retained chunk keeps its full native point density and
+spatial contiguity, it's just not accumulated until selected. Concatenate the retained
+chunks' positions (default: 5 × 1M = up to 5M points, still far below holding the full
+~156M-point file, and each chunk internally is at true raw density) and feed that into the
+existing `raw_sample_spacing()`, which then does its own internal `sample=100_000` query
+subsample against this dense, spatially-real corpus — exactly as it already does for
+`raw_region_sample_spacing`'s AABB-filtered result. This preserves true local density in
+every point used for the KD-tree, at the cost of only sampling `n_chunks` spatial neighborhoods
+of the scan rather than every neighborhood — an acceptable approximation for an
+informational (non-gating) endpoint, and consistent with how p90 density was already
+estimated by hand for bim/water_treatment.
+
+Used by the export accuracy endpoint (and `export_labels`'s manifest stamping, see below),
+which are scan-wide rather than region-scoped, so there's no AABB to filter by — a full-file
+streaming pass is unavoidable if we want any raw measurement here, and chunk-level
+reservoir sampling keeps it statistically representative of the scan's actual density rather
+than of wherever the LAZ happens to be tiled/sorted on disk.
 
 Both helpers should share `raw_sample_spacing`'s underlying KD-tree/subsample logic (factor
 it out of `raw_sample_spacing` into a small internal `_spacing_from_positions(positions,
@@ -162,8 +185,8 @@ Export accuracy (GET /api/labels/accuracy)
   routes/export.py::labels_accuracy
     if src.extras["source_laz_path"]:
       raw_reservoir_sample_spacing(raw_path, scene_is_z_up, offset)
-        -> stream whole LAZ via _laz_chunk_iter, reservoir-sample positions
-        -> raw_sample_spacing(...) -> p50, p90
+        -> stream whole LAZ via _laz_chunk_iter, reservoir-sample whole CHUNKS (not points)
+        -> concatenate retained chunks -> raw_sample_spacing(...) -> p50, p90
       return {..., is_raw: true}
     else:
       raw_sample_spacing(pc.points) -> p50, p90   # today's behavior, unchanged
@@ -191,11 +214,12 @@ Export accuracy (GET /api/labels/accuracy)
   - `raw_region_sample_spacing` on a small synthetic LAZ: verify only in-AABB points are
     used (cross-check against `prism_indices`/manual masking) and spacing matches a direct
     KD-tree computation on the same filtered set.
-  - `raw_reservoir_sample_spacing`: verify reservoir size is bounded regardless of input
-    file size (test against a file larger than `sample`), and that sampling is
-    order-independent (shuffling chunk order doesn't change the *statistical* result beyond
-    sampling noise — e.g. compare mean spacing across a couple of seeds/orderings within a
-    tolerance).
+  - `raw_reservoir_sample_spacing`: verify the number of *chunks* retained is bounded
+    (`n_chunks`) regardless of input file size, that each retained chunk preserves its full
+    native point density (no per-point thinning), and — the key regression test for the
+    round-2 review bug — that measuring a uniformly-dense synthetic raw file via this
+    function returns spacing close to the true known spacing (not inflated by ~the
+    reservoir-ratio factor a flat point-reservoir would have introduced).
 - `regions.py` tests:
   - Eval-grade flip **passes** for a region whose session-cloud (`positions`) spacing would
     fail the 10mm bar but whose raw-source spacing passes (the exact bim/water_treatment
