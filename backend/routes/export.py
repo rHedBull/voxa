@@ -21,6 +21,7 @@ from labeling.materialize import (
     build_replay_index,
     materialize_downsample,
     materialize_raw,
+    raw_reservoir_sample_spacing,
     raw_sample_spacing,
     loa_band,
 )
@@ -172,8 +173,12 @@ def edit_export_ply(req: ExportPlyRequest) -> Response:
 
 @router.get("/api/labels/accuracy")
 def labels_accuracy(scene: str, session_id: str) -> dict:
-    """p50/p90 nearest-neighbor sample spacing of the active scan.ply — the
-    labeling-density boundary uncertainty shown in the export wizard."""
+    """p50/p90 nearest-neighbor sample spacing — the labeling-density boundary
+    uncertainty shown in the export wizard. Raw-backed (`is_raw: true`) when
+    the scan has a registered raw source; otherwise a best-effort fallback
+    against the loaded session cloud (`is_raw: false`) — this endpoint is
+    informational, not a hard gate, so it degrades gracefully rather than
+    refusing (contrast with the eval-grade region gate, which refuses)."""
     if _state.get("scene") != scene:
         raise HTTPException(409, f"scene mismatch — server has '{_state.get('scene')}', request was '{scene}'")
     if _state.get("session_id") != session_id:
@@ -181,8 +186,16 @@ def labels_accuracy(scene: str, session_id: str) -> dict:
     pc = _state.get("pc")
     if pc is None:
         raise HTTPException(409, "no scene loaded")
-    p50, p90 = raw_sample_spacing(pc.points)
-    return {"p50": p50, "p90": p90, "loa": loa_band(p90)}
+    src = _state.get("source")
+    raw_path = src.extras.get("source_laz_path") if src is not None else None
+    if raw_path:
+        offset = np.asarray(_state.get("recenter_offset") or [0.0, 0.0, 0.0], dtype=np.float64)
+        p50, p90 = raw_reservoir_sample_spacing(raw_path, _scene_is_z_up(src), offset)
+        is_raw = True
+    else:
+        p50, p90 = raw_sample_spacing(pc.points)
+        is_raw = False
+    return {"p50": p50, "p90": p90, "loa": loa_band(p90), "is_raw": is_raw}
 
 
 @router.post("/api/labels/export")
@@ -211,7 +224,13 @@ def export_labels(req: ExportLabelsRequest) -> Response:
     if errs:
         raise HTTPException(422, {"errors": errs})
 
-    p50, p90 = raw_sample_spacing(ctx.scan_pos)
+    # The manifest's accuracy claim must describe what was actually
+    # exported: raw-backed only when the export itself is raw-density
+    # (resolution.kind == "raw"), else the session cloud — same as today.
+    if req.resolution.kind == "raw" and ctx.raw_path is not None:
+        p50, p90 = raw_reservoir_sample_spacing(ctx.raw_path, ctx.scene_is_z_up, ctx.offset)
+    else:
+        p50, p90 = raw_sample_spacing(ctx.scan_pos)
     taxonomy, src_to_tgt = build_taxonomy(palette, req)
     absent = count_absent_instances(ctx.work_inst, confirmed_by_inst)
 

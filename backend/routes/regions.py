@@ -71,8 +71,12 @@ def patch_region(rid: int, req: PatchRegionRequest):
             region = regstore.set_geometry(
                 doc, rid, regstore.shift_prism(req.prism.model_dump(), off))
         if req.status is not None:
+            src = _state.get("source")
+            raw_path = src.extras.get("source_laz_path") if src is not None else None
+            scene_is_z_up = _scene_is_z_up(src) if src is not None else False
             region = regstore.flip_status(doc, rid, req.status, seg.positions,
-                                          off, categories=seg.categories)
+                                          off, categories=seg.categories,
+                                          raw_path=raw_path, scene_is_z_up=scene_is_z_up)
     except regstore.RegionNotFound as e:
         raise HTTPException(404, str(e))
     except regstore.RegionError as e:

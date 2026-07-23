@@ -285,6 +285,105 @@ def materialize(ctx: MaterializeCtx, resolution: dict):
     return positions, colors, class_ids, instance_ids, meta
 
 
+def prism_aabb(prism: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Axis-aligned bounding box of a vertical prism (footprint polygon in
+    XZ + a Y band), as (min, max) float64 (x, y, z) arrays. Used to pre-filter
+    a raw point stream to a small region before the exact prism_indices test —
+    no equivalent helper exists elsewhere (shapes.py only tests membership,
+    never bounds)."""
+    poly = np.asarray(prism["polygon"], dtype=np.float64)
+    y0 = float(prism["y0"])
+    height = float(prism["height"])
+    x_min, x_max = float(poly[:, 0].min()), float(poly[:, 0].max())
+    z_min, z_max = float(poly[:, 1].min()), float(poly[:, 1].max())
+    return (np.array([x_min, y0, z_min]),
+            np.array([x_max, y0 + height, z_max]))
+
+
+def _load_raw_region_positions(raw_path, prism: dict, scene_is_z_up: bool,
+                                offset: np.ndarray) -> np.ndarray:
+    """Shared raw-region loader for `raw_region_point_count` and
+    `raw_region_sample_spacing` (and `regions.py::flip_status`, which calls
+    this directly to measure both in a single disk read rather than via the
+    two public wrappers below): streams+filters the raw LAZ to the prism's
+    AABB (cheap: only touches points local to one region, never the whole
+    file in memory), then re-filters through the exact prism so points just
+    outside a non-rectangular footprint (but inside its AABB) can't skew the
+    measurement. Returns the FINAL exact-filtered positions — may be empty."""
+    from scenes.lidar_io import load_laz_region
+
+    aabb_min, aabb_max = prism_aabb(prism)
+    positions, _colors = load_laz_region(
+        raw_path, aabb_min.astype(np.float32), aabb_max.astype(np.float32),
+        is_z_up=scene_is_z_up, offset=np.asarray(offset, dtype=np.float64))
+    if len(positions) == 0:
+        return positions
+    return positions[prism_indices(positions, prism)]
+
+
+def raw_region_sample_spacing(raw_path, prism: dict, scene_is_z_up: bool,
+                               offset: np.ndarray) -> tuple[float, float]:
+    """p50/p90 nearest-neighbour spacing of a scan's raw source, scoped to one
+    eval region."""
+    positions = _load_raw_region_positions(raw_path, prism, scene_is_z_up, offset)
+    if len(positions) == 0:
+        return 0.0, 0.0
+    return raw_sample_spacing(positions)
+
+
+def raw_region_point_count(raw_path, prism: dict, scene_is_z_up: bool,
+                            offset: np.ndarray) -> int:
+    """How many raw points fall exactly inside a region's prism — used by the
+    eval-grade gate's point-floor check, which must run BEFORE the spacing
+    measurement (an empty region measures spacing (0.0, 0.0), which must not
+    be confused with a real "coincident points" reading)."""
+    return len(_load_raw_region_positions(raw_path, prism, scene_is_z_up, offset))
+
+
+def raw_reservoir_sample_spacing(raw_path, scene_is_z_up: bool, offset: np.ndarray,
+                                  n_chunks: int = 5, chunk: int = 1_000_000,
+                                  seed: int = 0) -> tuple[float, float]:
+    """p50/p90 nearest-neighbour spacing of a scan's raw source, sampled
+    across the WHOLE file (no AABB to filter by, unlike
+    raw_region_sample_spacing). Reservoir-samples whole CHUNKS via Algorithm R
+    over the chunk stream — not individual points — so every point in the
+    resulting corpus is at true native local density; a flat point-level
+    reservoir would collapse density by the reservoir/file-size ratio and
+    silently defeat the point of measuring "raw" density at all (see the
+    design spec's round-2 correction).
+
+    ASSUMES a `_laz_chunk_iter` chunk (sequential points in on-disk order) is
+    spatially coherent, which holds for typical LiDAR/NavVis scan-order
+    exports but is not guaranteed for a pre-shuffled or globally-tiled file —
+    acceptable for this informational (non-gating) measurement.
+    """
+    from app.core import _to_display_frame
+    from scenes.lidar_io import _laz_chunk_iter
+
+    rng = np.random.default_rng(seed)
+    reservoir: list[np.ndarray] = []
+    seen = 0
+    for _hdr, las_chunk in _laz_chunk_iter(raw_path, chunk_size=chunk):
+        xyz_src = np.column_stack([
+            np.asarray(las_chunk.x, dtype=np.float64),
+            np.asarray(las_chunk.y, dtype=np.float64),
+            np.asarray(las_chunk.z, dtype=np.float64),
+        ])
+        display_xyz = _to_display_frame(xyz_src, scene_is_z_up, np.asarray(offset))
+        if len(reservoir) < n_chunks:
+            reservoir.append(display_xyz)
+        else:
+            j = int(rng.integers(0, seen + 1))
+            if j < n_chunks:
+                reservoir[j] = display_xyz
+        seen += 1
+
+    if not reservoir:
+        return 0.0, 0.0
+    positions = np.concatenate(reservoir, axis=0).astype(np.float32)
+    return raw_sample_spacing(positions, seed=seed)
+
+
 def raw_sample_spacing(scan_pos, sample=100_000, seed=0):
     """Nearest-neighbor spacing of scan.ply (its true sampling pitch). Returns
     (p50, p90) over a bounded random subsample; p90 is the honest boundary bound

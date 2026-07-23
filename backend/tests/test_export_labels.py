@@ -828,6 +828,45 @@ def test_labels_accuracy_scene_mismatch_409(client_with_annotated_scene):
     assert r.status_code == 409
 
 
+def test_labels_accuracy_is_raw_true_when_raw_source_registered(monkeypatch, tmp_path):
+    # Sparse session cloud (would report a coarse spacing) + a DENSE raw
+    # source registered — proves the endpoint reads raw density now, not
+    # ctx.scan_pos / pc.points.
+    import main
+    from fastapi.testclient import TestClient
+    from tests.conftest import build_annotated_root, register_raw_source, dense_grid_pts
+
+    sparse_pts = dense_grid_pts(spacing=0.020, n=10)   # 20mm session cloud
+    dense_raw_pts = dense_grid_pts(spacing=0.003, n=40)  # 3mm raw source
+    root, session_id = build_annotated_root(tmp_path, pts=sparse_pts, n_instance0_points=len(sparse_pts))
+    register_raw_source(root, "demo", dense_raw_pts)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    r = client.post("/api/load", json={"name": "annotated/demo", "max_points": 1000})
+    assert r.status_code == 200
+
+    r = client.get("/api/labels/accuracy", params={"scene": "annotated/demo", "session_id": session_id})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_raw"] is True
+    assert body["p90"] == pytest.approx(0.003, abs=1e-3)   # from the DENSE raw source, not the sparse session cloud
+
+
+def test_labels_accuracy_is_raw_false_without_raw_source(client_with_annotated_scene):
+    # Build the scene explicitly (no register_raw_source call) so a
+    # session_id is available for the query params — the shared
+    # client_with_loaded_annotated_scene fixture only returns a TestClient.
+    client, scene_id, session_id = client_with_annotated_scene
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 100000})
+    assert r.status_code == 200
+
+    r = client.get("/api/labels/accuracy", params={"scene": scene_id, "session_id": session_id})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_raw"] is False
+    assert body["p90"] >= body["p50"] >= 0
+
+
 def test_export_labels_colorless_scan_subsample_and_drop(client_with_annotated_scene, tmp_path):
     # A scan.ply without red/green/blue loads with colors=None; subsample and
     # drop_unlabeled exports must not crash on it. Positions are preserved
@@ -872,3 +911,66 @@ def test_export_labels_stale_class_name_is_400_not_500(client_with_annotated_sce
     })
     assert r.status_code == 400, r.text
     assert "no_such_class" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Task 7: POST /api/labels/export manifest accuracy tracks the resolution
+# actually exported at, not always the session cloud.
+# ---------------------------------------------------------------------------
+
+def _build_sparse_session_dense_raw(tmp_path):
+    """Sparse session cloud (20mm) + a registered DENSE raw source (3mm),
+    all points assigned to instance 0 — mirrors
+    test_labels_accuracy_is_raw_true_when_raw_source_registered's fixture so
+    a raw-backed vs. session-cloud-backed measurement is distinguishable."""
+    from tests.conftest import build_annotated_root, register_raw_source, dense_grid_pts
+
+    sparse_pts = dense_grid_pts(spacing=0.020, n=10)     # 20mm session cloud
+    dense_raw_pts = dense_grid_pts(spacing=0.003, n=40)  # 3mm raw source
+    root, session_id = build_annotated_root(
+        tmp_path, pts=sparse_pts, n_instance0_points=len(sparse_pts))
+    register_raw_source(root, "demo", dense_raw_pts)
+    return root, session_id
+
+
+def test_export_manifest_raw_resolution_uses_raw_density(monkeypatch, tmp_path):
+    import main
+    from fastapi.testclient import TestClient
+
+    root, session_id = _build_sparse_session_dense_raw(tmp_path)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    scene_id = "annotated/demo"
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 1000})
+    assert r.status_code == 200
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "raw"},
+    })
+    assert r.status_code == 200, r.text
+    _, manifest = _unzip_export(r.content)
+    # from the DENSE raw source, not the sparse 20mm session cloud.
+    assert manifest["accuracy"]["sample_spacing_p90_m"] == pytest.approx(0.003, abs=1e-3)
+
+
+def test_export_manifest_scan_resolution_still_uses_session_cloud(monkeypatch, tmp_path):
+    import main
+    from fastapi.testclient import TestClient
+
+    root, session_id = _build_sparse_session_dense_raw(tmp_path)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    scene_id = "annotated/demo"
+    r = client.post("/api/load", json={"name": scene_id, "session_id": session_id, "max_points": 1000})
+    assert r.status_code == 200
+
+    r = client.post("/api/labels/export", json={
+        "scene": scene_id, "session_id": session_id,
+        "resolution": {"kind": "scan"},
+    })
+    assert r.status_code == 200, r.text
+    _, manifest = _unzip_export(r.content)
+    # unchanged today's behavior: measured from the sparse 20mm session
+    # cloud, even though a dense raw source is registered.
+    assert manifest["accuracy"]["sample_spacing_p90_m"] == pytest.approx(0.020, abs=2e-3)

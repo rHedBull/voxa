@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 PRISM = {"polygon": [[-0.01, -0.01], [0.2, -0.01], [0.2, 0.2], [-0.01, 0.2]],
@@ -52,11 +53,32 @@ def test_validation_and_404(client_with_loaded_annotated_scene):
     assert client.patch("/api/regions/1", json={}).status_code == 422   # empty patch
 
 
-def test_gate_refuses_sparse_fixture(client_with_loaded_annotated_scene):
-    # The default fixture has 8 points — under the 100-point floor.
+def test_gate_refuses_without_raw_source(client_with_loaded_annotated_scene):
+    # The default fixture has no raw source registered.
     client = client_with_loaded_annotated_scene
     client.post("/api/regions", json={"prism": {"polygon": [[-10, -10], [10, -10], [10, 10], [-10, 10]],
                                                 "y0": -10.0, "height": 20.0}})
+    r = client.patch("/api/regions/1", json={"status": "eval_grade"})
+    assert r.status_code == 422
+    assert "raw source" in r.json()["detail"]
+
+
+def test_gate_refuses_below_point_floor_with_raw_registered(monkeypatch, tmp_path):
+    import main
+    from fastapi.testclient import TestClient
+    from tests.conftest import build_annotated_root, register_raw_source
+
+    few_pts = [[i * 0.005, 0.0, 0.0] for i in range(25)]
+    root, _sid = build_annotated_root(tmp_path, pts=np.asarray(few_pts, dtype=np.float32),
+                                      n_instance0_points=25)
+    register_raw_source(root, "demo", few_pts)
+    monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
+    client = TestClient(main.app)
+    r = client.post("/api/load", json={"name": "annotated/demo", "max_points": 100})
+    assert r.status_code == 200
+
+    client.post("/api/regions", json={"prism": {"polygon": [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+                                                "y0": -1.0, "height": 2.0}})
     r = client.patch("/api/regions/1", json={"status": "eval_grade"})
     assert r.status_code == 422
     assert "100" in r.json()["detail"]
@@ -117,10 +139,12 @@ def test_frame_roundtrip_with_recenter(monkeypatch, tmp_path):
     must hold stored-frame geometry while the API speaks the runtime frame."""
     import main
     from fastapi.testclient import TestClient
-    from tests.conftest import build_annotated_root, dense_grid_pts
+    from tests.conftest import build_annotated_root, dense_grid_pts, register_raw_source
 
     off = (5000.0, 0.0, 3000.0)
-    root, _sid = build_annotated_root(tmp_path, pts=dense_grid_pts(offset=off))
+    pts = dense_grid_pts(offset=off)
+    root, _sid = build_annotated_root(tmp_path, pts=pts)
+    register_raw_source(root, "demo", pts)
     monkeypatch.setattr("app.constants.LIDAR_ROOT", root, raising=False)
     client = TestClient(main.app)
     r = client.post("/api/load", json={"name": "annotated/demo", "max_points": 100})

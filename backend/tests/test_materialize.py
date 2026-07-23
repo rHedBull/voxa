@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from labeling.materialize import (
     materialize_downsample,
     collect_volumes,
@@ -9,6 +10,10 @@ from labeling.materialize import (
     loa_band,
     materialize,
     MaterializeCtx,
+    prism_aabb,
+    raw_region_sample_spacing,
+    raw_region_point_count,
+    raw_reservoir_sample_spacing,
 )
 
 
@@ -551,3 +556,139 @@ def test_replay_skew_beam_labels_exactly_the_swept_volume():
     assert (inst[strict_inside] == 11).all()
     assert (cls[strict_inside] == 6).all()
     assert (inst[strict_outside] != 11).all()
+
+
+# ---------------------------------------------------------------------------
+# Raw-source region density (region-density-raw-source spec, Task 1)
+# ---------------------------------------------------------------------------
+
+def test_prism_aabb_covers_footprint_and_height():
+    prism = {"polygon": [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
+             "y0": -0.5, "height": 3.0}
+    aabb_min, aabb_max = prism_aabb(prism)
+    np.testing.assert_allclose(aabb_min, [0.0, -0.5, 0.0])
+    np.testing.assert_allclose(aabb_max, [2.0, 2.5, 1.0])
+
+
+def test_prism_aabb_handles_negative_and_unordered_polygon_coords():
+    prism = {"polygon": [[3.0, -2.0], [-1.0, 5.0], [0.0, 0.0]],
+             "y0": 10.0, "height": 1.5}
+    aabb_min, aabb_max = prism_aabb(prism)
+    np.testing.assert_allclose(aabb_min, [-1.0, 10.0, -2.0])
+    np.testing.assert_allclose(aabb_max, [3.0, 11.5, 5.0])
+
+
+def test_raw_region_sample_spacing_measures_only_in_prism_points(tmp_path):
+    # A dense 5mm grid INSIDE the prism, plus a sparse decoy cluster OUTSIDE
+    # the prism's AABB, plus a dense cluster inside the AABB but outside the
+    # exact (triangular) prism footprint — only the first group should drive
+    # the measured spacing.
+    inside = [[x * 0.005, 0.0, z * 0.005] for x in range(20) for z in range(20)]
+    outside_aabb = [[50.0, 0.0, 50.0], [51.0, 0.0, 51.0]]
+    # Inside the AABB (x,z in [-0.5, 1.5]) but outside the triangular prism
+    # footprint below (x + z < 1 is the interior), at a much sparser (20mm)
+    # spacing that would fail the gate if wrongly included. Verified against
+    # shapes.py::_point_in_polygon_xz's even-odd ray-cast directly.
+    outside_prism_inside_aabb = [[1.4 + i * 0.02, 0.0, 1.4] for i in range(5)]
+    points = inside + outside_aabb + outside_prism_inside_aabb
+    las_path = tmp_path / "region_raw.las"
+    _write_tiny_las_at(las_path, points)
+
+    prism = {"polygon": [[-0.5, -0.5], [1.5, -0.5], [-0.5, 1.5]],
+             "y0": -0.1, "height": 0.2}
+
+    p50, p90 = raw_region_sample_spacing(
+        las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert p50 == pytest.approx(0.005, abs=1e-3)
+    assert p90 == pytest.approx(0.005, abs=1e-3)
+
+
+def test_raw_region_point_count_matches_prism_indices(tmp_path):
+    grid = [[x * 0.005, 0.0, z * 0.005] for x in range(10) for z in range(10)]
+    las_path = tmp_path / "count_raw.las"
+    _write_tiny_las_at(las_path, grid)
+    prism = {"polygon": [[-0.01, -0.01], [0.2, -0.01], [0.2, 0.2], [-0.01, 0.2]],
+             "y0": -0.5, "height": 1.0}
+    n = raw_region_point_count(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert n == 100   # full 10x10 grid at 5mm sits inside this prism
+
+
+def test_raw_region_point_count_and_spacing_agree_on_same_filtered_set(tmp_path):
+    """Both helpers share `_load_raw_region_positions`'s AABB+prism filtering —
+    this pins that they can't silently drift apart: the count returned by
+    raw_region_point_count must equal the number of points that actually
+    drove raw_region_sample_spacing's measurement, including on a footprint
+    with points inside the AABB but outside the exact (triangular) prism."""
+    inside = [[x * 0.005, 0.0, z * 0.005] for x in range(20) for z in range(20)]
+    outside_aabb = [[50.0, 0.0, 50.0], [51.0, 0.0, 51.0]]
+    outside_prism_inside_aabb = [[1.4 + i * 0.02, 0.0, 1.4] for i in range(5)]
+    points = inside + outside_aabb + outside_prism_inside_aabb
+    las_path = tmp_path / "count_spacing_agree.las"
+    _write_tiny_las_at(las_path, points)
+
+    prism = {"polygon": [[-0.5, -0.5], [1.5, -0.5], [-0.5, 1.5]],
+             "y0": -0.1, "height": 0.2}
+
+    n = raw_region_point_count(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    p50, p90 = raw_region_sample_spacing(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert n == len(inside)            # excludes both outside-AABB and outside-prism-inside-AABB points
+    assert p50 == pytest.approx(0.005, abs=1e-3)
+    assert p90 == pytest.approx(0.005, abs=1e-3)
+
+
+def test_raw_region_sample_spacing_empty_region_returns_zero(tmp_path):
+    points = [[50.0, 0.0, 50.0], [51.0, 0.0, 51.0]]
+    las_path = tmp_path / "region_raw_empty.las"
+    _write_tiny_las_at(las_path, points)
+    prism = {"polygon": [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+             "y0": -0.5, "height": 1.0}
+    p50, p90 = raw_region_sample_spacing(
+        las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert (p50, p90) == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Whole-scan raw density via chunk-level reservoir sampling (Task 2)
+# ---------------------------------------------------------------------------
+
+def test_raw_reservoir_sample_spacing_bounded_chunk_count(tmp_path):
+    # 12 chunks of 500 pts each (6000 total) at a known 10mm grid spacing;
+    # n_chunks=3 must still measure close to the true 10mm spacing, proving
+    # no per-point thinning happened within a retained chunk.
+    pts = [[x * 0.01, 0.0, z * 0.01] for x in range(60) for z in range(100)]
+    assert len(pts) == 6000
+    las_path = tmp_path / "reservoir_raw.las"
+    _write_tiny_las_at(las_path, pts)
+
+    p50, p90 = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=3, chunk=500, seed=0)
+    assert p50 == pytest.approx(0.01, abs=2e-3)
+    assert p90 == pytest.approx(0.01, abs=2e-3)
+
+
+def test_raw_reservoir_sample_spacing_seeded_deterministic(tmp_path):
+    pts = [[x * 0.01, 0.0, z * 0.01] for x in range(30) for z in range(30)]
+    las_path = tmp_path / "reservoir_raw_seed.las"
+    _write_tiny_las_at(las_path, pts)
+
+    a = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=2, chunk=100, seed=7)
+    b = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=2, chunk=100, seed=7)
+    assert a == b
+
+
+def test_raw_reservoir_sample_spacing_fewer_chunks_than_n_chunks(tmp_path):
+    # Only 2 chunks exist in the file; n_chunks=5 must not error, just use
+    # everything available.
+    pts = [[x * 0.005, 0.0, 0.0] for x in range(150)]
+    las_path = tmp_path / "reservoir_raw_small.las"
+    _write_tiny_las_at(las_path, pts)
+
+    p50, p90 = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=5, chunk=100, seed=0)
+    assert p50 == pytest.approx(0.005, abs=1e-3)
