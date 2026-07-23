@@ -14,6 +14,8 @@ scikit-learn==1.4.0
 optuna>=3.5,<5
 httpx==0.27.2
 # scan_schema — the shared scan-directory schema package (frame / layout /
-# fingerprint / validate). Pinned to the published branch so fresh clones and CI
-# resolve it without needing the engine-monorepo sibling checkout.
-scan-schema @ git+https://github.com/rHedBull/scan_schema.git@main
+# fingerprint / validate / eval-labeling invariants + manifest). Pinned to a
+# commit SHA (not @main) so scan_schema changes ship to voxa only via an
+# explicit dependency-bump PR, never silently on the next install/CI run.
+# Bump this whenever scan_schema changes upstream — see docs/scan-schema.md.
+scan-schema @ git+https://github.com/rHedBull/scan_schema.git@719e0729d4dc22e38b19de4c738e8bcc44043f0c

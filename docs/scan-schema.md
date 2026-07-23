@@ -4,6 +4,10 @@ What voxa expects on disk for an annotated scan. The canonical, broader schema l
 
 In code, this layout is encoded once in the shared `scan_schema` package (`scan_schema.layout::ScanLayout` and `SessionPaths`) — every module that needs a path inside a scan dir (`scene_registry`, `lidar_io`, `segment_io`, the load and save routes, `session_store`, `preseg_store`) resolves it there rather than hard-coding subpaths. The canonical source now lives in the separate `tools/scan-schema` repo; update `scan_schema.layout` and this doc together when the on-disk layout changes.
 
+**Dependency pin discipline:** `backend/requirements.txt` pins `scan-schema` to a specific commit SHA, not `@main` — bump it explicitly (as its own dependency-bump commit) whenever `scan_schema` changes upstream. Tracking `@main` would mean any change there ships to voxa silently on the next `pip install`/CI run with no review step; a pinned commit makes every scan_schema upgrade an explicit, reviewable diff.
+
+**Eval-labeling invariants (phase 3):** `scan_schema.eval_invariants` (9 checks, a distinct set from the SCHEMA invariants below — separately numbered to avoid collision) and `scan_schema.manifest::build_manifest` gate voxa's save-time write path (`backend/labeling/segment_io.py::save_labels`, via `_check_eval_invariants`) and are also wired into `scan_schema.validate_archive` for load-time auditing (`scan_schema validate --frozen-ids ...`). See `docs/superpowers/specs/2026-07-22-eval-invariants-manifest-design.md` for the full design and `scripts/migrate_eval_invariants.py` for the one-off migration that brought pre-phase-2 sessions into compliance (legacy frozen-class conversion + orphaned-presegment stripping).
+
 ## Where scans live
 
 ```

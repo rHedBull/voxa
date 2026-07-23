@@ -91,14 +91,21 @@ def _session_output_dir(scan_dir):
 
 
 def test_save_writes_labels_to_disk(client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
+    import main
     client = client_with_loaded_annotated_scene
     client.post("/api/segment/apply", json={
         "op": "set_class",
         "indices": _b64_int32([1, 2]),
         "payload": {"class_id": 2},
     })
+    # eval-invariant 3: every labeled segment id needs an instances_gt.json
+    # row — a real frontend apply always writes one alongside the working
+    # canvas edit; this backend-only test has to do it by hand.
+    from tests.conftest import put_gt_instances
+    put_gt_instances(client, "annotated/demo", main._state["session_id"],
+                     [(0, "equipment"), (1, "tank"), (2, "equipment"), (3, "equipment")])
     r = client.put("/api/segment/save")
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     j = r.json()
     assert j["ok"] is True
     # Demo fixture has 4 instances (ids 0,1,2,3) and 6 labeled points.
@@ -127,6 +134,10 @@ def test_save_drops_unclassified_preseg_on_disk_only(
     seg.instance_ids[:] = -1
     seg.class_ids[0] = -1; seg.instance_ids[0] = 99   # unclassified preseg
     seg.class_ids[1] = 2;  seg.instance_ids[1] = 100  # classified
+
+    from tests.conftest import put_gt_instances
+    put_gt_instances(client, "annotated/demo", main._state["session_id"],
+                     [(100, "equipment")])
 
     r = client.put("/api/segment/save")
     assert r.status_code == 200, r.text
@@ -178,6 +189,9 @@ def test_save_then_reload_preserves_preseg_full_round_trip(
     seg.instance_ids[2] = 700                          # same preseg id
     seg.instance_ids[3] = 701                          # different preseg id
     seg.instance_ids[4] = 702                          # different preseg id
+
+    from tests.conftest import put_gt_instances
+    put_gt_instances(client, scene_id, session_id, [(500, "equipment")])
 
     r = client.put("/api/segment/save")
     assert r.status_code == 200, r.text
@@ -239,6 +253,10 @@ def test_save_does_not_collapse_preseg_in_session_autosave(
     seg.instance_ids[2] = 200    # same preseg id
     seg.instance_ids[3] = 201    # another preseg id
 
+    from tests.conftest import put_gt_instances
+    put_gt_instances(client, "annotated/demo", main._state["session_id"],
+                     [(100, "equipment")])
+
     r = client.put("/api/segment/save")
     assert r.status_code == 200, r.text
 
@@ -278,9 +296,22 @@ def test_segment_state_surfaces_full_session_aux(client_with_annotated_scene):
 # ── Task 5: save writes into active session's output/ ────────────────────────
 
 def test_save_writes_into_session_output(client_with_loaded_annotated_scene, scan_dir_for_loaded_scene):
+    import main
     client = client_with_loaded_annotated_scene
+    # The fixture's segment 0 carries frozen legacy class 0 ("pipe") by
+    # construction (shared with test_frozen_guard.py, which depends on that
+    # exact seed) — eval-invariant 4 refuses to save frozen classes in new
+    # GT, so relabel it live first, same as test_save_writes_labels_to_disk.
+    client.post("/api/segment/apply", json={
+        "op": "set_class",
+        "indices": _b64_int32([1, 2]),
+        "payload": {"class_id": 2},
+    })
+    from tests.conftest import put_gt_instances
+    put_gt_instances(client, "annotated/demo", main._state["session_id"],
+                     [(0, "equipment"), (1, "tank"), (2, "equipment"), (3, "equipment")])
     r = client.put("/api/segment/save")
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     sessions_root = scan_dir_for_loaded_scene / "sessions"
     outs = [d / "output" / "gt_class_ids.npy" for d in sessions_root.iterdir()
             if (d / "output").is_dir()]
@@ -309,6 +340,10 @@ def test_save_persists_dirty_false_to_session_json(client_with_annotated_scene):
     seg = main._state["seg"]
     assert seg.dirty is True  # edit marks the working canvas dirty
     session_json = seg.session_dir / "session.json"
+
+    from tests.conftest import put_gt_instances
+    put_gt_instances(client, scene_id, session_id,
+                     [(0, "equipment"), (1, "tank"), (2, "equipment"), (3, "equipment")])
 
     r = client.put("/api/segment/save")
     assert r.status_code == 200, r.text

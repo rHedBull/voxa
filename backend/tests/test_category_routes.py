@@ -122,12 +122,20 @@ def test_frozen_class_is_now_rejected_everywhere(client_with_loaded_annotated_sc
 def test_save_writes_category_and_component_arrays(
     client_with_loaded_annotated_scene, scan_dir_for_loaded_scene
 ):
+    import main
     client = client_with_loaded_annotated_scene
     client.post("/api/segment/apply", json={
         "op": "set_category", "indices": _b64_int32([1, 2]),
         "payload": {"category": "excluded_review"},
     })
-    assert client.put("/api/segment/save").status_code == 200
+    # eval-invariant 3: segId 0 (points 1,2) became a class-less review blob
+    # (accounted via review_blobs, no instances_gt.json row needed) but
+    # segIds 1/2/3 keep their real class and still need one.
+    from tests.conftest import put_gt_instances
+    put_gt_instances(client, "annotated/demo", main._state["session_id"],
+                     [(1, "tank"), (2, "equipment"), (3, "equipment")])
+    r = client.put("/api/segment/save")
+    assert r.status_code == 200, r.text
     out_dir = _session_output_dir(scan_dir_for_loaded_scene)
 
     cats = np.load(out_dir / "gt_point_category.npy")

@@ -480,7 +480,15 @@ def segment_save():
     # canvas, independent of the output/ export.
     seg.flush_autosave()
     try:
-        from labeling.segment_io import review_blob_summary, save_labels
+        from labeling.segment_io import (
+            EvalInvariantError,
+            load_eval_regions_for_invariants,
+            load_prior_segment_metadata,
+            review_blob_summary,
+            save_labels,
+        )
+        from labeling.instances_doc import load_instances_for_invariants
+
         save_labels(
             scan_dir,
             session_id,
@@ -495,7 +503,14 @@ def segment_save():
             # from out_inst (they are class-less by construction), so this is
             # where their ids are preserved.
             review_blobs=review_blob_summary(seg.categories, seg.instance_ids),
+            frozen_ids=frozen_class_ids(),
+            instances_doc=load_instances_for_invariants(seg.session_dir),
+            eval_regions=load_eval_regions_for_invariants(scan_dir),
+            prior_segment_metadata=load_prior_segment_metadata(scan_dir, session_id),
+            recenter_offset=_state.get("recenter_offset") or (0.0, 0.0, 0.0),
         )
+    except EvalInvariantError as e:
+        raise HTTPException(422, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
     # The flush_autosave above persisted dirty:True; now that the export

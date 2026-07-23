@@ -1,0 +1,262 @@
+"""Migrate a pre-phase-2 session so it passes the phase-3 eval invariants.
+
+Additive-only EXCEPT for legacy class-id-6 ('unknown') points, which are
+rewritten to the phase-2 review-blob representation (category=excluded_review,
+class=-1, instance stripped) because eval-invariant 4 rejects any frozen class
+id — including 6 — with no grandfather path. Every other already-labeled
+point (any class id other than 6, including the other frozen legacy ids
+0/3/5/13, which stay readable-but-unassignable) is untouched byte-for-byte.
+
+Optionally (--strip-orphaned-presegments), also strips a separate, later-
+discovered issue: instance ids present in the gt arrays with a real class but
+NO corresponding row in instances_gt.json — raw presegment suggestions that
+were baked into "confirmed" GT by old/buggy behavior, never actually
+confirmed via the labeler's apply/confirm workflow. These are reset to
+unlabeled (class=-1, instance=-1), NOT converted to review blobs.
+
+    .venv/bin/python scripts/migrate_eval_invariants.py <scan_dir> <session_id> [--dry-run] [--strip-orphaned-presegments]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+
+import numpy as np  # noqa: E402
+
+from labeling.categories import CATEGORY_NONE, CATEGORY_EXCLUDED_REVIEW, category_histogram  # noqa: E402
+from scan_schema.layout import ScanLayout  # noqa: E402
+
+LEGACY_UNKNOWN_CLASS_ID = 6
+
+
+def migrate_session(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
+    out = session_dir / "output"
+    class_ids = np.load(out / "gt_class_ids.npy")
+    instance_ids = np.load(out / "gt_segment_ids.npy")
+
+    categories_path = out / "gt_point_category.npy"
+    categories = (np.load(categories_path) if categories_path.exists()
+                 else np.full(n_points, CATEGORY_NONE, dtype=np.int8))
+
+    legacy = class_ids == LEGACY_UNKNOWN_CLASS_ID
+    n_legacy = int(legacy.sum())
+
+    # Per-instance point counts for the review_blobs metadata, computed from
+    # the ORIGINAL (pre-mutation) instance_ids array in a single pass —
+    # np.unique + return_counts, no re-load and no re-query of a mutated array.
+    converted_ids: list[int] = []
+    review_blob_counts: dict[int, int] = {}
+    if n_legacy:
+        ids, counts = np.unique(instance_ids[legacy], return_counts=True)
+        converted_ids = sorted(int(i) for i in ids.tolist())
+        review_blob_counts = {int(i): int(c) for i, c in zip(ids.tolist(), counts.tolist())}
+
+    if n_legacy:
+        categories = categories.copy()
+        categories[legacy] = CATEGORY_EXCLUDED_REVIEW
+        class_ids = class_ids.copy(); instance_ids = instance_ids.copy()
+        class_ids[legacy] = -1
+        instance_ids[legacy] = -1   # review blobs are class-less by construction
+
+    component_path = out / "gt_point_component_ids.npy"
+    if component_path.exists():
+        comp_ids = np.load(component_path)
+    else:
+        # No positions available offline (source.ply not loaded here) — one
+        # component per instance, matching "no fragment splitting is invented"
+        comp_ids = np.where(instance_ids >= 0, 0, -1).astype(np.int16)
+
+    meta_path = out / "gt_segment_metadata.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+
+    # The pre-migration `segments` list may still carry an entry for each
+    # converted instance (class_id: 6, the frozen legacy id) — that instance
+    # no longer has any labeled points after migration (it's now a pure,
+    # class-less review blob), so its stale `segments` entry must be dropped;
+    # leaving it in place would both misrepresent the data (a "segment" with
+    # zero remaining points) and reintroduce the very frozen-class-id that
+    # eval-invariant 4 rejects, if anything ever re-validates the metadata
+    # standalone.
+    segments = [s for s in meta.get("segments", [])
+                if int(s.get("gt_id", -1)) not in converted_ids]
+    if "segments" in meta or segments:
+        meta["segments"] = segments
+
+    review_blobs = list(meta.get("review_blobs", []))
+    for iid in converted_ids:
+        review_blobs.append({"instance_id": iid, "n_points": review_blob_counts[iid]})
+    meta["review_blobs"] = review_blobs
+    meta["categories"] = category_histogram(categories)
+
+    # instances_gt.json (frontend-owned, sibling of output/) carries its own
+    # per-instance `cls`/`confirmed` — a converted instance's row there must
+    # be brought in line with the arrays (now a class-less review blob) or
+    # scan_schema.eval_invariants.check_instance_class_consistency /
+    # check_confirmed_* reject the mismatch. segId is the join key (per
+    # Cuboid.segId / labeling/instances_doc.py::load_instances_for_invariants).
+    instances_gt_path = session_dir / "instances_gt.json"
+    instances_gt = None
+    if converted_ids and instances_gt_path.exists():
+        instances_gt = json.loads(instances_gt_path.read_text())
+        converted_set = set(converted_ids)
+        for inst in instances_gt.get("instances", []):
+            if inst.get("kind") != "pointset" or inst.get("segId") not in converted_set:
+                continue
+            inst["cls"] = None
+            if inst.get("confirmed"):
+                inst["confirmed"] = False
+
+    result = {
+        "n_legacy_converted": n_legacy,
+        "converted_instance_ids": converted_ids,
+        # Always returned (dry-run or not) so a caller composing this with a
+        # second migration step (main()'s --strip-orphaned-presegments) can
+        # operate on the POST-migrate_session arrays in memory, instead of
+        # re-reading from disk -- which, in dry-run mode, would still hold the
+        # PRE-migration bytes since nothing was written.
+        "class_ids": class_ids,
+        "instance_ids": instance_ids,
+    }
+    if dry_run:
+        return result
+
+    np.save(out / "gt_class_ids.npy", class_ids)
+    np.save(out / "gt_segment_ids.npy", instance_ids)
+    np.save(categories_path, categories)
+    np.save(component_path, comp_ids)
+    meta_path.write_text(json.dumps(meta, indent=2))
+    if instances_gt is not None:
+        instances_gt_path.write_text(json.dumps(instances_gt, indent=2))
+    return result
+
+
+def strip_orphaned_presegments(session_dir: Path, n_points: int, *, dry_run: bool,
+                                class_ids: np.ndarray | None = None,
+                                instance_ids: np.ndarray | None = None) -> dict:
+    """Strip "orphaned" instance ids back to unlabeled: instance ids present in
+    the gt arrays with a real (non -1) class but with NO corresponding row in
+    that session's instances_gt.json. Investigation confirmed these are raw
+    presegment suggestions (segment ids + classes copied straight from
+    prelabel/<preseg_id>/segment_summary.json) that were baked into the
+    "confirmed" GT arrays by old/buggy pre-instances_gt.json behavior — they
+    never went through the labeler's apply/confirm workflow, so they are not
+    real ground truth.
+
+    A completely MISSING instances_gt.json is a different, more dangerous case
+    (it can't distinguish "every array instance is orphaned" from "no
+    instances_gt.json was ever produced for this session") and is deliberately
+    NOT handled here — it's left for separate human review, so this function
+    strips nothing and reports skipped_no_instances_doc.
+
+    `class_ids`/`instance_ids` are optional pre-loaded arrays. Pass them when
+    composing this with a preceding `migrate_session()` call in the SAME
+    process (main()'s combined path) so this function evaluates against the
+    POST-migrate_session state even in dry-run mode, when migrate_session
+    never actually wrote its conversion to disk. Default (None) loads from
+    disk exactly as before, for standalone use.
+    """
+    instances_gt_path = session_dir / "instances_gt.json"
+    if not instances_gt_path.exists():
+        return {"skipped_no_instances_doc": True}
+
+    out = session_dir / "output"
+    if class_ids is None:
+        class_ids = np.load(out / "gt_class_ids.npy")
+    if instance_ids is None:
+        instance_ids = np.load(out / "gt_segment_ids.npy")
+
+    instances_gt = json.loads(instances_gt_path.read_text())
+    doc_seg_ids = {int(inst["segId"]) for inst in instances_gt.get("instances", [])
+                   if inst.get("segId") is not None}
+
+    present_ids = set(int(i) for i in np.unique(instance_ids[instance_ids >= 0]).tolist())
+    orphaned_ids = present_ids - doc_seg_ids
+    orphaned = np.isin(instance_ids, sorted(orphaned_ids)) if orphaned_ids else np.zeros(n_points, dtype=bool)
+    n_stripped = int(orphaned.sum())
+
+    categories_path = out / "gt_point_category.npy"
+    n_nonnone_category = 0
+    if categories_path.exists() and n_stripped:
+        categories = np.load(categories_path)
+        n_nonnone_category = int((categories[orphaned] != CATEGORY_NONE).sum())
+
+    result = {
+        "n_orphaned_ids": len(orphaned_ids),
+        "orphaned_ids": sorted(orphaned_ids),
+        "n_points_stripped": n_stripped,
+        "orphaned_with_nonnone_category": n_nonnone_category,
+    }
+    if dry_run or not n_stripped:
+        return result
+
+    class_ids = class_ids.copy(); instance_ids = instance_ids.copy()
+    class_ids[orphaned] = -1
+    instance_ids[orphaned] = -1
+
+    component_path = out / "gt_point_component_ids.npy"
+    if component_path.exists():
+        comp_ids = np.load(component_path).copy()
+        comp_ids[orphaned] = -1
+        np.save(component_path, comp_ids)
+
+    meta_path = out / "gt_segment_metadata.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        meta["segments"] = [s for s in meta.get("segments", [])
+                            if int(s.get("gt_id", -1)) not in orphaned_ids]
+        meta_path.write_text(json.dumps(meta, indent=2))
+
+    np.save(out / "gt_class_ids.npy", class_ids)
+    np.save(out / "gt_segment_ids.npy", instance_ids)
+    return result
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("scan_dir", type=Path)
+    ap.add_argument("session_id")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--strip-orphaned-presegments", action="store_true",
+                    help="also strip never-confirmed orphaned presegment instances "
+                         "(instance ids in the gt arrays with no instances_gt.json row) "
+                         "back to unlabeled; opt-in, additive to the class-6 migration above")
+    a = ap.parse_args()
+
+    meta = json.loads((a.scan_dir / "meta.json").read_text())
+    n_points = int(meta["n_points"])
+    session_dir = ScanLayout(a.scan_dir).session(a.session_id).dir
+    result = migrate_session(session_dir, n_points, dry_run=a.dry_run)
+    print(f"{'[dry-run] ' if a.dry_run else ''}{a.scan_dir.name}/{a.session_id}: "
+          f"converted {result['n_legacy_converted']} legacy class-6 points "
+          f"(instances {result['converted_instance_ids']})")
+
+    if a.strip_orphaned_presegments:
+        # Compose in memory: migrate_session's result always carries the
+        # POST-migration class/instance arrays, whether or not it wrote them
+        # to disk (dry-run). Passing them through here means the strip preview
+        # is evaluated against what a real combined run would actually
+        # produce, not against stale on-disk (pre-migration) bytes -- see the
+        # reviewer repro in test_migrate_eval_invariants.py.
+        strip_result = strip_orphaned_presegments(
+            session_dir, n_points, dry_run=a.dry_run,
+            class_ids=result["class_ids"], instance_ids=result["instance_ids"],
+        )
+        if strip_result.get("skipped_no_instances_doc"):
+            print(f"{'[dry-run] ' if a.dry_run else ''}{a.scan_dir.name}/{a.session_id}: "
+                  f"no instances_gt.json -- skipped orphaned-presegment strip")
+        else:
+            print(f"{'[dry-run] ' if a.dry_run else ''}{a.scan_dir.name}/{a.session_id}: "
+                  f"stripped {strip_result['n_points_stripped']} orphaned-presegment points "
+                  f"(instances {strip_result['orphaned_ids']}"
+                  f"{', ' + str(strip_result['orphaned_with_nonnone_category']) + ' had non-none category' if strip_result['orphaned_with_nonnone_category'] else ''})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

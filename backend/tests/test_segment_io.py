@@ -328,3 +328,143 @@ def test_save_and_load_sam_segments_roundtrip_preserves_source_tag(tmp_path):
 def test_load_sam_segments_absent_file_returns_empty_dict(tmp_path):
     from labeling.segment_io import load_sam_segments
     assert load_sam_segments(tmp_path) == {}
+
+
+def test_load_eval_regions_for_invariants_missing(tmp_path):
+    from labeling.segment_io import load_eval_regions_for_invariants
+    assert load_eval_regions_for_invariants(tmp_path) == []
+
+
+def test_load_eval_regions_for_invariants_round_trip(tmp_path):
+    """Write a real eval_regions.json in the shape regions.py::empty_doc /
+    save_regions actually produce and confirm the loader returns the
+    regions list verbatim."""
+    from labeling.segment_io import load_eval_regions_for_invariants
+
+    doc = {
+        "version": 1,
+        "next_region_id": 2,
+        "regions": [
+            {
+                "id": 1,
+                "name": "Region 1",
+                "status": "eval_grade",
+                "prism": {"polygon": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                          "y0": 0.0, "height": 2.0},
+                "created_at": "2026-07-20T10:00:00+00:00",
+                "accuracy": {"p50": 0.004, "p90": 0.008, "loa": "fine",
+                             "n_points": 500,
+                             "measured_at": "2026-07-20T10:05:00+00:00"},
+            },
+        ],
+    }
+    (tmp_path / "eval_regions.json").write_text(json.dumps(doc))
+
+    result = load_eval_regions_for_invariants(tmp_path)
+    assert result == doc["regions"]
+
+
+def test_load_prior_segment_metadata_missing(tmp_path):
+    from labeling.segment_io import load_prior_segment_metadata
+    assert load_prior_segment_metadata(tmp_path, "s1") is None
+
+
+def test_load_prior_segment_metadata_round_trip(tmp_path):
+    """Write a real gt_segment_metadata.json in the shape
+    _build_segment_metadata actually produces and confirm the loader parses
+    it back verbatim at the ScanLayout-resolved path."""
+    from scan_schema.layout import ScanLayout
+    from labeling.segment_io import load_prior_segment_metadata
+
+    sid = "sess-001"
+    meta = {
+        "n_points": 10,
+        "n_gt_segments": 1,
+        "n_labeled_points": 10,
+        "class_map_version": 2,
+        "segments": [{"gt_id": 5, "class_id": 2, "n_points": 10, "label": "pipe"}],
+    }
+    out_path = ScanLayout(tmp_path).session(sid).output_gt_segment_metadata
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(meta))
+
+    result = load_prior_segment_metadata(tmp_path, sid)
+    assert result == meta
+
+
+# ---- eval-invariant gate (Task 15) ----------------------------------------
+
+def test_save_labels_rejects_frozen_class(tmp_path):
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    class_ids = np.array([6], dtype=np.int32)     # frozen 'unknown'
+    instance_ids = np.array([0], dtype=np.int32)
+    with pytest.raises(ValueError, match="eval-invariant 4"):
+        save_labels(scan_dir, "s1", class_ids, instance_ids,
+                   instances_doc={0: {"class_id": "unknown", "confirmed": False}},
+                   frozen_ids={0, 3, 4, 5, 6, 13})
+
+
+def test_save_labels_merges_manifest_fields(tmp_path):
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    class_ids = np.array([2], dtype=np.int32)
+    instance_ids = np.array([0], dtype=np.int32)
+    save_labels(scan_dir, "s1", class_ids, instance_ids,
+               instances_doc={0: {"class_id": "pipe_new", "confirmed": False}})
+    meta = json.loads((scan_dir / "sessions" / "s1" / "output" / "gt_segment_metadata.json").read_text())
+    assert "class_histogram" in meta
+    assert "thresholds" in meta
+    assert meta["class_histogram"] == {"2": 1}
+
+
+def test_save_labels_rejects_confirmed_instance_with_category(tmp_path):
+    """eval-invariant 9: a confirmed instance's points must all carry
+    category `none` — a confirmed point marked (e.g.) `artifact` is rejected."""
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    class_ids = np.array([2], dtype=np.int32)
+    instance_ids = np.array([0], dtype=np.int32)
+    categories = np.array([1], dtype=np.int8)  # CATEGORY_ARTIFACT
+    with pytest.raises(ValueError, match="eval-invariant 9"):
+        save_labels(scan_dir, "s1", class_ids, instance_ids,
+                   categories=categories,
+                   instances_doc={0: {"class_id": "pipe_new", "confirmed": True}})
+
+
+def test_save_labels_rejects_lost_instance_id_across_saves(tmp_path):
+    """eval-invariant 7: an id present in a prior save must not vanish."""
+    scan_dir = tmp_path
+    (scan_dir / "sessions" / "s1").mkdir(parents=True)
+    first_cls = np.array([2, 2], dtype=np.int32)
+    first_inst = np.array([0, 1], dtype=np.int32)
+    save_labels(scan_dir, "s1", first_cls, first_inst, write_history=False)
+
+    from labeling.segment_io import load_prior_segment_metadata
+    prior_meta = load_prior_segment_metadata(scan_dir, "s1")
+
+    # instance id 1 is gone in the second save.
+    second_cls = np.array([2], dtype=np.int32)
+    second_inst = np.array([0], dtype=np.int32)
+    with pytest.raises(ValueError, match="eval-invariant 7"):
+        save_labels(scan_dir, "s1", second_cls, second_inst, write_history=False,
+                   prior_segment_metadata=prior_meta)
+
+
+def test_save_labels_backward_compat_no_new_params(tmp_path):
+    """A caller passing none of the new optional params must behave exactly
+    as before Task 15 — no eval-invariant checks run, existing writes are
+    unaffected (manifest fields are additive, harmlessly merged in)."""
+    scan_dir = tmp_path / "annotated" / "demo"
+    sid = "sess-001"
+    cls = np.array([-1, 0, 0, 1, 1], dtype=np.int8)
+    inst = np.array([-1, 0, 0, 1, 1], dtype=np.int32)
+    save_labels(scan_dir, sid, cls, inst, write_history=False)
+
+    out_dir = scan_dir / "sessions" / sid / "output"
+    np.testing.assert_array_equal(
+        _read_npy(out_dir / "gt_class_ids.npy"), cls.astype(np.int32),
+    )
+    meta = json.loads((out_dir / "gt_segment_metadata.json").read_text())
+    assert meta["n_points"] == 5
+    assert meta["n_gt_segments"] == 2
