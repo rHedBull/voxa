@@ -36,16 +36,28 @@ viewer FPS. This spec removes the need for it.
 Add two new helpers to `backend/labeling/materialize.py`, both sourced from the scan's
 registered raw file rather than the working cloud:
 
-### 1. `raw_region_sample_spacing(raw_path, aabb_min, aabb_max, scene_is_z_up, offset)`
+### 1. `raw_region_sample_spacing(raw_path, prism, scene_is_z_up, offset)`
 
-Thin wrapper: calls the existing `scenes.lidar_io.load_laz_region()` — already streams a
+Takes the region's runtime prism (not a bare AABB) so it can filter exactly: computes an
+AABB from the prism's own corners (`min`/`max` of the footprint polygon's x/z plus
+`y0`/`y0+height` — no such helper exists today anywhere in `shapes.py`/`regions.py`/
+`materialize.py`; this is a new ~3-line function, not a reuse of existing bounding logic),
+calls the existing `scenes.lidar_io.load_laz_region()` with that AABB — already streams a
 LAZ chunk-by-chunk (2M pts/chunk), filters to an AABB in the display (recentered) frame, and
 returns only the in-region points at full native density, without loading the whole raw
-cloud — then feeds the result into the existing `raw_sample_spacing()` for the p50/p90
-calculation (which already internally subsamples to `sample=100_000` points, so no extra
-cap is needed here even for a densely-populated region).
+cloud — then **re-filters the (small) AABB-filtered result through the exact prism** via the
+already-imported `prism_indices` (`materialize.py:11`), before feeding the result into the
+existing `raw_sample_spacing()` for the p50/p90 calculation (which already internally
+subsamples to `sample=100_000` points, so no extra cap is needed here even for a
+densely-populated region).
 
-Used by the eval-grade gate, scoped to the region's own prism AABB — cheap because it only
+The exact-prism re-filter matters for non-rectangular or rotated footprints: an AABB-only
+filter can pull in extra points from just outside the actual region (e.g. an adjacent wall
+or surface at different density), which would skew the measured p50/p90 in either
+direction. Re-filtering is nearly free here since it only runs over the already-small
+AABB-filtered set, not the raw file.
+
+Used by the eval-grade gate, scoped to the region's own prism — cheap because it only
 returns points local to one region, not the whole scan.
 
 ### 2. `raw_reservoir_sample_spacing(raw_path, scene_is_z_up, offset, sample=100_000, chunk=1_000_000, seed=0)`
@@ -75,10 +87,8 @@ inserted alongside the existing `positions` param — `positions` stays required
 `categories`/review-budget check and the point-floor check, which remain scoped to the
 session's working array as today; only the *spacing* measurement changes source).
 
-- If `raw_path` is not `None`: resolve the region's runtime prism to an AABB (reuse the
-  existing `shift_prism`/`prism_indices` bounding logic — or simply take the prism's own
-  min/max corners, whichever is already exposed) and measure spacing via
-  `raw_region_sample_spacing`.
+- If `raw_path` is not `None`: measure spacing via `raw_region_sample_spacing(raw_path,
+  region's runtime prism, scene_is_z_up, offset)`.
 - If `raw_path` is `None` (no raw source registered for this scan — e.g. bim today):
   **refuse eval-grade outright** with `RegionError("no raw source registered for this scan
   — cannot verify true density; register a raw source before flipping regions to eval-
@@ -113,6 +123,23 @@ the frontend can visually distinguish an approximate (session-cloud) reading fro
 backed one — exact copy/UI treatment left to whoever implements the frontend side (not
 speced further here; likely a small caption change, e.g. "measured against raw source" vs
 "measured against loaded cloud (approximate)").
+
+### `POST /api/labels/export` (`backend/routes/export.py::export_labels`)
+
+There is a **third** call site of `raw_sample_spacing`, at `routes/export.py:214`, inside
+`export_labels`: it stamps the export manifest's `accuracy` field with
+`raw_sample_spacing(ctx.scan_pos)` — the session cloud — **even when the export itself is at
+`resolution.kind == "raw"`** (i.e. `ctx.raw_path` is populated and the export is already
+streaming/writing raw-density points). This is the same problem as `/api/labels/accuracy`,
+for arguably the most important consumer: a raw-resolution export's own manifest currently
+under-reports its own accuracy. Fix: when `resolution.kind == "raw"`, measure via
+`raw_reservoir_sample_spacing(ctx.raw_path, ...)` (or, more precisely, an in-line reservoir
+sample taken from the same `materialize_raw` chunks already being streamed to disk for this
+export — avoiding a second full-file pass — if that's a cheap fold into the existing
+streaming loop; otherwise a second `raw_reservoir_sample_spacing` pass is an acceptable v1).
+For `scan`/`subsample` resolution kinds, keep measuring `ctx.scan_pos` as today — the
+manifest should describe the accuracy of *what was actually exported*, not always the raw
+ceiling.
 
 ## Data flow
 
@@ -180,6 +207,16 @@ Export accuracy (GET /api/labels/accuracy)
     points.
 - `export.py` test: `GET /api/labels/accuracy` returns `is_raw: true` + raw-backed numbers
   when a raw source is registered, `is_raw: false` + today's numbers when not.
+- `export.py` test: `POST /api/labels/export` with `resolution.kind == "raw"` stamps the
+  manifest's `accuracy` with raw-backed spacing, not session-cloud spacing; `scan`/
+  `subsample` kinds keep measuring `ctx.scan_pos` as today.
+- **Existing test migration**: `flip_status`'s signature change breaks every existing
+  positional call site in `backend/tests/test_regions.py` (at minimum the calls around
+  lines 87, 118, 133, 144, 155 as of this writing) — they call
+  `flip_status(doc, id, "eval_grade", positions)` without `raw_path`/`scene_is_z_up`. All
+  of these need updating to pass an explicit `raw_path` (a synthetic LAZ fixture, or
+  `None` for tests that intend to exercise the new no-raw refusal path) as part of this
+  work, not as a follow-up.
 
 ## Non-goals
 
