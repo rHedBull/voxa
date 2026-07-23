@@ -79,8 +79,13 @@ chunks" methodology already used (and validated against ground truth) for the de
 figures in the phase-0b memory notes. Stream the raw file via `scenes.lidar_io.
 _laz_chunk_iter` as before, but instead of pulling points into a flat pool, run Algorithm R
 over the **stream of chunks** to pick `n_chunks` (default 5) chunk indices uniformly at
-random across the file — each retained chunk keeps its full native point density and
-spatial contiguity, it's just not accumulated until selected. Concatenate the retained
+random across the file — each retained chunk keeps its full native point density, on the
+assumption that a `_laz_chunk_iter` chunk (sequential points in on-disk order) is spatially
+coherent, which holds for typical LiDAR/NavVis scan-order exports; if a registered raw file
+turns out to be pre-shuffled or globally tiled such that a "chunk" spans the whole scan
+volume, this degrades to approximating whole-scan spacing from `n_chunks` scattered
+mini-samples rather than true local density — acceptable for this informational endpoint,
+but worth a code comment flagging the assumption. Concatenate the retained
 chunks' positions (default: 5 × 1M = up to 5M points, still far below holding the full
 ~156M-point file, and each chunk internally is at true raw density) and feed that into the
 existing `raw_sample_spacing()`, which then does its own internal `sample=100_000` query
@@ -97,9 +102,11 @@ streaming pass is unavoidable if we want any raw measurement here, and chunk-lev
 reservoir sampling keeps it statistically representative of the scan's actual density rather
 than of wherever the LAZ happens to be tiled/sorted on disk.
 
-Both helpers should share `raw_sample_spacing`'s underlying KD-tree/subsample logic (factor
-it out of `raw_sample_spacing` into a small internal `_spacing_from_positions(positions,
-sample, seed)` used by all three public functions) rather than duplicating it.
+Both new helpers are thin: they each resolve a `positions` array (AABB+prism-filtered for
+region 1, concatenated sampled chunks for region 2) and then call the existing
+`raw_sample_spacing(positions)` unchanged — no refactor of `raw_sample_spacing` itself is
+needed; its current per-call KD-tree-over-input behavior is exactly what both new callers
+want.
 
 ## Behavior changes
 
