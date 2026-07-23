@@ -24,10 +24,7 @@ def _ctx():
     seg = _require_session_seg()
     scan_dir = seg.session_dir.parent.parent      # sessions/<id>/ -> scan root
     offset = [float(v) for v in (_state.get("recenter_offset") or (0.0, 0.0, 0.0))]
-    src = _resolve(_state.get("scene"))
-    raw_path = src.extras.get("source_laz_path")
-    scene_is_z_up = _scene_is_z_up(src)
-    return seg, scan_dir, offset, raw_path, scene_is_z_up
+    return seg, scan_dir, offset
 
 
 def _to_runtime(region: dict, offset) -> dict:
@@ -38,14 +35,14 @@ def _to_runtime(region: dict, offset) -> dict:
 
 @router.get("/api/regions")
 def list_regions():
-    _seg, scan_dir, off, _raw_path, _z_up = _ctx()
+    _seg, scan_dir, off = _ctx()
     doc = regstore.load_regions(scan_dir)
     return {"regions": [_to_runtime(r, off) for r in doc["regions"]]}
 
 
 @router.post("/api/regions")
 def create_region(req: CreateRegionRequest):
-    _seg, scan_dir, off, _raw_path, _z_up = _ctx()
+    _seg, scan_dir, off = _ctx()
     doc = regstore.load_regions(scan_dir)
     try:
         region = regstore.create_region(
@@ -58,7 +55,7 @@ def create_region(req: CreateRegionRequest):
 
 @router.patch("/api/regions/{rid}")
 def patch_region(rid: int, req: PatchRegionRequest):
-    seg, scan_dir, off, raw_path, scene_is_z_up = _ctx()
+    seg, scan_dir, off = _ctx()
     if req.name is None and req.prism is None and req.status is None:
         raise HTTPException(422, "empty patch — send name, prism, or status")
     doc = regstore.load_regions(scan_dir)
@@ -74,6 +71,9 @@ def patch_region(rid: int, req: PatchRegionRequest):
             region = regstore.set_geometry(
                 doc, rid, regstore.shift_prism(req.prism.model_dump(), off))
         if req.status is not None:
+            src = _state.get("source")
+            raw_path = src.extras.get("source_laz_path") if src is not None else None
+            scene_is_z_up = _scene_is_z_up(src) if src is not None else False
             region = regstore.flip_status(doc, rid, req.status, seg.positions,
                                           off, categories=seg.categories,
                                           raw_path=raw_path, scene_is_z_up=scene_is_z_up)
@@ -87,7 +87,7 @@ def patch_region(rid: int, req: PatchRegionRequest):
 
 @router.delete("/api/regions/{rid}")
 def delete_region(rid: int):
-    _seg, scan_dir, off, _raw_path, _z_up = _ctx()
+    _seg, scan_dir, off = _ctx()
     doc = regstore.load_regions(scan_dir)
     try:
         regstore.delete_region(doc, rid)
@@ -101,7 +101,7 @@ def delete_region(rid: int):
 
 @router.get("/api/regions/stats")
 def regions_stats():
-    seg, scan_dir, off, _raw_path, _z_up = _ctx()
+    seg, scan_dir, off = _ctx()
     doc = regstore.load_regions(scan_dir)
     return {"regions": regstore.region_stats(
         doc, seg.positions, seg.class_ids, seg.instance_ids, off,
