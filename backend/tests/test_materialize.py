@@ -12,6 +12,7 @@ from labeling.materialize import (
     MaterializeCtx,
     prism_aabb,
     raw_region_sample_spacing,
+    raw_reservoir_sample_spacing,
 )
 
 
@@ -610,3 +611,50 @@ def test_raw_region_sample_spacing_empty_region_returns_zero(tmp_path):
     p50, p90 = raw_region_sample_spacing(
         las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
     assert (p50, p90) == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Whole-scan raw density via chunk-level reservoir sampling (Task 2)
+# ---------------------------------------------------------------------------
+
+def test_raw_reservoir_sample_spacing_bounded_chunk_count(tmp_path):
+    # 12 chunks of 500 pts each (6000 total) at a known 10mm grid spacing;
+    # n_chunks=3 must still measure close to the true 10mm spacing, proving
+    # no per-point thinning happened within a retained chunk.
+    pts = [[x * 0.01, 0.0, z * 0.01] for x in range(60) for z in range(100)]
+    assert len(pts) == 6000
+    las_path = tmp_path / "reservoir_raw.las"
+    _write_tiny_las_at(las_path, pts)
+
+    p50, p90 = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=3, chunk=500, seed=0)
+    assert p50 == pytest.approx(0.01, abs=2e-3)
+    assert p90 == pytest.approx(0.01, abs=2e-3)
+
+
+def test_raw_reservoir_sample_spacing_seeded_deterministic(tmp_path):
+    pts = [[x * 0.01, 0.0, z * 0.01] for x in range(30) for z in range(30)]
+    las_path = tmp_path / "reservoir_raw_seed.las"
+    _write_tiny_las_at(las_path, pts)
+
+    a = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=2, chunk=100, seed=7)
+    b = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=2, chunk=100, seed=7)
+    assert a == b
+
+
+def test_raw_reservoir_sample_spacing_fewer_chunks_than_n_chunks(tmp_path):
+    # Only 2 chunks exist in the file; n_chunks=5 must not error, just use
+    # everything available.
+    pts = [[x * 0.005, 0.0, 0.0] for x in range(150)]
+    las_path = tmp_path / "reservoir_raw_small.las"
+    _write_tiny_las_at(las_path, pts)
+
+    p50, p90 = raw_reservoir_sample_spacing(
+        las_path, scene_is_z_up=False, offset=np.zeros(3),
+        n_chunks=5, chunk=100, seed=0)
+    assert p50 == pytest.approx(0.005, abs=1e-3)
