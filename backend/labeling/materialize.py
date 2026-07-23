@@ -300,13 +300,16 @@ def prism_aabb(prism: dict) -> tuple[np.ndarray, np.ndarray]:
             np.array([x_max, y0 + height, z_max]))
 
 
-def raw_region_sample_spacing(raw_path, prism: dict, scene_is_z_up: bool,
-                               offset: np.ndarray) -> tuple[float, float]:
-    """p50/p90 nearest-neighbour spacing of a scan's raw source, scoped to one
-    eval region. Streams+filters the raw LAZ to the prism's AABB (cheap: only
-    touches points local to one region, never the whole file in memory), then
-    re-filters through the exact prism so points just outside a non-rectangular
-    footprint (but inside its AABB) can't skew the measurement."""
+def _load_raw_region_positions(raw_path, prism: dict, scene_is_z_up: bool,
+                                offset: np.ndarray) -> np.ndarray:
+    """Shared raw-region loader for `raw_region_point_count` and
+    `raw_region_sample_spacing` (and `regions.py::flip_status`, which calls
+    this directly to measure both in a single disk read rather than via the
+    two public wrappers below): streams+filters the raw LAZ to the prism's
+    AABB (cheap: only touches points local to one region, never the whole
+    file in memory), then re-filters through the exact prism so points just
+    outside a non-rectangular footprint (but inside its AABB) can't skew the
+    measurement. Returns the FINAL exact-filtered positions — may be empty."""
     from scenes.lidar_io import load_laz_region
 
     aabb_min, aabb_max = prism_aabb(prism)
@@ -314,28 +317,27 @@ def raw_region_sample_spacing(raw_path, prism: dict, scene_is_z_up: bool,
         raw_path, aabb_min.astype(np.float32), aabb_max.astype(np.float32),
         is_z_up=scene_is_z_up, offset=np.asarray(offset, dtype=np.float64))
     if len(positions) == 0:
+        return positions
+    return positions[prism_indices(positions, prism)]
+
+
+def raw_region_sample_spacing(raw_path, prism: dict, scene_is_z_up: bool,
+                               offset: np.ndarray) -> tuple[float, float]:
+    """p50/p90 nearest-neighbour spacing of a scan's raw source, scoped to one
+    eval region."""
+    positions = _load_raw_region_positions(raw_path, prism, scene_is_z_up, offset)
+    if len(positions) == 0:
         return 0.0, 0.0
-    idx = prism_indices(positions, prism)
-    return raw_sample_spacing(positions[idx])
+    return raw_sample_spacing(positions)
 
 
 def raw_region_point_count(raw_path, prism: dict, scene_is_z_up: bool,
                             offset: np.ndarray) -> int:
-    """How many raw points fall exactly inside a region's prism. Shares
-    raw_region_sample_spacing's AABB-prefilter + exact prism_indices logic
-    but returns a count instead of a spacing measurement — used by the
+    """How many raw points fall exactly inside a region's prism — used by the
     eval-grade gate's point-floor check, which must run BEFORE the spacing
     measurement (an empty region measures spacing (0.0, 0.0), which must not
     be confused with a real "coincident points" reading)."""
-    from scenes.lidar_io import load_laz_region
-
-    aabb_min, aabb_max = prism_aabb(prism)
-    positions, _colors = load_laz_region(
-        raw_path, aabb_min.astype(np.float32), aabb_max.astype(np.float32),
-        is_z_up=scene_is_z_up, offset=np.asarray(offset, dtype=np.float64))
-    if len(positions) == 0:
-        return 0
-    return int(len(prism_indices(positions, prism)))
+    return len(_load_raw_region_positions(raw_path, prism, scene_is_z_up, offset))
 
 
 def raw_reservoir_sample_spacing(raw_path, scene_is_z_up: bool, offset: np.ndarray,

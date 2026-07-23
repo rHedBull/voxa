@@ -613,6 +613,29 @@ def test_raw_region_point_count_matches_prism_indices(tmp_path):
     assert n == 100   # full 10x10 grid at 5mm sits inside this prism
 
 
+def test_raw_region_point_count_and_spacing_agree_on_same_filtered_set(tmp_path):
+    """Both helpers share `_load_raw_region_positions`'s AABB+prism filtering —
+    this pins that they can't silently drift apart: the count returned by
+    raw_region_point_count must equal the number of points that actually
+    drove raw_region_sample_spacing's measurement, including on a footprint
+    with points inside the AABB but outside the exact (triangular) prism."""
+    inside = [[x * 0.005, 0.0, z * 0.005] for x in range(20) for z in range(20)]
+    outside_aabb = [[50.0, 0.0, 50.0], [51.0, 0.0, 51.0]]
+    outside_prism_inside_aabb = [[1.4 + i * 0.02, 0.0, 1.4] for i in range(5)]
+    points = inside + outside_aabb + outside_prism_inside_aabb
+    las_path = tmp_path / "count_spacing_agree.las"
+    _write_tiny_las_at(las_path, points)
+
+    prism = {"polygon": [[-0.5, -0.5], [1.5, -0.5], [-0.5, 1.5]],
+             "y0": -0.1, "height": 0.2}
+
+    n = raw_region_point_count(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    p50, p90 = raw_region_sample_spacing(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert n == len(inside)            # excludes both outside-AABB and outside-prism-inside-AABB points
+    assert p50 == pytest.approx(0.005, abs=1e-3)
+    assert p90 == pytest.approx(0.005, abs=1e-3)
+
+
 def test_raw_region_sample_spacing_empty_region_returns_zero(tmp_path):
     points = [[50.0, 0.0, 50.0], [51.0, 0.0, 51.0]]
     las_path = tmp_path / "region_raw_empty.las"

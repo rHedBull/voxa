@@ -22,9 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from labeling.categories import CATEGORY_EXCLUDED_REVIEW
-from labeling.materialize import (
-    loa_band, raw_region_sample_spacing, raw_region_point_count,
-)
+from labeling.materialize import loa_band, raw_sample_spacing, _load_raw_region_positions
 from labeling.segment_io import atomic_write_json
 from labeling.shapes import prism_indices
 
@@ -152,12 +150,16 @@ def flip_status(doc: dict, rid: int, status: str, positions,
             "density; register a raw source before flipping regions to "
             "eval-grade")
     runtime = shift_prism(r["prism"], [-v for v in offset])
-    n_points = raw_region_point_count(raw_path, runtime, scene_is_z_up, offset)
+    # One raw-file read shared by the floor check and the spacing measurement
+    # (rather than calling raw_region_point_count + raw_region_sample_spacing,
+    # which would each independently stream+filter the same region from disk).
+    raw_positions = _load_raw_region_positions(raw_path, runtime, scene_is_z_up, offset)
+    n_points = len(raw_positions)
     if n_points < MIN_GATE_POINTS:
         raise RegionError(
             f"region holds {n_points} raw point{'' if n_points == 1 else 's'} "
             f"— at least {MIN_GATE_POINTS} needed to measure spacing")
-    p50, p90 = raw_region_sample_spacing(raw_path, runtime, scene_is_z_up, offset)
+    p50, p90 = raw_sample_spacing(raw_positions)
     if p50 <= MIN_GATE_P50_M:
         raise RegionError(
             "measured p50 spacing is ~0 — the region's points are coincident "
@@ -173,6 +175,9 @@ def flip_status(doc: dict, rid: int, status: str, positions,
         session_positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
         session_idx = prism_indices(session_positions, runtime)
         n_review = _n_review(categories, session_idx)
+        # max(..., 1): zero session points in the region reports 0% review
+        # rather than "can't verify" — deliberate, see
+        # test_gate_passes_with_no_session_points_in_region.
         frac = n_review / max(len(session_idx), 1)
         if frac > REVIEW_BUDGET_FRAC:
             raise RegionError(
