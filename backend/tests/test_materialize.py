@@ -12,6 +12,7 @@ from labeling.materialize import (
     MaterializeCtx,
     prism_aabb,
     raw_region_sample_spacing,
+    raw_region_point_count,
     raw_reservoir_sample_spacing,
 )
 
@@ -600,6 +601,16 @@ def test_raw_region_sample_spacing_measures_only_in_prism_points(tmp_path):
         las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
     assert p50 == pytest.approx(0.005, abs=1e-3)
     assert p90 == pytest.approx(0.005, abs=1e-3)
+
+
+def test_raw_region_point_count_matches_prism_indices(tmp_path):
+    grid = [[x * 0.005, 0.0, z * 0.005] for x in range(10) for z in range(10)]
+    las_path = tmp_path / "count_raw.las"
+    _write_tiny_las_at(las_path, grid)
+    prism = {"polygon": [[-0.01, -0.01], [0.2, -0.01], [0.2, 0.2], [-0.01, 0.2]],
+             "y0": -0.5, "height": 1.0}
+    n = raw_region_point_count(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert n == 100   # full 10x10 grid at 5mm sits inside this prism
 
 
 def test_raw_region_sample_spacing_empty_region_returns_zero(tmp_path):

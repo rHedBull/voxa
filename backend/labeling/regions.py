@@ -22,7 +22,9 @@ from pathlib import Path
 import numpy as np
 
 from labeling.categories import CATEGORY_EXCLUDED_REVIEW
-from labeling.materialize import loa_band, raw_sample_spacing
+from labeling.materialize import (
+    loa_band, raw_region_sample_spacing, raw_region_point_count,
+)
 from labeling.segment_io import atomic_write_json
 from labeling.shapes import prism_indices
 
@@ -124,12 +126,17 @@ def delete_region(doc: dict, rid: int) -> None:
 
 
 def flip_status(doc: dict, rid: int, status: str, positions,
-                offset=(0.0, 0.0, 0.0), categories=None) -> dict:
+                offset=(0.0, 0.0, 0.0), categories=None,
+                raw_path=None, scene_is_z_up: bool = False) -> dict:
     """draft <-> eval_grade. The eval_grade flip is the gate: measure the
-    region's local p50/p90 spacing over its full-res points and refuse
-    (RegionError) below the point floor, above the 10 mm bar, or over the
-    excluded-review budget (`categories`, the phase-2 point-category array;
-    None skips that check for callers with no session)."""
+    region's RAW-SOURCE spacing (not the session working cloud — see
+    docs/superpowers/specs/2026-07-23-region-density-raw-source-design.md)
+    and refuse (RegionError) if no raw source is registered, below the point
+    floor, above the 10 mm bar, or over the excluded-review budget
+    (`categories`, the phase-2 point-category array; None skips that check
+    for callers with no session). The point-floor check runs BEFORE the
+    spacing measurement: an empty raw region measures (0.0, 0.0) spacing,
+    which must not be misread as "coincident points"."""
     r = _get(doc, rid)
     if status == "draft":
         r["status"] = "draft"
@@ -139,14 +146,18 @@ def flip_status(doc: dict, rid: int, status: str, positions,
         raise RegionError(f"unknown status {status!r}")
     if r["status"] == "eval_grade":
         return r
-    positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
-    runtime = shift_prism(r["prism"], [-v for v in offset])
-    idx = prism_indices(positions, runtime)
-    if len(idx) < MIN_GATE_POINTS:
+    if raw_path is None:
         raise RegionError(
-            f"region holds {len(idx)} point{'' if len(idx) == 1 else 's'} — at "
-            f"least {MIN_GATE_POINTS} needed to measure spacing")
-    p50, p90 = raw_sample_spacing(positions[idx])
+            "no raw source registered for this scan — cannot verify true "
+            "density; register a raw source before flipping regions to "
+            "eval-grade")
+    runtime = shift_prism(r["prism"], [-v for v in offset])
+    n_points = raw_region_point_count(raw_path, runtime, scene_is_z_up, offset)
+    if n_points < MIN_GATE_POINTS:
+        raise RegionError(
+            f"region holds {n_points} raw point{'' if n_points == 1 else 's'} "
+            f"— at least {MIN_GATE_POINTS} needed to measure spacing")
+    p50, p90 = raw_region_sample_spacing(raw_path, runtime, scene_is_z_up, offset)
     if p50 <= MIN_GATE_P50_M:
         raise RegionError(
             "measured p50 spacing is ~0 — the region's points are coincident "
@@ -156,17 +167,22 @@ def flip_status(doc: dict, rid: int, status: str, positions,
             f"measured p90 spacing {p90 * 1000:.1f} mm exceeds the "
             f"{EVAL_GRADE_P90_M * 1000:.0f} mm eval-grade bar")
     if categories is not None:
-        n_review = _n_review(categories, idx)
-        frac = n_review / len(idx)
+        # categories/review-budget stays keyed off the SESSION's own working
+        # array — that array only exists at session resolution, it has no
+        # raw-scoped equivalent.
+        session_positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+        session_idx = prism_indices(session_positions, runtime)
+        n_review = _n_review(categories, session_idx)
+        frac = n_review / max(len(session_idx), 1)
         if frac > REVIEW_BUDGET_FRAC:
             raise RegionError(
-                f"{n_review} of {len(idx)} points ({frac * 100:.1f}%) are "
+                f"{n_review} of {len(session_idx)} points ({frac * 100:.1f}%) are "
                 f"excluded-review — over the "
                 f"{REVIEW_BUDGET_FRAC * 100:.0f}% budget; resolve or relabel "
                 f"them before flipping to eval-grade")
     r["status"] = "eval_grade"
     r["accuracy"] = {"p50": p50, "p90": p90, "loa": loa_band(p90),
-                     "n_points": int(len(idx)), "measured_at": _now()}
+                     "n_points": int(n_points), "measured_at": _now()}
     return r
 
 
