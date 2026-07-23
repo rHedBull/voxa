@@ -339,6 +339,24 @@ def test_gate_passes_on_5mm_grid_and_records_accuracy(tmp_path):
     assert acc["p90"] == pytest.approx(0.005, abs=1e-4)
     assert acc["loa"] == "LOA40"
     assert "measured_at" in acc
+    # n_points now reflects the RAW region's point count, not len(positions).
+    assert acc["n_points"] == 400
+
+
+def test_gate_refuses_on_empty_raw_region(tmp_path):
+    """Zero raw points in the region (e.g. the prism sits somewhere the raw
+    file has no coverage) must hit the point-floor refusal, not the
+    coincident-points ("p50 ~ 0") refusal — the floor check must run BEFORE
+    the spacing measurement, since raw_region_sample_spacing legitimately
+    returns (0.0, 0.0) for an empty input and that must not be confused with
+    a real "0 spacing" measurement."""
+    las_path = tmp_path / "gate_raw_far_away.las"
+    _write_tiny_las_at(las_path, [[500.0, 0.0, 500.0], [501.0, 0.0, 501.0]])
+    doc = {"version": 1, "next_region_id": 1, "regions": []}
+    r = reg.create_region(doc, PRISM)
+    with pytest.raises(reg.RegionError, match="100"):
+        reg.flip_status(doc, r["id"], "eval_grade", grid_positions(0.005),
+                        raw_path=las_path, scene_is_z_up=False)
 
 
 def test_gate_measures_raw_not_session_cloud(tmp_path):
@@ -464,13 +482,52 @@ Run: `cd backend && .venv/bin/pytest tests/test_regions.py -v`
 
 Expected: FAIL — `flip_status() got an unexpected keyword argument 'raw_path'` across the gate tests.
 
-- [ ] **Step 3: Update `flip_status`**
+- [ ] **Step 3: Add `raw_region_point_count` to `materialize.py`**
 
-In `backend/labeling/regions.py`, update the import line and the function signature/body:
+The point-floor check must read the RAW region's point count (per the spec: "point-floor... applies to whichever point set was actually measured"), and — critically — it must run **BEFORE** the spacing measurement: `raw_region_sample_spacing` legitimately returns `(0.0, 0.0)` for an empty region, which would otherwise be misread as "coincident points" (the `MIN_GATE_P50_M` check) rather than "too few points" (the `MIN_GATE_POINTS` check). Add this to `backend/labeling/materialize.py`, right after `raw_region_sample_spacing`:
+
+```python
+def raw_region_point_count(raw_path, prism: dict, scene_is_z_up: bool,
+                            offset: np.ndarray) -> int:
+    """How many raw points fall exactly inside a region's prism. Shares
+    raw_region_sample_spacing's AABB-prefilter + exact prism_indices logic
+    but returns a count instead of a spacing measurement — used by the
+    eval-grade gate's point-floor check, which must run BEFORE the spacing
+    measurement (an empty region measures spacing (0.0, 0.0), which must not
+    be confused with a real "coincident points" reading)."""
+    from scenes.lidar_io import load_laz_region
+
+    aabb_min, aabb_max = prism_aabb(prism)
+    positions, _colors = load_laz_region(
+        raw_path, aabb_min.astype(np.float32), aabb_max.astype(np.float32),
+        is_z_up=scene_is_z_up, offset=np.asarray(offset, dtype=np.float64))
+    if len(positions) == 0:
+        return 0
+    return int(len(prism_indices(positions, prism)))
+```
+
+Add its test to `backend/tests/test_materialize.py`, alongside this task's other new tests (import `raw_region_point_count` alongside the other new imports):
+
+```python
+def test_raw_region_point_count_matches_prism_indices(tmp_path):
+    grid = grid_positions(0.005, n=10).tolist()
+    las_path = tmp_path / "count_raw.las"
+    _write_tiny_las_at(las_path, grid)
+    prism = {"polygon": [[-0.01, -0.01], [0.2, -0.01], [0.2, 0.2], [-0.01, 0.2]],
+             "y0": -0.5, "height": 1.0}
+    n = raw_region_point_count(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert n == 100   # full 10x10 grid at 5mm sits inside this prism
+```
+
+Run: `cd backend && .venv/bin/pytest tests/test_materialize.py -k raw_region_point_count -v` — expect PASS before moving on.
+
+- [ ] **Step 4: Update `flip_status`**
+
+In `backend/labeling/regions.py`, update the import line (drop `raw_sample_spacing` — after this change nothing in this file calls it directly anymore) and the function body. This is the complete, final version — floor check first, spacing measurement second:
 
 ```python
 from labeling.materialize import (
-    loa_band, raw_sample_spacing, raw_region_sample_spacing,
+    loa_band, raw_region_sample_spacing, raw_region_point_count,
 )
 ```
 
@@ -484,7 +541,9 @@ def flip_status(doc: dict, rid: int, status: str, positions,
     and refuse (RegionError) if no raw source is registered, below the point
     floor, above the 10 mm bar, or over the excluded-review budget
     (`categories`, the phase-2 point-category array; None skips that check
-    for callers with no session)."""
+    for callers with no session). The point-floor check runs BEFORE the
+    spacing measurement: an empty raw region measures (0.0, 0.0) spacing,
+    which must not be misread as "coincident points"."""
     r = _get(doc, rid)
     if status == "draft":
         r["status"] = "draft"
@@ -500,14 +559,12 @@ def flip_status(doc: dict, rid: int, status: str, positions,
             "density; register a raw source before flipping regions to "
             "eval-grade")
     runtime = shift_prism(r["prism"], [-v for v in offset])
-    p50, p90 = raw_region_sample_spacing(raw_path, runtime, scene_is_z_up, offset)
-    positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
-    idx = prism_indices(positions, runtime)   # only used for point-floor/review-budget below
-    n_points = len(idx)
+    n_points = raw_region_point_count(raw_path, runtime, scene_is_z_up, offset)
     if n_points < MIN_GATE_POINTS:
         raise RegionError(
             f"region holds {n_points} raw point{'' if n_points == 1 else 's'} "
             f"— at least {MIN_GATE_POINTS} needed to measure spacing")
+    p50, p90 = raw_region_sample_spacing(raw_path, runtime, scene_is_z_up, offset)
     if p50 <= MIN_GATE_P50_M:
         raise RegionError(
             "measured p50 spacing is ~0 — the region's points are coincident "
@@ -517,11 +574,16 @@ def flip_status(doc: dict, rid: int, status: str, positions,
             f"measured p90 spacing {p90 * 1000:.1f} mm exceeds the "
             f"{EVAL_GRADE_P90_M * 1000:.0f} mm eval-grade bar")
     if categories is not None:
-        n_review = _n_review(categories, idx)
-        frac = n_review / n_points
+        # categories/review-budget stays keyed off the SESSION's own working
+        # array — that array only exists at session resolution, it has no
+        # raw-scoped equivalent.
+        session_positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+        session_idx = prism_indices(session_positions, runtime)
+        n_review = _n_review(categories, session_idx)
+        frac = n_review / max(len(session_idx), 1)
         if frac > REVIEW_BUDGET_FRAC:
             raise RegionError(
-                f"{n_review} of {n_points} points ({frac * 100:.1f}%) are "
+                f"{n_review} of {len(session_idx)} points ({frac * 100:.1f}%) are "
                 f"excluded-review — over the "
                 f"{REVIEW_BUDGET_FRAC * 100:.0f}% budget; resolve or relabel "
                 f"them before flipping to eval-grade")
@@ -531,7 +593,9 @@ def flip_status(doc: dict, rid: int, status: str, positions,
     return r
 ```
 
-**Important nuance:** the point-floor and point count now come from `positions` (the session working array, via `prism_indices`) purely to preserve the existing `n_points`/review-budget semantics against the session's own instance/category arrays (those arrays are indexed by session point, not raw point) — but the spec's stated intent was "point-floor applies to whichever point set was actually measured (raw region points when available)". Reconcile this by checking the RAW point count for the floor instead: change `n_points = len(idx)` to use the raw-filtered count. Do this by having `raw_region_sample_spacing` also return the count, OR by computing it separately here via a second small helper. **Chosen approach:** add a `raw_region_point_count(raw_path, prism, scene_is_z_up, offset)` helper alongside `raw_region_sample_spacing` in `materialize.py` (same AABB+prism_indices filtering, just returns `len(idx)` instead of calling `raw_sample_spacing`) and use that count for `MIN_GATE_POINTS`, while `categories`/review-budget stays keyed off the session's own `idx` (that array genuinely only exists at session resolution — it cannot be raw-scoped). Update the test above (`test_gate_refuses_below_point_floor`) accordingly — it already passes a raw file with 25 points and expects the "100" refusal, which holds either way, so no test change needed once this is implemented correctly. Add one more explicit regression test:
+Note `n_points` in the recorded `accuracy` dict is now the RAW region's count, not the session's — update the `test_gate_passes_on_5mm_grid_and_records_accuracy` assertion above accordingly (already done: `assert acc["n_points"] == 400`, matching the 400-point raw grid fixture in that test, not a session-array count).
+
+Add one more explicit regression test for the raw-vs-session count distinction, alongside the other gate tests:
 
 ```python
 def test_gate_point_floor_uses_raw_count_not_session_count(tmp_path):
@@ -548,50 +612,13 @@ def test_gate_point_floor_uses_raw_count_not_session_count(tmp_path):
                         raw_path=las_path, scene_is_z_up=False)
 ```
 
-Add `raw_region_point_count` to `materialize.py` right after `raw_region_sample_spacing`:
-
-```python
-def raw_region_point_count(raw_path, prism: dict, scene_is_z_up: bool,
-                            offset: np.ndarray) -> int:
-    """How many raw points fall exactly inside a region's prism. Shares
-    raw_region_sample_spacing's AABB-prefilter + exact prism_indices logic
-    but returns a count instead of a spacing measurement — used by the
-    eval-grade gate's point-floor check."""
-    from scenes.lidar_io import load_laz_region
-
-    aabb_min, aabb_max = prism_aabb(prism)
-    positions, _colors = load_laz_region(
-        raw_path, aabb_min.astype(np.float32), aabb_max.astype(np.float32),
-        is_z_up=scene_is_z_up, offset=np.asarray(offset, dtype=np.float64))
-    if len(positions) == 0:
-        return 0
-    return int(len(prism_indices(positions, prism)))
-```
-
-and update `flip_status` to call it for `n_points` used in the floor check (keep a separate `session_idx = prism_indices(positions, runtime)` for the categories/review-budget check, which stays session-scoped).
-
-Add this new function to the Task 1 test list retroactively is unnecessary — just add its test alongside this task's other new tests in `test_materialize.py`:
-
-```python
-def test_raw_region_point_count_matches_prism_indices(tmp_path):
-    grid = grid_positions(0.005, n=10).tolist()
-    las_path = tmp_path / "count_raw.las"
-    _write_tiny_las_at(las_path, grid)
-    prism = {"polygon": [[-0.01, -0.01], [0.2, -0.01], [0.2, 0.2], [-0.01, 0.2]],
-             "y0": -0.5, "height": 1.0}
-    n = raw_region_point_count(las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
-    assert n == 100   # full 10x10 grid at 5mm sits inside this prism
-```
-
-(This test lives in `test_materialize.py`, not `test_regions.py` — add it there and import `raw_region_point_count` alongside the other new imports.)
-
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `cd backend && .venv/bin/pytest tests/test_materialize.py tests/test_regions.py -v`
 
 Expected: PASS (all tests)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/labeling/materialize.py backend/labeling/regions.py backend/tests/test_materialize.py backend/tests/test_regions.py
@@ -788,7 +815,7 @@ def client_with_dense_annotated_scene(monkeypatch, tmp_path):
     return client
 ```
 
-This is a **transparent** change to every existing consumer of `client_with_dense_annotated_scene` (`test_gate_passes_on_dense_scene_and_locks`, `test_patch_cannot_unlock_and_redraw_in_one_request`, `test_stats`) — no test-file edits needed for those three.
+This is a **transparent** change to every existing consumer of `client_with_dense_annotated_scene` — no test-file edits needed for any of them. Run `grep -n "client_with_dense_annotated_scene" backend/tests/test_regions_endpoints.py` before this step to get the exact current list (it includes at least `test_gate_passes_on_dense_scene_and_locks`, `test_patch_cannot_unlock_and_redraw_in_one_request`, `test_stats`, and several review-budget/category tests such as `test_gate_refuses_over_review_budget`, `test_gate_passes_at_the_budget_edge`, `test_stats_report_review_points` — don't assume the list above is exhaustive.
 
 - [ ] **Step 3: Fix `test_gate_refuses_sparse_fixture`'s expected message**
 
