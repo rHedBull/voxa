@@ -314,6 +314,76 @@ def test_strip_orphaned_presegments_leaves_non_orphaned_untouched(tmp_path):
     assert inst.tolist() == [-1, 5, 5]
 
 
+def test_strip_orphaned_presegments_second_run_is_idempotent(tmp_path):
+    # Mirrors test_migrate_session_second_run_is_idempotent: running the strip
+    # twice on an already-stripped session must not error, and the second run
+    # must find nothing left to strip.
+    session_dir = tmp_path / "sessions" / "s1"
+    (session_dir / "output").mkdir(parents=True)
+    np.save(session_dir / "output" / "gt_class_ids.npy", np.array([4, 4, 2], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_segment_ids.npy", np.array([39, 39, 9], dtype=np.int32))
+    (session_dir / "instances_gt.json").write_text(json.dumps({
+        "scene": "x", "kind": "gt",
+        "instances": [{"id": "a", "kind": "pointset", "segId": 9, "cls": "pipe", "confirmed": True}],
+    }))
+    result1 = strip_orphaned_presegments(session_dir, n_points=3, dry_run=False)
+    assert result1["n_orphaned_ids"] == 1
+
+    result2 = strip_orphaned_presegments(session_dir, n_points=3, dry_run=False)
+    assert result2["n_orphaned_ids"] == 0
+    cls_after = np.load(session_dir / "output" / "gt_class_ids.npy")
+    assert cls_after.tolist() == [-1, -1, 2]   # unchanged by the second, no-op run
+
+
+def test_combined_dry_run_does_not_overstate_orphan_count_for_overlapping_id(tmp_path):
+    # Reviewer repro: instance 3 is BOTH class-6 (migrate_session's target) AND
+    # missing from instances_gt.json (strip_orphaned_presegments's target). A
+    # REAL combined run converts instance 3 to unlabeled via migrate_session
+    # BEFORE strip_orphaned_presegments ever runs, so it correctly does not
+    # also count 3 as "orphaned" (it's already gone, not double-processed).
+    # A dry-run preview must match that -- it must NOT report 3 as orphaned
+    # just because migrate_session's dry run never wrote its conversion.
+    session_dir = tmp_path / "sessions" / "s1"
+    (session_dir / "output").mkdir(parents=True)
+    # instance 3: class 6 (legacy) AND absent from instances_gt.json (orphaned candidate)
+    # instance 9: real class, has a proper instances_gt.json row (untouched by either op)
+    np.save(session_dir / "output" / "gt_class_ids.npy", np.array([6, 6, 2], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_segment_ids.npy", np.array([3, 3, 9], dtype=np.int32))
+    (session_dir / "instances_gt.json").write_text(json.dumps({
+        "scene": "x", "kind": "gt",
+        "instances": [{"id": "b", "kind": "pointset", "segId": 9, "cls": "pipe", "confirmed": True}],
+    }))
+
+    # --- dry-run combined preview: must compose correctly ---
+    migrate_result = migrate_session(session_dir, n_points=3, dry_run=True)
+    assert migrate_result["n_legacy_converted"] == 2
+    strip_result = strip_orphaned_presegments(
+        session_dir, n_points=3, dry_run=True,
+        class_ids=migrate_result["class_ids"], instance_ids=migrate_result["instance_ids"],
+    )
+    # instance 3 was already resolved to unlabeled by migrate_session's
+    # (in-memory) conversion, so it must NOT also show up as orphaned.
+    assert strip_result["n_orphaned_ids"] == 0
+    assert strip_result["orphaned_ids"] == []
+    # Confirm nothing was actually written by either dry run.
+    cls_untouched = np.load(session_dir / "output" / "gt_class_ids.npy")
+    assert cls_untouched.tolist() == [6, 6, 2]
+
+    # --- the same composition for real: single conversion, no error ---
+    real_migrate_result = migrate_session(session_dir, n_points=3, dry_run=False)
+    assert real_migrate_result["n_legacy_converted"] == 2
+    real_strip_result = strip_orphaned_presegments(
+        session_dir, n_points=3, dry_run=False,
+        class_ids=real_migrate_result["class_ids"], instance_ids=real_migrate_result["instance_ids"],
+    )
+    assert real_strip_result["n_orphaned_ids"] == 0
+
+    final_cls = np.load(session_dir / "output" / "gt_class_ids.npy")
+    final_inst = np.load(session_dir / "output" / "gt_segment_ids.npy")
+    assert final_cls.tolist() == [-1, -1, 2]     # instance 3 converted once, not double-processed
+    assert final_inst.tolist() == [-1, -1, 9]
+
+
 def test_strip_orphaned_presegments_surfaces_nonnone_category(tmp_path):
     # An orphaned point that unexpectedly carries a non-none category must be
     # surfaced in the result, not silently overwritten or crashed on.

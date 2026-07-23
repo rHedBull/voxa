@@ -114,6 +114,13 @@ def migrate_session(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
     result = {
         "n_legacy_converted": n_legacy,
         "converted_instance_ids": converted_ids,
+        # Always returned (dry-run or not) so a caller composing this with a
+        # second migration step (main()'s --strip-orphaned-presegments) can
+        # operate on the POST-migrate_session arrays in memory, instead of
+        # re-reading from disk -- which, in dry-run mode, would still hold the
+        # PRE-migration bytes since nothing was written.
+        "class_ids": class_ids,
+        "instance_ids": instance_ids,
     }
     if dry_run:
         return result
@@ -128,7 +135,9 @@ def migrate_session(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
     return result
 
 
-def strip_orphaned_presegments(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
+def strip_orphaned_presegments(session_dir: Path, n_points: int, *, dry_run: bool,
+                                class_ids: np.ndarray | None = None,
+                                instance_ids: np.ndarray | None = None) -> dict:
     """Strip "orphaned" instance ids back to unlabeled: instance ids present in
     the gt arrays with a real (non -1) class but with NO corresponding row in
     that session's instances_gt.json. Investigation confirmed these are raw
@@ -143,14 +152,23 @@ def strip_orphaned_presegments(session_dir: Path, n_points: int, *, dry_run: boo
     instances_gt.json was ever produced for this session") and is deliberately
     NOT handled here — it's left for separate human review, so this function
     strips nothing and reports skipped_no_instances_doc.
+
+    `class_ids`/`instance_ids` are optional pre-loaded arrays. Pass them when
+    composing this with a preceding `migrate_session()` call in the SAME
+    process (main()'s combined path) so this function evaluates against the
+    POST-migrate_session state even in dry-run mode, when migrate_session
+    never actually wrote its conversion to disk. Default (None) loads from
+    disk exactly as before, for standalone use.
     """
     instances_gt_path = session_dir / "instances_gt.json"
     if not instances_gt_path.exists():
         return {"skipped_no_instances_doc": True}
 
     out = session_dir / "output"
-    class_ids = np.load(out / "gt_class_ids.npy")
-    instance_ids = np.load(out / "gt_segment_ids.npy")
+    if class_ids is None:
+        class_ids = np.load(out / "gt_class_ids.npy")
+    if instance_ids is None:
+        instance_ids = np.load(out / "gt_segment_ids.npy")
 
     instances_gt = json.loads(instances_gt_path.read_text())
     doc_seg_ids = {int(inst["segId"]) for inst in instances_gt.get("instances", [])
@@ -219,7 +237,16 @@ def main() -> int:
           f"(instances {result['converted_instance_ids']})")
 
     if a.strip_orphaned_presegments:
-        strip_result = strip_orphaned_presegments(session_dir, n_points, dry_run=a.dry_run)
+        # Compose in memory: migrate_session's result always carries the
+        # POST-migration class/instance arrays, whether or not it wrote them
+        # to disk (dry-run). Passing them through here means the strip preview
+        # is evaluated against what a real combined run would actually
+        # produce, not against stale on-disk (pre-migration) bytes -- see the
+        # reviewer repro in test_migrate_eval_invariants.py.
+        strip_result = strip_orphaned_presegments(
+            session_dir, n_points, dry_run=a.dry_run,
+            class_ids=result["class_ids"], instance_ids=result["instance_ids"],
+        )
         if strip_result.get("skipped_no_instances_doc"):
             print(f"{'[dry-run] ' if a.dry_run else ''}{a.scan_dir.name}/{a.session_id}: "
                   f"no instances_gt.json -- skipped orphaned-presegment strip")
