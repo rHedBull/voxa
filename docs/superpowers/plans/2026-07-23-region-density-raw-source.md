@@ -612,6 +612,27 @@ def test_gate_point_floor_uses_raw_count_not_session_count(tmp_path):
                         raw_path=las_path, scene_is_z_up=False)
 ```
 
+Add one more test for the edge case the `max(len(session_idx), 1)` zero-division guard in the categories/review-budget block exists to protect against — a raw region dense enough to pass the floor/spacing checks, but whose session cloud happens to have zero points inside the same prism (the two point sets are filtered independently, so this is possible: e.g. a session cloud that hasn't caught up with a since-widened region, or simply doesn't cover that area at session resolution):
+
+```python
+def test_gate_passes_with_no_session_points_in_region(tmp_path):
+    """Raw region is dense enough to pass on its own; the session cloud has
+    ZERO points inside the same prism (categories=None here, so the
+    review-budget branch is skipped entirely — this just proves the gate
+    doesn't crash on prism_indices returning empty for `positions`)."""
+    dense_raw = grid_positions(0.003, n=40).tolist()
+    las_path = tmp_path / "raw_dense_no_session_overlap.las"
+    _write_tiny_las_at(las_path, dense_raw)
+    session_elsewhere = np.array([[500.0, 0.0, 500.0]], dtype=np.float32)
+
+    doc = {"version": 1, "next_region_id": 1, "regions": []}
+    r = reg.create_region(doc, {"polygon": [[-0.01, -0.01], [0.1, -0.01], [0.1, 0.1], [-0.01, 0.1]],
+                                "y0": -0.5, "height": 1.0})
+    out = reg.flip_status(doc, r["id"], "eval_grade", session_elsewhere,
+                          raw_path=las_path, scene_is_z_up=False)
+    assert out["status"] == "eval_grade"
+```
+
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `cd backend && .venv/bin/pytest tests/test_materialize.py tests/test_regions.py -v`

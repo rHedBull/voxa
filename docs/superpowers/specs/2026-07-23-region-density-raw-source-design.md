@@ -113,20 +113,27 @@ want.
 ### `labeling/regions.py::flip_status`
 
 Gains `raw_path: str | None` and `scene_is_z_up: bool` parameters (positional/keyword,
-inserted alongside the existing `positions` param — `positions` stays required for the
-`categories`/review-budget check and the point-floor check, which remain scoped to the
-session's working array as today; only the *spacing* measurement changes source).
+inserted alongside the existing `positions` param). `positions` stays required, but its role
+narrows to the `categories`/review-budget check only — that check has no raw-scoped
+equivalent, since point categories are a session-resolution concept. The point-floor and
+spacing measurement both move to the raw source.
 
-- If `raw_path` is not `None`: measure spacing via `raw_region_sample_spacing(raw_path,
-  region's runtime prism, scene_is_z_up, offset)`.
+- If `raw_path` is not `None`: **first** check the point floor against the raw region's own
+  point count (a new `raw_region_point_count(raw_path, prism, scene_is_z_up, offset)`
+  helper, sharing `raw_region_sample_spacing`'s AABB+prism filtering) — this must run
+  *before* the spacing measurement, since an empty raw region measures spacing `(0.0, 0.0)`,
+  which must not be misread as "coincident points." Only once the floor passes, measure
+  spacing via `raw_region_sample_spacing(raw_path, region's runtime prism, scene_is_z_up,
+  offset)`.
 - If `raw_path` is `None` (no raw source registered for this scan — e.g. bim today):
   **refuse eval-grade outright** with `RegionError("no raw source registered for this scan
   — cannot verify true density; register a raw source before flipping regions to eval-
   grade")`. Do NOT fall back to measuring `positions` — that reintroduces exactly the
   ambiguity this spec removes, and would let regions silently pass at whatever density the
   session cloud happens to be.
-- The point-floor (`MIN_GATE_POINTS`) and near-zero-spacing (`MIN_GATE_P50_M`) checks apply
-  to whichever point set was actually measured (raw region points when available).
+- The near-zero-spacing (`MIN_GATE_P50_M`) check applies to the raw-measured spacing, same as
+  the p90 bar. The `categories`/review-budget check alone stays scoped to `positions` (the
+  session's own working array), since it has no raw-scoped equivalent.
 
 ### `backend/routes/regions.py`
 
