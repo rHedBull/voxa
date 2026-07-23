@@ -224,7 +224,13 @@ def export_labels(req: ExportLabelsRequest) -> Response:
     if errs:
         raise HTTPException(422, {"errors": errs})
 
-    p50, p90 = raw_sample_spacing(ctx.scan_pos)
+    # The manifest's accuracy claim must describe what was actually
+    # exported: raw-backed only when the export itself is raw-density
+    # (resolution.kind == "raw"), else the session cloud — same as today.
+    if req.resolution.kind == "raw" and ctx.raw_path is not None:
+        p50, p90 = raw_reservoir_sample_spacing(ctx.raw_path, ctx.scene_is_z_up, ctx.offset)
+    else:
+        p50, p90 = raw_sample_spacing(ctx.scan_pos)
     taxonomy, src_to_tgt = build_taxonomy(palette, req)
     absent = count_absent_instances(ctx.work_inst, confirmed_by_inst)
 
