@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from migrate_eval_invariants import migrate_session
+from migrate_eval_invariants import migrate_session, strip_orphaned_presegments
 
 
 def test_migrate_session_backfills_missing_arrays(tmp_path):
@@ -237,3 +237,96 @@ def test_migrate_session_second_run_is_idempotent(tmp_path):
     assert result2["n_legacy_converted"] == 0
     cls_after = np.load(session_dir / "output" / "gt_class_ids.npy")
     assert cls_after.tolist() == [-1, 2]
+
+
+def test_strip_orphaned_presegments_no_instances_doc(tmp_path):
+    # No instances_gt.json at all -> must skip, strip nothing
+    session_dir = tmp_path / "sessions" / "s1"
+    (session_dir / "output").mkdir(parents=True)
+    np.save(session_dir / "output" / "gt_class_ids.npy", np.array([4, 4, 2], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_segment_ids.npy", np.array([39, 39, 9], dtype=np.int32))
+    result = strip_orphaned_presegments(session_dir, n_points=3, dry_run=False)
+    assert result["skipped_no_instances_doc"] is True
+    cls = np.load(session_dir / "output" / "gt_class_ids.npy")
+    assert cls.tolist() == [4, 4, 2]   # untouched
+
+
+def test_strip_orphaned_presegments_strips_ids_missing_from_doc(tmp_path):
+    session_dir = tmp_path / "sessions" / "s1"
+    (session_dir / "output").mkdir(parents=True)
+    np.save(session_dir / "output" / "gt_class_ids.npy", np.array([4, 4, 2], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_segment_ids.npy", np.array([39, 39, 9], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_point_category.npy", np.array([0, 0, 0], dtype=np.int8))
+    np.save(session_dir / "output" / "gt_point_component_ids.npy", np.array([0, 0, 0], dtype=np.int16))
+    (session_dir / "output" / "gt_segment_metadata.json").write_text(json.dumps({
+        "n_points": 3, "segments": [
+            {"gt_id": 39, "class_id": 4, "n_points": 2},
+            {"gt_id": 9, "class_id": 2, "n_points": 1},
+        ], "review_blobs": [],
+    }))
+    # instances_gt.json has a row for segId 9 but NOT for segId 39 -- 39 is orphaned
+    (session_dir / "instances_gt.json").write_text(json.dumps({
+        "scene": "x", "kind": "gt",
+        "instances": [{"id": "a", "kind": "pointset", "segId": 9, "cls": "pipe", "confirmed": True}],
+    }))
+    result = strip_orphaned_presegments(session_dir, n_points=3, dry_run=False)
+    assert result["n_orphaned_ids"] == 1
+    assert result["orphaned_ids"] == [39]
+    assert result["n_points_stripped"] == 2
+    cls = np.load(session_dir / "output" / "gt_class_ids.npy")
+    inst = np.load(session_dir / "output" / "gt_segment_ids.npy")
+    comp = np.load(session_dir / "output" / "gt_point_component_ids.npy")
+    assert cls.tolist() == [-1, -1, 2]
+    assert inst.tolist() == [-1, -1, 9]
+    assert comp.tolist() == [-1, -1, 0]   # component cleared for stripped points
+    meta = json.loads((session_dir / "output" / "gt_segment_metadata.json").read_text())
+    assert [s["gt_id"] for s in meta["segments"]] == [9]   # stale entry for 39 removed
+    assert meta["review_blobs"] == []   # NOT treated as a review blob
+
+
+def test_strip_orphaned_presegments_dry_run_writes_nothing(tmp_path):
+    session_dir = tmp_path / "sessions" / "s1"
+    (session_dir / "output").mkdir(parents=True)
+    np.save(session_dir / "output" / "gt_class_ids.npy", np.array([4], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_segment_ids.npy", np.array([39], dtype=np.int32))
+    (session_dir / "instances_gt.json").write_text(json.dumps({"scene": "x", "kind": "gt", "instances": []}))
+    result = strip_orphaned_presegments(session_dir, n_points=1, dry_run=True)
+    assert result["n_orphaned_ids"] == 1
+    cls = np.load(session_dir / "output" / "gt_class_ids.npy")
+    assert cls.tolist() == [4]   # unchanged -- dry run wrote nothing
+
+
+def test_strip_orphaned_presegments_leaves_non_orphaned_untouched(tmp_path):
+    # A session with a mix: instance 5 has a real instances_gt.json row (not
+    # orphaned) and must be completely unaffected; instance 39 is orphaned.
+    session_dir = tmp_path / "sessions" / "s1"
+    (session_dir / "output").mkdir(parents=True)
+    np.save(session_dir / "output" / "gt_class_ids.npy", np.array([4, 2, 2], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_segment_ids.npy", np.array([39, 5, 5], dtype=np.int32))
+    (session_dir / "instances_gt.json").write_text(json.dumps({
+        "scene": "x", "kind": "gt",
+        "instances": [{"id": "a", "kind": "pointset", "segId": 5, "cls": "pipe", "confirmed": False}],
+    }))
+    strip_orphaned_presegments(session_dir, n_points=3, dry_run=False)
+    cls = np.load(session_dir / "output" / "gt_class_ids.npy")
+    inst = np.load(session_dir / "output" / "gt_segment_ids.npy")
+    assert cls.tolist() == [-1, 2, 2]
+    assert inst.tolist() == [-1, 5, 5]
+
+
+def test_strip_orphaned_presegments_surfaces_nonnone_category(tmp_path):
+    # An orphaned point that unexpectedly carries a non-none category must be
+    # surfaced in the result, not silently overwritten or crashed on.
+    session_dir = tmp_path / "sessions" / "s1"
+    (session_dir / "output").mkdir(parents=True)
+    np.save(session_dir / "output" / "gt_class_ids.npy", np.array([4, 2], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_segment_ids.npy", np.array([39, 5], dtype=np.int32))
+    np.save(session_dir / "output" / "gt_point_category.npy", np.array([1, 0], dtype=np.int8))  # artifact
+    (session_dir / "instances_gt.json").write_text(json.dumps({
+        "scene": "x", "kind": "gt",
+        "instances": [{"id": "a", "kind": "pointset", "segId": 5, "cls": "pipe", "confirmed": False}],
+    }))
+    result = strip_orphaned_presegments(session_dir, n_points=2, dry_run=False)
+    assert result["orphaned_with_nonnone_category"] == 1
+    cats = np.load(session_dir / "output" / "gt_point_category.npy")
+    assert cats.tolist() == [1, 0]   # category left untouched by this function

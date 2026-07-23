@@ -7,7 +7,14 @@ id — including 6 — with no grandfather path. Every other already-labeled
 point (any class id other than 6, including the other frozen legacy ids
 0/3/5/13, which stay readable-but-unassignable) is untouched byte-for-byte.
 
-    .venv/bin/python scripts/migrate_eval_invariants.py <scan_dir> <session_id> [--dry-run]
+Optionally (--strip-orphaned-presegments), also strips a separate, later-
+discovered issue: instance ids present in the gt arrays with a real class but
+NO corresponding row in instances_gt.json — raw presegment suggestions that
+were baked into "confirmed" GT by old/buggy behavior, never actually
+confirmed via the labeler's apply/confirm workflow. These are reset to
+unlabeled (class=-1, instance=-1), NOT converted to review blobs.
+
+    .venv/bin/python scripts/migrate_eval_invariants.py <scan_dir> <session_id> [--dry-run] [--strip-orphaned-presegments]
 """
 from __future__ import annotations
 
@@ -121,12 +128,86 @@ def migrate_session(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
     return result
 
 
+def strip_orphaned_presegments(session_dir: Path, n_points: int, *, dry_run: bool) -> dict:
+    """Strip "orphaned" instance ids back to unlabeled: instance ids present in
+    the gt arrays with a real (non -1) class but with NO corresponding row in
+    that session's instances_gt.json. Investigation confirmed these are raw
+    presegment suggestions (segment ids + classes copied straight from
+    prelabel/<preseg_id>/segment_summary.json) that were baked into the
+    "confirmed" GT arrays by old/buggy pre-instances_gt.json behavior — they
+    never went through the labeler's apply/confirm workflow, so they are not
+    real ground truth.
+
+    A completely MISSING instances_gt.json is a different, more dangerous case
+    (it can't distinguish "every array instance is orphaned" from "no
+    instances_gt.json was ever produced for this session") and is deliberately
+    NOT handled here — it's left for separate human review, so this function
+    strips nothing and reports skipped_no_instances_doc.
+    """
+    instances_gt_path = session_dir / "instances_gt.json"
+    if not instances_gt_path.exists():
+        return {"skipped_no_instances_doc": True}
+
+    out = session_dir / "output"
+    class_ids = np.load(out / "gt_class_ids.npy")
+    instance_ids = np.load(out / "gt_segment_ids.npy")
+
+    instances_gt = json.loads(instances_gt_path.read_text())
+    doc_seg_ids = {int(inst["segId"]) for inst in instances_gt.get("instances", [])
+                   if inst.get("segId") is not None}
+
+    present_ids = set(int(i) for i in np.unique(instance_ids[instance_ids >= 0]).tolist())
+    orphaned_ids = present_ids - doc_seg_ids
+    orphaned = np.isin(instance_ids, sorted(orphaned_ids)) if orphaned_ids else np.zeros(n_points, dtype=bool)
+    n_stripped = int(orphaned.sum())
+
+    categories_path = out / "gt_point_category.npy"
+    n_nonnone_category = 0
+    if categories_path.exists() and n_stripped:
+        categories = np.load(categories_path)
+        n_nonnone_category = int((categories[orphaned] != CATEGORY_NONE).sum())
+
+    result = {
+        "n_orphaned_ids": len(orphaned_ids),
+        "orphaned_ids": sorted(orphaned_ids),
+        "n_points_stripped": n_stripped,
+        "orphaned_with_nonnone_category": n_nonnone_category,
+    }
+    if dry_run or not n_stripped:
+        return result
+
+    class_ids = class_ids.copy(); instance_ids = instance_ids.copy()
+    class_ids[orphaned] = -1
+    instance_ids[orphaned] = -1
+
+    component_path = out / "gt_point_component_ids.npy"
+    if component_path.exists():
+        comp_ids = np.load(component_path).copy()
+        comp_ids[orphaned] = -1
+        np.save(component_path, comp_ids)
+
+    meta_path = out / "gt_segment_metadata.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        meta["segments"] = [s for s in meta.get("segments", [])
+                            if int(s.get("gt_id", -1)) not in orphaned_ids]
+        meta_path.write_text(json.dumps(meta, indent=2))
+
+    np.save(out / "gt_class_ids.npy", class_ids)
+    np.save(out / "gt_segment_ids.npy", instance_ids)
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scan_dir", type=Path)
     ap.add_argument("session_id")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--strip-orphaned-presegments", action="store_true",
+                    help="also strip never-confirmed orphaned presegment instances "
+                         "(instance ids in the gt arrays with no instances_gt.json row) "
+                         "back to unlabeled; opt-in, additive to the class-6 migration above")
     a = ap.parse_args()
 
     meta = json.loads((a.scan_dir / "meta.json").read_text())
@@ -136,6 +217,17 @@ def main() -> int:
     print(f"{'[dry-run] ' if a.dry_run else ''}{a.scan_dir.name}/{a.session_id}: "
           f"converted {result['n_legacy_converted']} legacy class-6 points "
           f"(instances {result['converted_instance_ids']})")
+
+    if a.strip_orphaned_presegments:
+        strip_result = strip_orphaned_presegments(session_dir, n_points, dry_run=a.dry_run)
+        if strip_result.get("skipped_no_instances_doc"):
+            print(f"{'[dry-run] ' if a.dry_run else ''}{a.scan_dir.name}/{a.session_id}: "
+                  f"no instances_gt.json -- skipped orphaned-presegment strip")
+        else:
+            print(f"{'[dry-run] ' if a.dry_run else ''}{a.scan_dir.name}/{a.session_id}: "
+                  f"stripped {strip_result['n_points_stripped']} orphaned-presegment points "
+                  f"(instances {strip_result['orphaned_ids']}"
+                  f"{', ' + str(strip_result['orphaned_with_nonnone_category']) + ' had non-none category' if strip_result['orphaned_with_nonnone_category'] else ''})")
     return 0
 
 
