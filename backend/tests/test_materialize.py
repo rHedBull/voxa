@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from labeling.materialize import (
     materialize_downsample,
     collect_volumes,
@@ -9,6 +10,8 @@ from labeling.materialize import (
     loa_band,
     materialize,
     MaterializeCtx,
+    prism_aabb,
+    raw_region_sample_spacing,
 )
 
 
@@ -551,3 +554,59 @@ def test_replay_skew_beam_labels_exactly_the_swept_volume():
     assert (inst[strict_inside] == 11).all()
     assert (cls[strict_inside] == 6).all()
     assert (inst[strict_outside] != 11).all()
+
+
+# ---------------------------------------------------------------------------
+# Raw-source region density (region-density-raw-source spec, Task 1)
+# ---------------------------------------------------------------------------
+
+def test_prism_aabb_covers_footprint_and_height():
+    prism = {"polygon": [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
+             "y0": -0.5, "height": 3.0}
+    aabb_min, aabb_max = prism_aabb(prism)
+    np.testing.assert_allclose(aabb_min, [0.0, -0.5, 0.0])
+    np.testing.assert_allclose(aabb_max, [2.0, 2.5, 1.0])
+
+
+def test_prism_aabb_handles_negative_and_unordered_polygon_coords():
+    prism = {"polygon": [[3.0, -2.0], [-1.0, 5.0], [0.0, 0.0]],
+             "y0": 10.0, "height": 1.5}
+    aabb_min, aabb_max = prism_aabb(prism)
+    np.testing.assert_allclose(aabb_min, [-1.0, 10.0, -2.0])
+    np.testing.assert_allclose(aabb_max, [3.0, 11.5, 5.0])
+
+
+def test_raw_region_sample_spacing_measures_only_in_prism_points(tmp_path):
+    # A dense 5mm grid INSIDE the prism, plus a sparse decoy cluster OUTSIDE
+    # the prism's AABB, plus a dense cluster inside the AABB but outside the
+    # exact (triangular) prism footprint — only the first group should drive
+    # the measured spacing.
+    inside = [[x * 0.005, 0.0, z * 0.005] for x in range(20) for z in range(20)]
+    outside_aabb = [[50.0, 0.0, 50.0], [51.0, 0.0, 51.0]]
+    # Inside the AABB (x,z in [-0.5, 1.5]) but outside the triangular prism
+    # footprint below (x + z < 1 is the interior), at a much sparser (20mm)
+    # spacing that would fail the gate if wrongly included. Verified against
+    # shapes.py::_point_in_polygon_xz's even-odd ray-cast directly.
+    outside_prism_inside_aabb = [[1.4 + i * 0.02, 0.0, 1.4] for i in range(5)]
+    points = inside + outside_aabb + outside_prism_inside_aabb
+    las_path = tmp_path / "region_raw.las"
+    _write_tiny_las_at(las_path, points)
+
+    prism = {"polygon": [[-0.5, -0.5], [1.5, -0.5], [-0.5, 1.5]],
+             "y0": -0.1, "height": 0.2}
+
+    p50, p90 = raw_region_sample_spacing(
+        las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert p50 == pytest.approx(0.005, abs=1e-3)
+    assert p90 == pytest.approx(0.005, abs=1e-3)
+
+
+def test_raw_region_sample_spacing_empty_region_returns_zero(tmp_path):
+    points = [[50.0, 0.0, 50.0], [51.0, 0.0, 51.0]]
+    las_path = tmp_path / "region_raw_empty.las"
+    _write_tiny_las_at(las_path, points)
+    prism = {"polygon": [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+             "y0": -0.5, "height": 1.0}
+    p50, p90 = raw_region_sample_spacing(
+        las_path, prism, scene_is_z_up=False, offset=np.zeros(3))
+    assert (p50, p90) == (0.0, 0.0)
