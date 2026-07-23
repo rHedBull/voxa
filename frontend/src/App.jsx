@@ -99,6 +99,13 @@ function MainApp() {
   // no pick is a self-echo and is skipped.
   const loadedSceneRef = useRefApp(null);
   const loadedModeRef = useRefApp(null);
+  // Latest-wins token for the load effect. Responses apply only while their
+  // token is still current; a new REAL load bumps it. Deliberately NOT an
+  // effect-cleanup cancel flag: the scene-reset effect's setActiveSessionId
+  // (null) re-fires the load effect, and a cleanup would kill the in-flight
+  // load of a run the guard below then skips — dropping the response and
+  // leaving the UI stuck on "Loading…" with the old scene.
+  const loadTokenRef = useRefApp(0);
   // Camera nav mode is shared across the three modes so toggling Inspect →
   // Label preserves whether the user was orbiting or walking.
   const [navMode, setNavMode] = useStateApp('orbit');
@@ -225,7 +232,8 @@ function MainApp() {
     }
     loadedSceneRef.current = activeScene;
     loadedModeRef.current = t.mode;
-    let cancel = false;
+    const token = ++loadTokenRef.current;
+    const stale = () => token !== loadTokenRef.current;
     setLoading(true);
     setLoadError(null);
     setPinError(null);
@@ -249,7 +257,7 @@ function MainApp() {
         ]);
         return [c, gtDoc, segLive];
       }).then(([c, gtDoc, segLive]) => {
-      if (cancel) return;
+      if (stale()) return;
       setCloud(c);
       setSessions(c.sessions);
       setActiveSessionId(c.sessionId);
@@ -312,7 +320,7 @@ function MainApp() {
       // This is separate from the segLive payload (which carries hulls/labels)
       // and merges scalar fields onto the local segState owned by the FE.
       getSegmentState().then((srv) => {
-        if (cancel) return;
+        if (stale()) return;
         setSegState((s) => (s ? hydrateFromServerState(s, srv) : s));
       }).catch(() => {});
 
@@ -323,7 +331,7 @@ function MainApp() {
 
       setLoading(false);
     }).catch((e) => {
-      if (cancel) return;
+      if (stale()) return;
       // Pin mismatch / corrupt session: surface a blocking banner and leave
       // the scene unloaded so the user can pick another session. The failed
       // session must NOT stay "active" — otherwise switchSession's equality
@@ -336,7 +344,7 @@ function MainApp() {
       }
       setLoading(false);
     });
-    return () => { cancel = true; };
+    // No cleanup: superseded loads are dropped by the token check above.
     // activeSessionId is in the deps so an explicit session pick (which sets
     // the ref and bumps activeSessionId) re-runs this effect and reloads.
   }, [activeScene, t.mode, activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
