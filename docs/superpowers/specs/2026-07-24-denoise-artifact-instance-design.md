@@ -105,6 +105,9 @@ Introduce a small helper alongside `reviewBlobRow` (e.g. `artifactBlobRow(segId,
 source)`) rather than overloading the review row, so the two category-blob kinds stay
 readable. Both are class-less rows (`cls: null`) that the Instances panel already
 knows how to render; the only difference is label + color + which category they carry.
+For symmetry with the existing `REVIEW_COLOR`/`REVIEW_LABEL` exports
+(`point-categories.js:32-33`), add `ARTIFACT_COLOR` (`#ff4dd2`) / `ARTIFACT_LABEL`
+(`Artifact`) exports and consume those rather than hardcoding.
 
 The row's `source` stays `'denoise'`. Confirm/reopen, focus, rename, delete, and the
 re-run/replace wiring (`denoiseInstId` → `replace_inst`) are all inherited unchanged.
@@ -132,6 +135,17 @@ when `hideConfirmed` is on, drop overlay `mask[p]` for any `p` where
 confirm. `confirmedPointsetHideMask` already excludes the *selected* instance
 (`mode-label.jsx:826`), so re-selecting a confirmed blob brings its dots back —
 consistent with how the base-cloud hide already behaves.
+
+Two implementation notes (from spec review):
+- **Hoist required.** `confirmedPointsetHideMask` is a `useMemo` defined at line 819,
+  *below* this effect (line 262). Referencing it in the effect's deps as-is is a
+  temporal-dead-zone `ReferenceError`. Hoist the memo above line 262 — its deps
+  (`instances, selectedId, cloud, segState?.instanceFull`) are all in scope there, so
+  the move is clean. `hideConfirmed` (line 137) is already declared earlier.
+- **Apply once.** The effect has three emit points (SAM branch ~308, no-selection
+  ~313, selection ~333). Mutate `catOverlay.mask` immediately after
+  `buildCategoryOverlay` (line 275) so all three paths inherit the drop uniformly,
+  rather than patching each return.
 
 This fix is not artifact-specific; it also fixes the identical symptom on
 `excluded_review` review blobs (the reported "Review #41 doesn't hide" case).
