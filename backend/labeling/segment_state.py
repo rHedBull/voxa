@@ -148,6 +148,7 @@ class SegmentSession:
     def apply_category(
         self, indices: np.ndarray, category,
         protect_instances: Optional[list[int]] = None,
+        allocate_instance: Optional[bool] = None,
     ) -> dict:
         """Mark points on the annotation-status axis (eval-labeling phase 2).
 
@@ -156,6 +157,12 @@ class SegmentSession:
         erase to (-1, -1), excluded_review erases the class and allocates one
         fresh instance id for the whole mark — a *review blob* (the spec's
         "instance-shaped blobs, never a point spray").
+
+        allocate_instance overrides whether a fresh instance id (a "blob") is
+        minted for the mark: default None keeps today's category-driven
+        behaviour (only excluded_review blobs), while True/False force a blob
+        or not regardless of category — used e.g. by the denoise route to
+        mint an artifact blob.
 
         protect_instances behaves exactly as on apply_reassign: points that
         belong to a confirmed instance are dropped before the write.
@@ -173,8 +180,8 @@ class SegmentSession:
         n_protected = n_candidate - int(indices.size)
         if indices.size == 0:
             return {"op": "set_category", "n_affected": 0, "n_protected": n_protected}
-        out = self._apply("set_category", indices, dict(
-            category=cat, blob=(cat == CATEGORY_EXCLUDED_REVIEW)))
+        blob = (cat == CATEGORY_EXCLUDED_REVIEW) if allocate_instance is None else bool(allocate_instance)
+        out = self._apply("set_category", indices, dict(category=cat, blob=blob))
         out["n_protected"] = n_protected
         return out
 
