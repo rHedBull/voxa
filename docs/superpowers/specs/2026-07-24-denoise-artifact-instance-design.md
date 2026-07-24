@@ -136,37 +136,69 @@ consistent with how the base-cloud hide already behaves.
 This fix is not artifact-specific; it also fixes the identical symptom on
 `excluded_review` review blobs (the reported "Review #41 doesn't hide" case).
 
-### 4. Save / GT semantics — strip the instance id to −1
+### 4. Save / GT semantics — instance-id strip (already exists) + invariant 9
 
-The labeler guide requires artifact points to be `instance −1` in final GT. The
-existing save path already handles this correctly *for free* via its class-less
-strip: an artifact blob is `class −1`, so at save its instance id is stripped to −1
-in `gt_segment_ids.npy`, leaving `(class −1, instance −1, category=artifact)`.
+The labeler guide requires artifact points to be `instance −1` in final GT.
 
-Concretely:
+**Instance-id strip — already handled, verified.** The save route
+(`backend/routes/segment.py::segment_save`, lines 474-478) already strips *every*
+class-less instance id to −1 before it writes GT:
 
-- `review_blob_summary` (`backend/labeling/segment_io.py:112`) records only
-  `(category == EXCLUDED_REVIEW) & (inst >= 0)` into the `review_blobs` metadata
-  table. Artifact blobs are **not** captured there — correct, they are not review
-  blobs and must not survive as GT instances.
-- Because the artifact blob's id is stripped from `gt_segment_ids` and is not in the
-  `review_blobs` universe, **eval-invariant 3** (every id in `gt_segment_ids` has an
-  `instances_gt.json`/`review_blobs` entry) never sees it → passes.
-- `gt_point_category.npy` records `artifact` for those points (unchanged save code —
-  it already persists the full category array).
-- The `categories` histogram in `gt_segment_metadata.json` counts them under
-  `artifact`; they do **not** count against the `excluded_review` 3% budget
-  (eval-invariant 2).
+```python
+unclassified = (out_inst >= 0) & (out_class == -1)
+out_inst[unclassified] = np.int32(-1)          # generic — all class-less, any category
+```
 
-Verify (do not assume) that the class-less strip actually nulls the artifact blob's
-instance id at save — if the current strip only special-cases review blobs rather
-than stripping *all* class-less instances, extend it to strip class-less artifact
-instances to −1 as well. This is the one save-path spot to confirm during
-implementation; the invariant behavior above is contingent on it.
+`out_inst` is what's passed to `save_labels(instance_ids=out_inst)` (line 496), so the
+strip applies to **both** the written `gt_segment_ids.npy` **and** the arrays the eval
+invariants check. An artifact blob is `class −1`, so its id is stripped here, is absent
+from `gt_segment_ids`, and is not in `review_blobs` (which `review_blob_summary` fills
+only for `excluded_review`) → **eval-invariant 3 passes with no new code.** (My earlier
+read of `segment_io.py:306` missed this route-layer strip; there is no second strip to
+add.) The `categories` histogram counts these points under `artifact`, and they do
+**not** count against the `excluded_review` 3% budget (eval-invariant 2). Working
+arrays are untouched, so the confirmable blob row round-trips across reload.
 
-Working-array persistence (`working_categories.npy`, `working_*.npy`) is unchanged:
-the artifact blob's `(class −1, instance=id, category=artifact)` round-trips across
-reload like any other instance, so the confirmable row survives a session resume.
+**Invariant 9 — the real save-path work.** The blob is *confirmable*, and that is where
+it breaks today. `check_confirmed_reconciliation` (eval-invariant 9,
+`scan_schema/eval_invariants.py`) raises on a confirmed class-less instance:
+
+```
+"eval-invariant 9: instance … is confirmed but has no class (review blobs cannot be confirmed)"
+```
+
+The save route feeds it `instances_doc=load_instances_for_invariants(seg.session_dir)`
+(`segment.py:507`), which reads `instances_gt.json` and copies each row's `confirmed`
+verbatim (`backend/labeling/instances_doc.py`). Since the frontend's `toggleConfirm`
+sets `confirmed:true` on any row including class-less blobs, **confirming an artifact
+(or review) blob → invariant 9 → HTTP 422 → save fails.** This is a *pre-existing*
+latent bug for `excluded_review` review blobs; the artifact workflow just makes it the
+common case.
+
+Resolution — **`confirmed` is a session-only handle for class-less blobs, never
+persisted into the GT invariant view.** This is exactly the guideline's model: artifact
+is "label it, never delete it," not a confirmed instance; a review blob "cannot be
+confirmed." So the fix is in `load_instances_for_invariants` — force `confirmed=False`
+for any class-less row before the invariants see it:
+
+```python
+cls = inst.get("cls")
+result[int(seg_id)] = {
+    "class_id": cls,
+    # A class-less blob (artifact/review) is a session-only review handle, never a
+    # confirmed GT instance (labeler guide; eval-inv 9). Its in-session `confirmed`
+    # drives hide/protect only; it must not reach the invariant as confirmed.
+    "confirmed": bool(inst.get("confirmed", False)) and cls is not None,
+}
+```
+
+This keeps the in-session UX intact — the frontend still sets `confirmed:true` on the
+blob, which drives the base-cloud hide, the §3 overlay hide, and `protect_instances`
+(next-run exclusion) — while the saved GT and the invariant layer correctly see no
+confirmed class-less instance. It also **retroactively fixes the latent review-blob
+invariant-9 bug**, the same way the §3 hide fix fixes review blobs too. No frontend
+change to `toggleConfirm` is needed (in-session confirm stays), and nothing about the
+persisted `instances_gt.json` changes — only the invariant-feeding view is normalized.
 
 ## Data flow
 
@@ -192,9 +224,10 @@ re-run at a new σ (unconfirmed row present)
 re-run after confirming (catch a new area)
   → confirmed points hidden + protected → excluded from the new catch
 
-save (Ctrl+S)
-  → gt_segment_ids: artifact blob id stripped to −1  (class-less)
-  → gt_point_category.npy: artifact for those points
+save (Ctrl+S)  [blob may be confirmed or not]
+  → segment.py:474-478 strips the class-less blob id → −1 (existing, generic)
+  → load_instances_for_invariants normalizes confirmed=False on class-less rows
+  → gt_segment_ids: −1 at those points; gt_point_category.npy: artifact
   → eval invariants 1–9 pass; not in review_blobs; no 3% budget hit
 ```
 
@@ -217,9 +250,13 @@ save (Ctrl+S)
 - `_denoise_core` returns an artifact-blob `instance_id`; the flagged points carry
   `category=artifact`; `replace_inst` erases the prior artifact blob before
   recomputing.
-- Save round-trip: after a denoise + save, `gt_segment_ids` has `−1` at the flagged
+- Save round-trip, **unconfirmed** blob: `gt_segment_ids` has `−1` at the flagged
   points, `gt_point_category.npy` has `artifact` there, `review_blobs` is empty of
   them, and all 9 eval invariants pass (invariant 2 budget unaffected).
+- Save round-trip, **confirmed** blob: same as above **and** invariant 9 passes —
+  `load_instances_for_invariants` normalizes the class-less confirmed row to
+  `confirmed=False`. Add the sibling regression: a **confirmed `excluded_review`
+  review blob** also saves (the pre-existing invariant-9 bug this fix closes).
 
 **Frontend** (`frontend/src/`):
 - `runDenoise` appends a magenta, class-less "Artifact" row and writes
@@ -232,8 +269,10 @@ save (Ctrl+S)
 
 - `backend/labeling/segment_state.py` — `apply_category` gains `allocate_instance`.
 - `backend/routes/segment.py` — `_denoise_core` marks `CATEGORY_ARTIFACT` blob.
-- `backend/labeling/segment_io.py` — confirm/extend the class-less strip for artifact
-  instances (only if not already generic).
+- `backend/labeling/instances_doc.py` — `load_instances_for_invariants` normalizes
+  `confirmed=False` on class-less rows so a confirmed artifact/review blob passes
+  eval-invariant 9 (new; see §4). *(No `segment_io.py` change — the instance-id strip
+  already exists at `backend/routes/segment.py:474-478`.)*
 - `frontend/src/mode-label.jsx` — `runDenoise` writes artifact + `artifactBlobRow`;
   category-overlay effect suppresses confirmed-hidden points.
 - Tests in `backend/tests/` and `frontend/src/`.
