@@ -1,7 +1,7 @@
 # backend/tests/test_denoise_routes.py
 import numpy as np
 from fastapi.testclient import TestClient
-from labeling.categories import CATEGORY_EXCLUDED_REVIEW
+from labeling.categories import CATEGORY_ARTIFACT, CATEGORY_EXCLUDED_REVIEW
 from labeling.segment_state import SegmentSession
 
 
@@ -37,7 +37,7 @@ def _client_with_cloud():
     return TestClient(main.app), seg
 
 
-def test_denoise_materializes_review_blob():
+def test_denoise_materializes_artifact_blob_specks():
     client, seg = _client_with_cloud()
     r = client.post("/api/segment/denoise", json={"std_ratio": 2.0})
     assert r.status_code == 200
@@ -45,12 +45,37 @@ def test_denoise_materializes_review_blob():
     assert body["n_affected"] == 3            # the three specks
     inst = body["instance_id"]
     speck_idx = [400, 401, 402]
-    # Phase 2: the specks are a class-less review blob on the category axis,
-    # never the banned archive class id 6.
-    assert bool((seg.categories[speck_idx] == CATEGORY_EXCLUDED_REVIEW).all())
+    # Sensor noise is an artifact, not a review blob: the specks carry the
+    # `artifact` category, never the banned archive class id 6.
+    assert bool((seg.categories[speck_idx] == CATEGORY_ARTIFACT).all())
     assert bool((seg.class_ids[speck_idx] == -1).all())
     assert bool((seg.instance_ids[speck_idx] == inst).all())
     assert int((seg.class_ids == 6).sum()) == 0
+
+
+def test_denoise_materializes_artifact_blob():
+    from labeling.categories import CATEGORY_ARTIFACT
+    client, seg = _client_with_cloud()
+    r = client.post("/api/segment/denoise", json={"std_ratio": 1.0, "k": 8})
+    assert r.status_code == 200
+    body = r.json()
+    inst = body["instance_id"]
+    assert inst is not None
+    flagged = np.flatnonzero(seg.instance_ids == inst)
+    assert flagged.size == body["n_affected"] > 0
+    assert bool((seg.categories[flagged] == CATEGORY_ARTIFACT).all())
+    assert bool((seg.class_ids[flagged] == -1).all())
+
+
+def test_denoise_replace_inst_erases_prior_artifact_blob():
+    client, seg = _client_with_cloud()
+    first = client.post("/api/segment/denoise", json={"std_ratio": 1.0, "k": 8}).json()
+    inst1 = first["instance_id"]
+    assert inst1 is not None
+    second = client.post("/api/segment/denoise",
+                         json={"std_ratio": 1.2, "k": 8, "replace_inst": inst1}).json()
+    assert np.flatnonzero(seg.instance_ids == inst1).size == 0
+    assert second["instance_id"] != inst1
 
 
 def test_denoise_replace_inst_erases_prior():

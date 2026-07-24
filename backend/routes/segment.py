@@ -171,11 +171,12 @@ def _apply_shape_core(seg, shape: dict, target_inst: int, target_class: int,
 def _denoise_core(seg, req: "DenoiseRequest") -> dict:
     """Shared core for /denoise: run global statistical-outlier detection over
     the whole cloud and materialize the flagged points as one unconfirmed
-    review blob (Feature C). Phase 2 moved this off the class axis: it used to
-    write class `unknown` (archive id 6), which the eval-labeling spec bans in
-    new GT — the flagged points now carry the `excluded_review` category and a
-    class-less blob instance."""
-    from labeling.categories import CATEGORY_EXCLUDED_REVIEW
+    artifact blob (Feature C). Phase 2 moved this off the class axis: it used
+    to write class `unknown` (archive id 6), which the eval-labeling spec
+    bans in new GT — the flagged points now carry the `artifact` category
+    (sensor noise, per the labeler decision guide) and a class-less blob
+    instance."""
+    from labeling.categories import CATEGORY_ARTIFACT
     from labeling.outliers import statistical_outlier_indices
 
     def _empty(n_protected: int = 0) -> dict:
@@ -198,8 +199,8 @@ def _denoise_core(seg, req: "DenoiseRequest") -> dict:
     if outliers.size == 0:
         return _empty()
     out = seg.apply_category(
-        outliers.astype(np.int32), CATEGORY_EXCLUDED_REVIEW,
-        protect_instances=req.protect_instances)
+        outliers.astype(np.int32), CATEGORY_ARTIFACT,
+        allocate_instance=True, protect_instances=req.protect_instances)
     if out["n_affected"] == 0:            # everything caught was locked/confirmed
         return _empty(out.get("n_protected", 0))
     return {"instance_id": int(out["new_instance_id"]),
