@@ -1604,7 +1604,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
             <button
               className="ghost-btn"
               disabled={!activeSessionId || denoiseBusy}
-              title={activeSessionId ? 'Detect stray outlier points and stage them as Exclude'
+              title={activeSessionId ? 'Detect stray outlier points and stage them as an Artifact instance'
                                      : 'Open a session first'}
               onClick={runDenoise}>
               {denoiseBusy ? '… Detecting' : '✧ Detect outliers'}
