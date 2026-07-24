@@ -29,7 +29,8 @@ import CutModal from './cut-mode.jsx';
 import { RegionsOverlay } from './region-mode.jsx';
 import RegionPanel from './region-panel.jsx';
 import {
-  CATEGORY_EXCLUDED_REVIEW, POINT_CATEGORIES, REVIEW_COLOR, REVIEW_LABEL,
+  ARTIFACT_COLOR, ARTIFACT_LABEL, CATEGORY_ARTIFACT,
+  POINT_CATEGORIES, REVIEW_COLOR, REVIEW_LABEL,
   buildCategoryOverlay, categoryCounts,
 } from './point-categories.js';
 
@@ -48,6 +49,22 @@ function reviewBlobRow(segId, source) {
     cls: null,
     label: `${REVIEW_LABEL} #${segId}`,
     color: REVIEW_COLOR,
+    source,
+    confirmed: false,
+  };
+}
+
+// An artifact blob's Instances-panel row: identical to a review blob's, but
+// carries the artifact color/label — denoise now marks its outliers artifact
+// (no real surface) rather than excluded_review.
+function artifactBlobRow(segId, source) {
+  return {
+    id: newId(),
+    segId,
+    kind: 'pointset',
+    cls: null,
+    label: `${ARTIFACT_LABEL} #${segId}`,
+    color: ARTIFACT_COLOR,
     source,
     confirmed: false,
   };
@@ -256,6 +273,32 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     });
   }, [activeTool, setSegState]);
 
+  // Hide mask for confirmed POINTSET instances (cuboid confirmed instances
+  // are handled by confirmedCuboids' inside-test in the Viewer). Points
+  // belonging to confirmed pointsets get NaN'd just like inside-cuboid points
+  // when hideConfirmed is on. Selected confirmed pointset is excluded so
+  // re-selecting it brings the points back.
+  const confirmedPointsetHideMask = useMemoLabel(() => {
+    if (!cloud?.positions) return null;
+    const inst = segState?.instanceFull;
+    if (!inst) return null;
+    const targets = new Set();
+    for (const i of instances) {
+      if (!i.confirmed) continue;
+      if (i.id === selectedId) continue;
+      if (Number.isFinite(i.segId)) targets.add(i.segId);
+    }
+    if (targets.size === 0) return null;
+    const subN = cloud.positions.length / 3;
+    const subIdx = cloud.subsampleIdx;
+    const mask = new Uint8Array(subN);
+    for (let p = 0; p < subN; p++) {
+      const f = subIdx ? subIdx[p] : p;
+      if (targets.has(inst[f])) mask[p] = 1;
+    }
+    return mask;
+  }, [instances, selectedId, cloud, segState?.instanceFull]);
+
   // Yellow overlay for selected presegments. Recompute the per-subrow
   // mask whenever the selection or the underlying instance assignment
   // changes, then push it to the viewer's segSelection buffer.
@@ -272,7 +315,9 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     // without an overlay they would render as plain unlabeled grey — the mark
     // would be invisible. They ride the same selection-overlay buffer as every
     // other highlight; a selection drawn later in this effect wins on overlap.
-    const catOverlay = buildCategoryOverlay(segState.categoryFull, subIdx, subN);
+    const catOverlay = buildCategoryOverlay(
+      segState.categoryFull, subIdx, subN,
+      hideConfirmed ? confirmedPointsetHideMask : null);
     if (activeTool === 'sam') {
       const samIds = segState.samIds;
       const samSelection = segState.samSelection;
@@ -337,7 +382,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     // object, so array identity never changes but the object's does — a
     // category mark that touches no selection (denoise) would otherwise not
     // repaint until an unrelated change fired this effect.
-  }, [segState, cloud, viewerRef, fastMode, activeTool]);
+  }, [segState, cloud, viewerRef, fastMode, activeTool, hideConfirmed, confirmedPointsetHideMask]);
 
   // Ctrl/Cmd-click in the 3D viewport toggles selection of the presegment
   // under the cursor. Active in any tool mode whenever segment data exists.
@@ -742,8 +787,8 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         protectInstances: protectedSegIds,
       });
       // Drop the previous denoise row (its points were just erased
-      // server-side). Phase 2: the result is a REVIEW BLOB — class-less, on
-      // the category axis — not an "Exclude" class-6 instance.
+      // server-side). The result is an ARTIFACT BLOB — class-less, on the
+      // category axis (no real surface) — not an "Exclude" class-6 instance.
       const kept = instances.filter((i) => i.segId !== denoiseInstId);
       if (resp.instance_id == null) {
         onChange(kept);
@@ -752,12 +797,12 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
         const idx = resp.indices;                            // Int32Array (decoded in api.js)
         const afterClass = new Int8Array(idx.length).fill(-1);
         const afterInstance = new Int32Array(idx.length).fill(resp.instance_id);
-        const afterCategory = new Int8Array(idx.length).fill(CATEGORY_EXCLUDED_REVIEW);
+        const afterCategory = new Int8Array(idx.length).fill(CATEGORY_ARTIFACT);
         setSegState((s) => (s ? applyDelta(s, {
           indices: idx, after_class: afterClass, after_instance: afterInstance,
           after_category: afterCategory,
         }) : s));
-        onChange([...kept, reviewBlobRow(resp.instance_id, 'denoise')]);
+        onChange([...kept, artifactBlobRow(resp.instance_id, 'denoise')]);
         setDenoiseInstId(resp.instance_id);
       }
     } catch (e) {
@@ -810,32 +855,6 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     // confirmedKey transitively covers `instances`; eslint can't see that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmedKey, selectedId]);
-
-  // Hide mask for confirmed POINTSET instances (cuboid confirmed instances
-  // are handled by confirmedCuboids' inside-test in the Viewer). Points
-  // belonging to confirmed pointsets get NaN'd just like inside-cuboid points
-  // when hideConfirmed is on. Selected confirmed pointset is excluded so
-  // re-selecting it brings the points back.
-  const confirmedPointsetHideMask = useMemoLabel(() => {
-    if (!cloud?.positions) return null;
-    const inst = segState?.instanceFull;
-    if (!inst) return null;
-    const targets = new Set();
-    for (const i of instances) {
-      if (!i.confirmed) continue;
-      if (i.id === selectedId) continue;
-      if (Number.isFinite(i.segId)) targets.add(i.segId);
-    }
-    if (targets.size === 0) return null;
-    const subN = cloud.positions.length / 3;
-    const subIdx = cloud.subsampleIdx;
-    const mask = new Uint8Array(subN);
-    for (let p = 0; p < subN; p++) {
-      const f = subIdx ? subIdx[p] : p;
-      if (targets.has(inst[f])) mask[p] = 1;
-    }
-    return mask;
-  }, [instances, selectedId, cloud, segState?.instanceFull]);
 
   // Stats from Viewer's confirmed-mask pass: how many points fall inside any
   // confirmed cuboid (unique), regardless of show/hide toggle.
