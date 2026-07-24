@@ -142,3 +142,27 @@ def test_denoise_selection_instance_erases_strays():
     # strays back to unlabeled; core still labelled with the instance
     assert bool((seg.instance_ids[strays] == -1).all())
     assert int((seg.instance_ids == sid).sum()) == 120
+
+
+def test_denoise_replace_inst_skips_a_protected_instance():
+    """Confirmed = locked: a re-run must NEVER erase an instance that is in
+    protect_instances, even when it's passed as replace_inst. Guards the
+    'confirm the artifact, re-run' workflow from destroying/reopening it."""
+    client, seg = _client_with_cloud()
+    first = client.post("/api/segment/denoise", json={"std_ratio": 1.0, "k": 8}).json()
+    inst1 = first["instance_id"]
+    assert inst1 is not None
+    before = np.flatnonzero(seg.instance_ids == inst1)
+    assert before.size > 0
+    # inst1 is now "confirmed" (protected). A re-run that names it as replace_inst
+    # must skip the erase — its points survive and keep their instance id.
+    second = client.post("/api/segment/denoise", json={
+        "std_ratio": 1.2, "k": 8, "replace_inst": inst1, "protect_instances": [inst1],
+    }).json()
+    after = np.flatnonzero(seg.instance_ids == inst1)
+    assert after.size == before.size, "protected instance was erased by replace_inst"
+    # a new run never steals the protected instance's points
+    if second["instance_id"] is not None:
+        assert second["instance_id"] != inst1
+        new_pts = np.flatnonzero(seg.instance_ids == second["instance_id"])
+        assert np.intersect1d(new_pts, before).size == 0
