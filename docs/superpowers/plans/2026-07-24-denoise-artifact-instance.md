@@ -165,7 +165,11 @@ Update the function docstring (it currently says "review blob" / "excluded_revie
 - [ ] **Step 4: Run to verify pass**
 
 Run: `.venv/bin/pytest backend/tests/test_denoise_routes.py -v`
-Expected: PASS. (If an old test asserted `CATEGORY_EXCLUDED_REVIEW` for global denoise, update it to `CATEGORY_ARTIFACT` — do NOT touch `/denoise-selection` tests.)
+Expected: PASS. **Certainty, not a maybe:** `test_denoise_materializes_review_blob`
+(test_denoise_routes.py:40-53) asserts `CATEGORY_EXCLUDED_REVIEW` and WILL fail after
+this change — rename/replace it with the artifact assertion (and reconcile the near-
+duplicate `test_denoise_replace_inst_erases_prior` vs the new replace test; don't leave
+two). Do NOT touch `/denoise-selection` tests.
 
 - [ ] **Step 5: Commit**
 
@@ -255,6 +259,14 @@ Follow the existing save-round-trip pattern in `test_segment_io.py` (a `save_lab
 ```
 
 Construct `instances_doc` as the *loaded* dict (call `load_instances_for_invariants` on a tmp session dir holding the confirmed doc) so the normalization from Task 3 is exercised end-to-end. Strip the class-less instance ids the same way `segment_save` does (`out_inst[(inst>=0)&(cls<0)] = -1`) before passing to `save_labels`, matching the real call site.
+
+**Critical for the review-blob regression:** the `excluded_review` case MUST pass
+`review_blobs=review_blob_summary(seg.categories, seg.instance_ids)` to `save_labels`
+(exactly as `segment_save` does at segment.py:505) — otherwise it fails **eval-invariant
+3** (`n_review_points ≠ n_accounted`), NOT invariant 9, which is a confusing failure that
+looks like the fix didn't work. The **artifact** case does NOT need it (category is
+`artifact`, so `review_blob_summary` returns `[]`). Template to copy:
+`test_save_labels_rejects_confirmed_instance_with_category` (test_segment_io.py:421-432).
 
 - [ ] **Step 2: Run to verify it fails** (before Task 3 it would 422; run after Tasks 1-3, it should pass — if the harness ran this first it fails on `EvalInvariantError`).
 
@@ -371,6 +383,7 @@ No new unit test (this is component-internal wiring); it is browser-verified in 
 - Import `ARTIFACT_COLOR, ARTIFACT_LABEL, CATEGORY_ARTIFACT` from `point-categories.js` (line ~32 import block).
 - Add `artifactBlobRow(segId, source)` beside `reviewBlobRow` (line ~43): identical shape, but `label: ARTIFACT_LABEL`, `color: ARTIFACT_COLOR`.
 - In `runDenoise` (line ~753-760): fill `CATEGORY_ARTIFACT` instead of `CATEGORY_EXCLUDED_REVIEW`, and append `artifactBlobRow(resp.instance_id, 'denoise')` instead of `reviewBlobRow(...)`. Update the nearby comment ("REVIEW BLOB" → "ARTIFACT BLOB").
+- **Drop the now-dead import:** after this swap, `CATEGORY_EXCLUDED_REVIEW` (imported at line ~32) has no remaining use in `mode-label.jsx` — remove it from the import. Keep `REVIEW_COLOR`/`REVIEW_LABEL`/`reviewBlobRow` (still used by the class-picker Review path at ~1156/1267).
 
 - [ ] **Step 2: Hoist the hide memo + wire it into the overlay effect**
 
