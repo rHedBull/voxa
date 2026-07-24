@@ -186,7 +186,11 @@ def _denoise_core(seg, req: "DenoiseRequest") -> dict:
     # Backend-owned re-run replacement: erase the prior denoise instance's
     # points to unlabeled BEFORE recomputing (deleteInstance on the frontend
     # only drops the row, never the working-array labels).
-    if req.replace_inst is not None:
+    # Confirmed = locked: never erase an instance the caller marked protected,
+    # even when it's named as replace_inst. Otherwise "confirm the artifact,
+    # then re-run" would destroy/reopen the confirmed instance (the erase runs
+    # before apply_category, so protect_instances alone can't save it).
+    if req.replace_inst is not None and int(req.replace_inst) not in set(req.protect_instances):
         old = np.flatnonzero(seg.instance_ids == int(req.replace_inst))
         if old.size:
             seg.apply_reassign(old, target_inst=None, target_class=None)
