@@ -37,6 +37,15 @@ export const REVIEW_LABEL = 'Review';
 export const ARTIFACT_COLOR = '#ff4dd2';
 export const ARTIFACT_LABEL = 'Artifact';
 
+// Class-column label for a class-less blob row (artifact/review). Keyed off the
+// row's persisted `color` rather than a dedicated field, because the Cuboid
+// schema drops unknown keys (extra='ignore'), so a new field wouldn't survive
+// the instances_gt.json round-trip — `color` does. Unknown/legacy colors fall
+// back to Review (the only blob kind before artifact blobs existed).
+export function blobClassLabel(color) {
+  return color === ARTIFACT_COLOR ? ARTIFACT_LABEL : REVIEW_LABEL;
+}
+
 // Normalized [r,g,b] per category value (index 0 = `none`, unused).
 const CATEGORY_RGB = (() => {
   const hexToRGB = (hex) => [

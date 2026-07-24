@@ -30,7 +30,7 @@ import { RegionsOverlay } from './region-mode.jsx';
 import RegionPanel from './region-panel.jsx';
 import {
   ARTIFACT_COLOR, ARTIFACT_LABEL, CATEGORY_ARTIFACT,
-  POINT_CATEGORIES, REVIEW_COLOR, REVIEW_LABEL,
+  POINT_CATEGORIES, REVIEW_COLOR, REVIEW_LABEL, blobClassLabel,
   buildCategoryOverlay, categoryCounts,
 } from './point-categories.js';
 
@@ -869,7 +869,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
       const cls = classes.find((c) => c.id === inst.cls);
       return (
         (inst.label || '').toLowerCase().includes(q) ||
-        (cls?.label || inst.cls || REVIEW_LABEL).toLowerCase().includes(q) ||
+        (cls?.label || inst.cls || blobClassLabel(inst.color)).toLowerCase().includes(q) ||
         (inst.id || '').toLowerCase().includes(q)
       );
     });
@@ -1929,7 +1929,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                   <span className="inst-dot" style={{ background: cls?.color || inst.color }} />
                   <div className="inst-text">
                     <b>{inst.label}</b>
-                    <em>{cls?.label || inst.cls || REVIEW_LABEL}</em>
+                    <em>{cls?.label || inst.cls || blobClassLabel(inst.color)}</em>
                   </div>
                   <button className={'inst-edit-btn' + (inst.confirmed ? ' is-confirmed' : '')}
                     onClick={(e) => { e.stopPropagation(); toggleConfirm(inst.id); }}
@@ -1977,7 +1977,7 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
                       <div className="ins-class-current">
                         <span className="class-swatch" style={{ background: inst.color }} />
                         <span>{classes.find((c) => c.id === inst.cls)?.label
-                          || inst.cls || REVIEW_LABEL}</span>
+                          || inst.cls || blobClassLabel(inst.color)}</span>
                         <button className="ghost-btn"
                           disabled={inst.confirmed}
                           onClick={() => setRelabelTarget(inst.id)}>

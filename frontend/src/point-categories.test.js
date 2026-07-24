@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   CATEGORY_ARTIFACT, CATEGORY_EXCLUDED_REVIEW, CATEGORY_NONE, CATEGORY_TRANSIENT,
   POINT_CATEGORIES, buildCategoryOverlay, categoryByKey, categoryCounts,
-  ARTIFACT_COLOR, ARTIFACT_LABEL,
+  ARTIFACT_COLOR, ARTIFACT_LABEL, blobClassLabel,
 } from './point-categories.js';
 
 describe('point categories', () => {
@@ -86,5 +86,13 @@ describe('artifact color/label exports', () => {
   it('match the vocabulary', () => {
     expect(ARTIFACT_COLOR).toBe('#ff4dd2');
     expect(ARTIFACT_LABEL).toBe('Artifact');
+  });
+});
+
+describe('blobClassLabel', () => {
+  it('keys the class-column label off the persisted blob color', () => {
+    expect(blobClassLabel(ARTIFACT_COLOR)).toBe(ARTIFACT_LABEL);   // #ff4dd2 → Artifact
+    expect(blobClassLabel('#9aa0a6')).toBe('Review');              // REVIEW_COLOR → Review
+    expect(blobClassLabel(undefined)).toBe('Review');              // legacy/unknown → Review
   });
 });
