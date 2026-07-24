@@ -81,6 +81,14 @@ scans, e.g. smart_ais ≈ 4.99M), which is a few seconds for a `cKDTree` build p
 
 ## Feature C — global denoise → Exclude
 
+> **Superseded twice.** This section describes the original class-`unknown`/id-6
+> Exclude instance. Phase 2 moved denoise onto the category axis
+> (`excluded_review` review blob), and the 2026-07-24 spec
+> (`2026-07-24-denoise-artifact-instance-design.md`) moved it again to an
+> **`artifact` blob** — sensor noise is "no real surface" per the labeler guide.
+> The *flow* below (review-first, `replace_inst` re-run, confirmed-protection)
+> still holds; only the resulting category/instance representation changed.
+
 Detect outliers cloud-wide and materialize them as **one unconfirmed `pointset`
 instance with class `unknown`** (id 6, "Exclude / Review", hotkey `0` in
 `config/classes.yaml`).

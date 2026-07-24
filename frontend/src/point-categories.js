@@ -32,6 +32,20 @@ export const categoryByValue = (value) =>
 export const REVIEW_COLOR = '#9aa0a6';
 export const REVIEW_LABEL = 'Review';
 
+// Artifact blobs (denoise output) get their own color/label, symmetric with
+// the review-blob pair above.
+export const ARTIFACT_COLOR = '#ff4dd2';
+export const ARTIFACT_LABEL = 'Artifact';
+
+// Class-column label for a class-less blob row (artifact/review). Keyed off the
+// row's persisted `color` rather than a dedicated field, because the Cuboid
+// schema drops unknown keys (extra='ignore'), so a new field wouldn't survive
+// the instances_gt.json round-trip — `color` does. Unknown/legacy colors fall
+// back to Review (the only blob kind before artifact blobs existed).
+export function blobClassLabel(color) {
+  return color === ARTIFACT_COLOR ? ARTIFACT_LABEL : REVIEW_LABEL;
+}
+
 // Normalized [r,g,b] per category value (index 0 = `none`, unused).
 const CATEGORY_RGB = (() => {
   const hexToRGB = (hex) => [
@@ -49,12 +63,13 @@ const CATEGORY_RGB = (() => {
 // invisible. Returns {mask, colors} sized for the SUBSAMPLED cloud (subIdx
 // maps rendered row -> full-res index; null when rendering full-res), or null
 // when nothing is marked — callers then keep their untouched fast path.
-export function buildCategoryOverlay(categories, subIdx, subN) {
+export function buildCategoryOverlay(categories, subIdx, subN, hiddenMask = null) {
   if (!categories) return null;
   const mask = new Uint8Array(subN);
   const colors = new Float32Array(subN * 3);
   let any = false;
   for (let p = 0; p < subN; p++) {
+    if (hiddenMask && hiddenMask[p]) continue;   // confirmed-hidden → not painted
     const rgb = CATEGORY_RGB[categories[subIdx ? subIdx[p] : p]];
     if (!rgb) continue;
     mask[p] = 1;

@@ -35,8 +35,12 @@ def load_instances_for_invariants(session_dir: Path) -> dict[int, dict]:
         seg_id = inst.get("segId")
         if inst.get("kind") != "pointset" or seg_id is None:
             continue
+        cls = inst.get("cls")
         result[int(seg_id)] = {
-            "class_id": inst.get("cls"),
-            "confirmed": bool(inst.get("confirmed", False)),
+            "class_id": cls,
+            # A class-less blob (artifact/review) is a session-only review handle,
+            # never a confirmed GT instance (labeler guide; eval-invariant 9). Its
+            # in-session `confirmed` drives hide/protect only; strip it here.
+            "confirmed": bool(inst.get("confirmed", False)) and cls is not None,
         }
     return result

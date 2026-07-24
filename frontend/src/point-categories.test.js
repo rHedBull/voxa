@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   CATEGORY_ARTIFACT, CATEGORY_EXCLUDED_REVIEW, CATEGORY_NONE, CATEGORY_TRANSIENT,
   POINT_CATEGORIES, buildCategoryOverlay, categoryByKey, categoryCounts,
+  ARTIFACT_COLOR, ARTIFACT_LABEL, blobClassLabel,
 } from './point-categories.js';
 
 describe('point categories', () => {
@@ -62,5 +63,36 @@ describe('buildCategoryOverlay', () => {
     const subIdx = Int32Array.from([1, 2]);         // renders full-res 1 and 2
     const { mask } = buildCategoryOverlay(cats, subIdx, 2);
     expect(Array.from(mask)).toEqual([0, 1]);
+  });
+
+  it('drops points flagged in hiddenMask', () => {
+    const cats = new Int8Array([CATEGORY_ARTIFACT, CATEGORY_ARTIFACT, CATEGORY_ARTIFACT]);
+    const hidden = new Uint8Array([0, 1, 0]);            // hide the middle one
+    const ov = buildCategoryOverlay(cats, null, 3, hidden);
+    expect(ov.mask[0]).toBe(1);
+    expect(ov.mask[1]).toBe(0);                           // dropped
+    expect(ov.mask[2]).toBe(1);
+  });
+
+  it('without hiddenMask is unchanged', () => {
+    const cats = new Int8Array([CATEGORY_ARTIFACT, CATEGORY_ARTIFACT]);
+    const ov = buildCategoryOverlay(cats, null, 2);
+    expect(ov.mask[0]).toBe(1);
+    expect(ov.mask[1]).toBe(1);
+  });
+});
+
+describe('artifact color/label exports', () => {
+  it('match the vocabulary', () => {
+    expect(ARTIFACT_COLOR).toBe('#ff4dd2');
+    expect(ARTIFACT_LABEL).toBe('Artifact');
+  });
+});
+
+describe('blobClassLabel', () => {
+  it('keys the class-column label off the persisted blob color', () => {
+    expect(blobClassLabel(ARTIFACT_COLOR)).toBe(ARTIFACT_LABEL);   // #ff4dd2 → Artifact
+    expect(blobClassLabel('#9aa0a6')).toBe('Review');              // REVIEW_COLOR → Review
+    expect(blobClassLabel(undefined)).toBe('Review');              // legacy/unknown → Review
   });
 });

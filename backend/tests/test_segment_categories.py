@@ -120,3 +120,38 @@ def test_unknown_category_raises():
     seg = _session()
     with pytest.raises(ValueError):
         seg.apply_category(np.arange(3, dtype=np.int32), 9)
+
+
+def test_artifact_with_allocate_instance_mints_a_blob():
+    seg = _session()
+    idx = np.arange(0, 8, dtype=np.int32)
+    out = seg.apply_category(idx, CATEGORY_ARTIFACT, allocate_instance=True)
+    assert out["n_affected"] == 8
+    assert out.get("new_instance_id") is not None
+    blob = out["new_instance_id"]
+    assert bool((seg.categories[idx] == CATEGORY_ARTIFACT).all())
+    assert bool((seg.class_ids[idx] == -1).all())
+    assert bool((seg.instance_ids[idx] == blob).all())
+
+
+def test_artifact_default_still_erases_instance():
+    seg = _session()
+    idx = np.arange(0, 8, dtype=np.int32)
+    out = seg.apply_category(idx, CATEGORY_ARTIFACT)
+    assert out.get("new_instance_id") is None
+    assert bool((seg.instance_ids[idx] == -1).all())
+
+
+def test_review_default_still_allocates_blob():
+    seg = _session()
+    idx = np.arange(0, 8, dtype=np.int32)
+    out = seg.apply_category(idx, CATEGORY_EXCLUDED_REVIEW)
+    assert out.get("new_instance_id") is not None
+
+
+def test_allocate_instance_false_forces_no_blob_on_review():
+    seg = _session()
+    idx = np.arange(0, 8, dtype=np.int32)
+    out = seg.apply_category(idx, CATEGORY_EXCLUDED_REVIEW, allocate_instance=False)
+    assert out.get("new_instance_id") is None
+    assert bool((seg.instance_ids[idx] == -1).all())

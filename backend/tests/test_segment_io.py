@@ -432,6 +432,94 @@ def test_save_labels_rejects_confirmed_instance_with_category(tmp_path):
                    instances_doc={0: {"class_id": "pipe_new", "confirmed": True}})
 
 
+def test_confirmed_artifact_blob_saves_and_strips_instance(tmp_path):
+    """A confirmed artifact blob (class-less, category=artifact) saves through
+    all 9 eval invariants: the route strips its instance id to -1 before
+    writing GT, Task-3 normalization drops its `confirmed` flag, and
+    review_blob_summary omits it (artifact != excluded_review)."""
+    from labeling.segment_io import review_blob_summary
+    from labeling.instances_doc import load_instances_for_invariants
+    from labeling.categories import CATEGORY_ARTIFACT, CATEGORY_NONE
+
+    scan_dir = tmp_path
+    session_dir = scan_dir / "sessions" / "s1"
+    session_dir.mkdir(parents=True)
+
+    # Working arrays: points 0,1 are the artifact blob (class -1, id 7); rest unlabeled.
+    class_ids = np.array([-1, -1, -1, -1, -1], dtype=np.int32)
+    instance_ids = np.array([7, 7, -1, -1, -1], dtype=np.int32)
+    categories = np.array(
+        [CATEGORY_ARTIFACT, CATEGORY_ARTIFACT, CATEGORY_NONE, CATEGORY_NONE, CATEGORY_NONE],
+        dtype=np.int8,
+    )
+
+    # Save-time strip, exactly as segment_save does.
+    out_inst = instance_ids.copy()
+    out_inst[(instance_ids >= 0) & (class_ids < 0)] = -1
+
+    # Loaded instances doc with a *confirmed* class-less row; Task-3
+    # normalization (load_instances_for_invariants) flips confirmed -> False.
+    (session_dir / "instances_gt.json").write_text(json.dumps({
+        "instances": [{"kind": "pointset", "segId": 7, "cls": None, "confirmed": True}],
+    }))
+    instances_doc = load_instances_for_invariants(session_dir)
+    assert instances_doc == {7: {"class_id": None, "confirmed": False}}
+
+    save_labels(scan_dir, "s1", class_ids, out_inst,
+                categories=categories,
+                review_blobs=review_blob_summary(categories, instance_ids),
+                instances_doc=instances_doc,
+                write_history=False)
+
+    out_dir = session_dir / "output"
+    seg_ids = _read_npy(out_dir / "gt_segment_ids.npy")
+    assert seg_ids[0] == -1 and seg_ids[1] == -1        # blob id stripped
+    cats = _read_npy(out_dir / "gt_point_category.npy")
+    assert cats[0] == CATEGORY_ARTIFACT and cats[1] == CATEGORY_ARTIFACT
+    meta = json.loads((out_dir / "gt_segment_metadata.json").read_text())
+    assert 7 not in {b["instance_id"] for b in meta.get("review_blobs", [])}
+
+
+def test_confirmed_review_blob_saves(tmp_path):
+    """Sibling regression: a confirmed excluded_review blob saves through all 9
+    eval invariants. review_blobs= is REQUIRED — without it the save trips
+    eval-invariant 3 (n_review_points != n_accounted), not invariant 9."""
+    from labeling.segment_io import review_blob_summary
+    from labeling.instances_doc import load_instances_for_invariants
+    from labeling.categories import CATEGORY_EXCLUDED_REVIEW, CATEGORY_NONE
+
+    scan_dir = tmp_path
+    session_dir = scan_dir / "sessions" / "s1"
+    session_dir.mkdir(parents=True)
+
+    class_ids = np.array([-1, -1, -1, -1, -1], dtype=np.int32)
+    instance_ids = np.array([7, 7, -1, -1, -1], dtype=np.int32)
+    categories = np.array(
+        [CATEGORY_EXCLUDED_REVIEW, CATEGORY_EXCLUDED_REVIEW,
+         CATEGORY_NONE, CATEGORY_NONE, CATEGORY_NONE],
+        dtype=np.int8,
+    )
+
+    out_inst = instance_ids.copy()
+    out_inst[(instance_ids >= 0) & (class_ids < 0)] = -1
+
+    (session_dir / "instances_gt.json").write_text(json.dumps({
+        "instances": [{"kind": "pointset", "segId": 7, "cls": None, "confirmed": True}],
+    }))
+    instances_doc = load_instances_for_invariants(session_dir)
+    assert instances_doc == {7: {"class_id": None, "confirmed": False}}
+
+    save_labels(scan_dir, "s1", class_ids, out_inst,
+                categories=categories,
+                review_blobs=review_blob_summary(categories, instance_ids),
+                instances_doc=instances_doc,
+                write_history=False)
+
+    meta = json.loads(
+        (session_dir / "output" / "gt_segment_metadata.json").read_text())
+    assert 7 in {b["instance_id"] for b in meta["review_blobs"]}
+
+
 def test_save_labels_rejects_lost_instance_id_across_saves(tmp_path):
     """eval-invariant 7: an id present in a prior save must not vanish."""
     scan_dir = tmp_path
