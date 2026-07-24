@@ -44,6 +44,18 @@ def test_load_instances_for_invariants_skips_non_pointset_kind(tmp_path):
     assert result == {5: {"class_id": "pipe", "confirmed": True}}
 
 
+def test_classless_row_confirmed_is_normalized_to_false(tmp_path):
+    doc = {"instances": [
+        {"segId": 5, "kind": "pointset", "cls": None, "confirmed": True},   # blob
+        {"segId": 6, "kind": "pointset", "cls": 2, "confirmed": True},      # real
+    ]}
+    (tmp_path / "instances_gt.json").write_text(json.dumps(doc))
+    got = load_instances_for_invariants(tmp_path)
+    assert got[5]["confirmed"] is False   # class-less → normalized off
+    assert got[6]["confirmed"] is True    # classed → untouched
+    assert got[5]["class_id"] is None
+
+
 def test_expected_keys_are_cuboid_fields():
     """instances_doc hand-parses instances_gt.json rows instead of importing
     Cuboid (see module docstring), so nothing pins its field expectations
