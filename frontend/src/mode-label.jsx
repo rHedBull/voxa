@@ -781,15 +781,25 @@ export function LabelMode({ cloud, theme, viewerRef, classes, instances, onChang
     if (!segState || denoiseBusy) return;
     setDenoiseBusy(true);
     try {
+      // Confirmed = locked: once the prior artifact blob is confirmed it must
+      // NOT be replaced — re-running is then additive (its points stay labeled
+      // and, being protected, drop out of the new catch). Only an unconfirmed
+      // (or already-deleted) prior result is erased + replaced, the tweak-slider
+      // loop. The backend enforces the same guard, but deciding here also keeps
+      // the confirmed row in the panel.
+      const prev = instances.find((i) => i.segId === denoiseInstId);
+      const replaceInst = prev?.confirmed ? null : denoiseInstId;
       const resp = await VoxaAPI.denoise({
         stdRatio: denoiseRatio,
-        replaceInst: denoiseInstId,           // erase the prior result first
+        replaceInst,                          // erase the prior result first (unless confirmed)
         protectInstances: protectedSegIds,
       });
-      // Drop the previous denoise row (its points were just erased
-      // server-side). The result is an ARTIFACT BLOB — class-less, on the
-      // category axis (no real surface) — not an "Exclude" class-6 instance.
-      const kept = instances.filter((i) => i.segId !== denoiseInstId);
+      // Drop the previous denoise row only when we actually replaced it. The
+      // result is an ARTIFACT BLOB — class-less, on the category axis (no real
+      // surface) — not an "Exclude" class-6 instance.
+      const kept = replaceInst != null
+        ? instances.filter((i) => i.segId !== replaceInst)
+        : instances;
       if (resp.instance_id == null) {
         onChange(kept);
         setDenoiseInstId(null);
